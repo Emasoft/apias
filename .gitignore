@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# aider-chat
+.aider*
+
 # C extensions
 *.so
 
@@ -150,6 +153,9 @@ dmypy.json
 
 # pytype static type analyzer
 .pytype/
+
+# ruff linter
+.ruff*
 
 # Cython debug symbols
 cython_debug/
