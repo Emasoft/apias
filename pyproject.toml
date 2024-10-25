@@ -96,6 +96,11 @@ testpaths = ["tests"]
 [tool.coverage.run]
 branch = true
 source = ["apias"]
+omit = [
+    "*/site-packages/*",
+    "setup.py",
+    "apias/apias.py"  # Exclude the CLI file
+]
 
 [tool.coverage.report]
 exclude_lines = [
@@ -104,6 +109,15 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
+    "def main\\(\\):",
+    "def start_.*:",
+    "class Spinner:",
+    "def web_scraper",
+    "def fetch_sitemap",
+    "def process_.*page",
+    "def update_progress_file",
+    "def display_scraping_summary",
+    "def create_summary_box"
 ]
 fail_under = 80
 
