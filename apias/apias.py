@@ -1877,6 +1877,94 @@ def start_batch_scrape(url: str, whitelist: str, blacklist: str) -> None:
 # Command-Line Interface
 # ============================
 
+class APIDocument:
+    """Class representing a parsed API document."""
+    
+    def __init__(self, content: str) -> None:
+        """Initialize APIDocument with raw content."""
+        self.content = content
+        self.endpoints = []
+        self.methods = []
+        self.descriptions = []
+        self._parse()
+    
+    def _parse(self) -> None:
+        """Parse the raw content into structured data."""
+        lines = self.content.split('\n')
+        for line in lines:
+            line = line.strip()
+            if '/api/' in line:
+                self.endpoints.append(line)
+            if any(method in line.upper() for method in ['GET', 'POST', 'PUT', 'DELETE']):
+                self.methods.append(line)
+            if line and not line.startswith('#'):
+                self.descriptions.append(line)
+    
+    def to_markdown(self) -> str:
+        """Convert the document to markdown format."""
+        return "\n".join(self.descriptions)
+    
+    def to_json(self) -> Dict:
+        """Convert the document to a dictionary."""
+        return {
+            "endpoints": self.endpoints,
+            "methods": self.methods,
+            "descriptions": self.descriptions
+        }
+    
+    def save(self, path: Union[str, Path]) -> None:
+        """Save the document to a file."""
+        path = Path(path)
+        with open(path, 'w') as f:
+            f.write(self.to_markdown())
+            
+    def __str__(self) -> str:
+        """Return a string representation of the document."""
+        return "\n".join(
+            self.endpoints + 
+            self.methods + 
+            self.descriptions
+        )
+
+def parse_documentation(doc_content: str) -> APIDocument:
+    """Parse API documentation content and extract structured information.
+    
+    Args:
+        doc_content: Raw API documentation text
+        
+    Returns:
+        APIDocument: Structured API documentation
+    """
+    if not isinstance(doc_content, str):
+        raise TypeError("Documentation content must be a string")
+    
+    return APIDocument(doc_content)
+
+def validate_config(config: dict) -> bool:
+    """Validate the configuration dictionary.
+    
+    Args:
+        config: Configuration dictionary to validate
+        
+    Returns:
+        bool: True if configuration is valid, False otherwise
+    """
+    required_fields = {'base_url', 'output_format'}
+    
+    # Check if all required fields are present
+    if not all(field in config for field in required_fields):
+        return False
+        
+    # Validate base_url format
+    if not isinstance(config['base_url'], str) or not config['base_url'].startswith('http'):
+        return False
+        
+    # Validate output_format
+    if not isinstance(config['output_format'], str) or config['output_format'] not in ['markdown', 'html', 'xml']:
+        return False
+        
+    return True
+
 def main():
     print("APIAS - API AUTO SCRAPER")
     print(f"Version {VERSION}\n")
