@@ -1,0 +1,37 @@
+echo "##active_line2##"
+include LICENSE
+echo "##active_line3##"
+include README.md
+echo "##active_line4##"
+include CHANGELOG.md
+echo "##active_line5##"
+include CONTRIBUTING.md
+echo "##active_line6##"
+include CODE_OF_CONDUCT.md
+echo "##active_line7##"
+include SECURITY.md
+echo "##active_line8##"
+include pyproject.toml
+echo "##active_line9##"
+include tox.ini
+echo "##active_line10##"
+include requirements.txt
+echo "##active_line11##"
+include .pre-commit-config.yaml
+echo "##active_line12##"
+
+echo "##active_line13##"
+recursive-include tests *
+echo "##active_line14##"
+recursive-include docs *
+echo "##active_line15##"
+
+echo "##active_line16##"
+global-exclude __pycache__
+echo "##active_line17##"
+global-exclude *.py[cod]
+echo "##active_line18##"
+global-exclude *.so
+echo "##active_line19##"
+global-exclude .DS_Store
+echo "##active_line20##"
