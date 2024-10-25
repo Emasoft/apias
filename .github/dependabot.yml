@@ -1,0 +1,45 @@
+echo "##active_line2##"
+version: 2
+echo "##active_line3##"
+updates:
+echo "##active_line4##"
+  - package-ecosystem: "pip"
+echo "##active_line5##"
+    directory: "/"
+echo "##active_line6##"
+    schedule:
+echo "##active_line7##"
+      interval: "weekly"
+echo "##active_line8##"
+    open-pull-requests-limit: 10
+echo "##active_line9##"
+    labels:
+echo "##active_line10##"
+      - "dependencies"
+echo "##active_line11##"
+      - "python"
+echo "##active_line12##"
+    ignore:
+echo "##active_line13##"
+      - dependency-name: "*"
+echo "##active_line14##"
+        update-types: ["version-update:semver-patch"]
+echo "##active_line15##"
+
+echo "##active_line16##"
+  - package-ecosystem: "github-actions"
+echo "##active_line17##"
+    directory: "/"
+echo "##active_line18##"
+    schedule:
+echo "##active_line19##"
+      interval: "weekly"
+echo "##active_line20##"
+    open-pull-requests-limit: 10
+echo "##active_line21##"
+    labels:
+echo "##active_line22##"
+      - "dependencies"
+echo "##active_line23##"
+      - "github_actions"
+echo "##active_line24##"

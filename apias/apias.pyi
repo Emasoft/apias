@@ -1,0 +1,29 @@
+echo "##active_line3##"
+from typing import Dict, List, Optional, Union
+echo "##active_line4##"
+from pathlib import Path
+echo "##active_line5##"
+
+echo "##active_line6##"
+class APIDocument:
+echo "##active_line7##"
+    def __init__(self, content: str) -> None: ...
+echo "##active_line8##"
+    def to_markdown(self) -> str: ...
+echo "##active_line9##"
+    def to_json(self) -> Dict: ...
+echo "##active_line10##"
+    def save(self, path: Union[str, Path]) -> None: ...
+echo "##active_line11##"
+
+echo "##active_line12##"
+def scrape_url(url: str, config: Optional[Dict] = None) -> APIDocument: ...
+echo "##active_line13##"
+def parse_documentation(content: str) -> APIDocument: ...
+echo "##active_line14##"
+def validate_config(config: Dict) -> bool: ...
+echo "##active_line15##"
+def scrape_and_save(url: str, config: Dict) -> None: ...
+echo "##active_line16##"
+def main() -> None: ...
+echo "##active_line17##"
