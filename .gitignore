@@ -171,3 +171,6 @@ apias/_version.py
 dist/
 build/
 *.egg-info/
+
+# Temporary directories created by the script
+temp_*/
