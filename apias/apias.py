@@ -117,7 +117,12 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 import requests
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 from requests.exceptions import RequestException
 import fnmatch
 import itertools
@@ -139,16 +144,18 @@ def validate_xml(xml_string):
     except (ET.ParseError, ValueError):
         return False
 
+
 def count_valid_xml_files(folder):
     valid_count = 0
     total_count = 0
-    for xml_file in folder.glob('processed_*.xml'):
+    for xml_file in folder.glob("processed_*.xml"):
         total_count += 1
-        with open(xml_file, 'r', encoding='utf-8') as f:
+        with open(xml_file, "r", encoding="utf-8") as f:
             content = f.read()
         if validate_xml(content):
             valid_count += 1
     return valid_count, total_count
+
 
 # Global variables for cost tracking
 total_cost = 0.0
@@ -182,7 +189,9 @@ BOX_CROSS = "┼"
 # ============================
 
 # Configure Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 logger = logging.getLogger(__name__)
 
 # Create a temp folder with datetime suffix
@@ -192,18 +201,21 @@ temp_folder.mkdir(exist_ok=True)
 # Create an error log file
 error_log_file = temp_folder / "error_log.txt"
 # Create an empty error log file
-with open(error_log_file, 'w', encoding='utf-8') as f:
+with open(error_log_file, "w", encoding="utf-8") as f:
     pass
 
+
 def get_openai_api_key() -> str:
-    openai_api_key = os.getenv('OPENAI_API_KEY')
+    openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
         logger.error("OPENAI_API_KEY environment variable not set.")
         sys.exit(1)
     return openai_api_key
 
+
 # Global flag for graceful shutdown
 shutdown_flag = False
+
 
 def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
     global shutdown_flag
@@ -211,34 +223,38 @@ def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
     shutdown_flag = True
     sys.exit(0)
 
+
 signal(SIGINT, signal_handler)
 
 # ============================
 # Helper Functions from DSL
 # ============================
 
+
 def escape_xml(xml_doc: str) -> str:
     """
     Escapes XML special characters in a string.
     """
-    xml_doc = xml_doc.replace('"', '&quot;')
-    xml_doc = xml_doc.replace("'", '&apos;')
-    xml_doc = xml_doc.replace('<', '&lt;')
-    xml_doc = xml_doc.replace('>', '&gt;')
-    xml_doc = xml_doc.replace('&', '&amp;')
+    xml_doc = xml_doc.replace('"', "&quot;")
+    xml_doc = xml_doc.replace("'", "&apos;")
+    xml_doc = xml_doc.replace("<", "&lt;")
+    xml_doc = xml_doc.replace(">", "&gt;")
+    xml_doc = xml_doc.replace("&", "&amp;")
     return xml_doc
+
 
 def unescape_xml(xml_doc: str) -> str:
     """
     To unescape the text strings and the attributes values.
     DO NOT UNESCAPE CDATA, Comments and Processing Instructions
     """
-    xml_doc = xml_doc.replace('&quot;', '"')
-    xml_doc = xml_doc.replace('&apos;', "'")
-    xml_doc = xml_doc.replace('&lt;', '<')
-    xml_doc = xml_doc.replace('&gt;', '>')
-    xml_doc = xml_doc.replace('&amp;', '&')
+    xml_doc = xml_doc.replace("&quot;", '"')
+    xml_doc = xml_doc.replace("&apos;", "'")
+    xml_doc = xml_doc.replace("&lt;", "<")
+    xml_doc = xml_doc.replace("&gt;", ">")
+    xml_doc = xml_doc.replace("&amp;", "&")
     return xml_doc
+
 
 def extract_xml_from_input(input_data: str) -> str:
     """
@@ -246,21 +262,31 @@ def extract_xml_from_input(input_data: str) -> str:
     """
     input_data = input_data.strip()
     if input_data.startswith("```xml") and input_data.endswith("```"):
-        input_data = input_data[len('```xml'):-len('```')]
+        input_data = input_data[len("```xml") : -len("```")]
     elif input_data.startswith("```XML") and input_data.endswith("```"):
-        input_data = input_data[len('```XML'):-len('```')]
+        input_data = input_data[len("```XML") : -len("```")]
     elif input_data.startswith("```") and input_data.endswith("```"):
-        input_data = input_data[len('```'):-len('```')]
+        input_data = input_data[len("```") : -len("```")]
 
-    input_data = input_data.replace('\\\\n', '\n').replace('\\n', '\n')
-    input_data = input_data.replace('\\\\\\"', '\\\\"').replace('\\\"', '"')
+    input_data = input_data.replace("\\\\n", "\n").replace("\\n", "\n")
+    input_data = input_data.replace('\\\\\\"', '\\\\"').replace('\\"', '"')
 
     xml_content = input_data.strip()
-    if not (xml_content.lower().startswith('<?xml') or xml_content.lower().startswith('<xml')):
-        xml_content = '<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n' + xml_content + '\n</XML>'
+    if not (
+        xml_content.lower().startswith("<?xml")
+        or xml_content.lower().startswith("<xml")
+    ):
+        xml_content = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n' + xml_content + "\n</XML>"
+        )
 
     # Handle code tags
-    xml_content = re.sub(r'<code>(.*?)</code>', lambda m: f'<CODE>{escape_xml(m.group(1))}</CODE>', xml_content, flags=re.DOTALL | re.IGNORECASE)
+    xml_content = re.sub(
+        r"<code>(.*?)</code>",
+        lambda m: f"<CODE>{escape_xml(m.group(1))}</CODE>",
+        xml_content,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
 
     # Validate the XML content
     logger.debug(f"Extracted XML Content:\n{xml_content}")
@@ -272,24 +298,31 @@ def extract_xml_from_input(input_data: str) -> str:
 
     return xml_content
 
+
 def extract_xml_from_input_iter(input_data: str) -> str:
     """
     Extracts and validates XML content from the input string within iterations.
     """
     input_data = input_data.strip()
     if input_data.startswith("```xml") and input_data.endswith("```"):
-        input_data = input_data[len('```xml'):-len('```')]
+        input_data = input_data[len("```xml") : -len("```")]
     elif input_data.startswith("```XML") and input_data.endswith("```"):
-        input_data = input_data[len('```XML'):-len('```')]
+        input_data = input_data[len("```XML") : -len("```")]
     elif input_data.startswith("```") and input_data.endswith("```"):
-        input_data = input_data[len('```'):-len('```')]
+        input_data = input_data[len("```") : -len("```")]
 
-    input_data = input_data.replace('\\\\n', '\n').replace('\\n', '\n')
-    input_data = input_data.replace('\\\\\\"', '\\\\"').replace('\\\"', '"')
+    input_data = input_data.replace("\\\\n", "\n").replace("\\n", "\n")
+    input_data = input_data.replace('\\\\\\"', '\\\\"').replace('\\"', '"')
 
     xml_content = input_data
-    if not (xml_content.lower().startswith('<xml') and xml_content.lower().endswith('xml>')):
-        xml_content = '<XML version="1.0" encoding="UTF-8" standalone="yes" >\n' + xml_content + '\n</XML>'
+    if not (
+        xml_content.lower().startswith("<xml") and xml_content.lower().endswith("xml>")
+    ):
+        xml_content = (
+            '<XML version="1.0" encoding="UTF-8" standalone="yes" >\n'
+            + xml_content
+            + "\n</XML>"
+        )
 
     # Validate the XML content
     logger.debug(f"Extracted Iteration XML Content:\n{input_data}")
@@ -300,6 +333,7 @@ def extract_xml_from_input_iter(input_data: str) -> str:
     finally:
         return xml_content
 
+
 def merge_xmls(temp_folder: Path) -> str:
     """
     Merges multiple XML documents from the temp folder into a single XML API document.
@@ -308,32 +342,34 @@ def merge_xmls(temp_folder: Path) -> str:
     root = ET.Element("TEXTUAL_API")
     error_log = []
 
-    for xml_file in temp_folder.glob('processed_*.xml'):
+    for xml_file in temp_folder.glob("processed_*.xml"):
         try:
             try:
-                with open(xml_file, 'r', encoding='utf-8') as f:
+                with open(xml_file, "r", encoding="utf-8") as f:
                     xml_content = f.read()
             except UnicodeDecodeError:
-                logger.warning(f"Unicode decode error in file {xml_file}. Trying with 'latin-1' encoding.")
-                with open(xml_file, 'r', encoding='latin-1') as f:
+                logger.warning(
+                    f"Unicode decode error in file {xml_file}. Trying with 'latin-1' encoding."
+                )
+                with open(xml_file, "r", encoding="latin-1") as f:
                     xml_content = f.read()
-            
+
             # Parse the XML content
             doc = ET.fromstring(xml_content)
-            
+
             # Create a new element for this document
             doc_element = ET.SubElement(root, "DOCUMENT")
-            
+
             # Add the source URL as the first child
-            source_url = doc.find('.//SOURCE_URL')
+            source_url = doc.find(".//SOURCE_URL")
             if source_url is not None:
                 doc_element.append(source_url)
-            
+
             # Append all other elements
             for child in doc:
-                if child.tag != 'SOURCE_URL':
+                if child.tag != "SOURCE_URL":
                     doc_element.append(child)
-            
+
         except ET.ParseError as e:
             error_message = f"Invalid XML in file {xml_file}: {e}"
             logger.warning(error_message)
@@ -348,18 +384,19 @@ def merge_xmls(temp_folder: Path) -> str:
             error_log.append(error_message)
 
     # Write error log
-    with open(temp_folder / 'errors.log', 'w', encoding='utf-8') as f:
-        f.write('\n'.join(error_log))
+    with open(temp_folder / "errors.log", "w", encoding="utf-8") as f:
+        f.write("\n".join(error_log))
 
-    merged_xml = ET.tostring(root, encoding='unicode', method='xml')
+    merged_xml = ET.tostring(root, encoding="unicode", method="xml")
     return merged_xml
+
 
 def remove_links(element: ET.Element) -> None:
     """
     Recursively removes all link elements from the given XML element.
     """
     for child in list(element):
-        if child.tag.lower() in ['a', 'link']:
+        if child.tag.lower() in ["a", "link"]:
             element.remove(child)
         else:
             remove_links(child)
@@ -367,100 +404,142 @@ def remove_links(element: ET.Element) -> None:
 
 # Navigation keywords limited to English
 NAVIGATION_KEYWORDS = [
-    'nav', 'menu', 'sidebar', 'footer', 'breadcrumb', 'pager', 'pagination',
-    'header', 'navigation', 'submenu', 'tabs', 'navbar', 'main-navigation',
-    'site-navigation', 'skip-navigation', 'top-nav', 'bottom-nav', 'side-nav',
-    'advert', 'ads', 'sponsor', 'related', 'cookies', 'banner'
+    "nav",
+    "menu",
+    "sidebar",
+    "footer",
+    "breadcrumb",
+    "pager",
+    "pagination",
+    "header",
+    "navigation",
+    "submenu",
+    "tabs",
+    "navbar",
+    "main-navigation",
+    "site-navigation",
+    "skip-navigation",
+    "top-nav",
+    "bottom-nav",
+    "side-nav",
+    "advert",
+    "ads",
+    "sponsor",
+    "related",
+    "cookies",
+    "banner",
 ]
 
 # Hidden styles, classes, and attributes
 HIDDEN_STYLES = [
-    'display:none', 'visibility:hidden', 'opacity:0',
-    'height:0', 'width:0', 'position:absolute'
+    "display:none",
+    "visibility:hidden",
+    "opacity:0",
+    "height:0",
+    "width:0",
+    "position:absolute",
 ]
 HIDDEN_CLASSES = [
-    'hidden', 'collapsed', 'd-none', 'invisible',
-    'sr-only', 'visually-hidden', 'offscreen'
+    "hidden",
+    "collapsed",
+    "d-none",
+    "invisible",
+    "sr-only",
+    "visually-hidden",
+    "offscreen",
 ]
-HIDDEN_ATTRIBUTES = ['hidden', 'aria-hidden', 'data-hidden']
+HIDDEN_ATTRIBUTES = ["hidden", "aria-hidden", "data-hidden"]
+
 
 def is_main_content(element: BeautifulSoup) -> bool:
     """Check if the element is the main content."""
-    if element.name == 'main' or element.get('role') == 'main':
+    if element.name == "main" or element.get("role") == "main":
         return True
-    for attr in ['id', 'class']:
+    for attr in ["id", "class"]:
         attr_values = element.get(attr, [])
         if isinstance(attr_values, list):
-            attr_values = ' '.join(attr_values)
-        if attr_values and any(keyword in attr_values.lower() for keyword in ['content', 'main']):
+            attr_values = " ".join(attr_values)
+        if attr_values and any(
+            keyword in attr_values.lower() for keyword in ["content", "main"]
+        ):
             return True
     return False
+
 
 def has_significant_text(element: BeautifulSoup, threshold: int = 100) -> bool:
     """Determine if an element contains significant text content."""
     text_length = len(element.get_text(strip=True))
     return text_length > threshold
 
+
 def contains_navigation_keywords(attr_values: Union[str, List[str]]) -> bool:
     """Check if attribute values contain any navigation keywords."""
     if isinstance(attr_values, list):
-        attr_values = ' '.join(attr_values)
+        attr_values = " ".join(attr_values)
     attr_values_lower = attr_values.lower()
     return any(keyword in attr_values_lower for keyword in NAVIGATION_KEYWORDS)
+
 
 def is_navigation(element: BeautifulSoup) -> bool:
     """Determine if an element is likely a navigation or non-content element."""
     if is_main_content(element):
         return False
-    if element.name in ['nav', 'header', 'footer', 'aside']:
+    if element.name in ["nav", "header", "footer", "aside"]:
         return True
-    for attr in ['class', 'id', 'role', 'aria-label']:
+    for attr in ["class", "id", "role", "aria-label"]:
         attr_values = element.get(attr, [])
         if attr_values and contains_navigation_keywords(attr_values):
             return True
-    links = element.find_all('a')
+    links = element.find_all("a")
     text_length = len(element.get_text(strip=True))
     if len(links) > 5 and text_length < 100:
         return True
-    if element.find_all('ul') and not has_significant_text(element):
+    if element.find_all("ul") and not has_significant_text(element):
         return True
-    if element.name == 'div':
-        class_attr = element.get('class', [])
+    if element.name == "div":
+        class_attr = element.get("class", [])
         if isinstance(class_attr, list) and any(
-            any(keyword in cls.lower() for keyword in ['advert', 'ads', 'sponsor'])
+            any(keyword in cls.lower() for keyword in ["advert", "ads", "sponsor"])
             for cls in class_attr
         ):
             return True
     return False
 
+
 def clean_styles(styles: str, hidden_styles: List[str]) -> str:
     """Remove hidden styles from the style attribute."""
-    style_list = [s.strip() for s in styles.split(';') if s.strip()]
+    style_list = [s.strip() for s in styles.split(";") if s.strip()]
     visible_styles = [
-        s for s in style_list if not any(hidden_style in s.replace(' ', '') for hidden_style in hidden_styles)
+        s
+        for s in style_list
+        if not any(hidden_style in s.replace(" ", "") for hidden_style in hidden_styles)
     ]
-    return '; '.join(visible_styles)
+    return "; ".join(visible_styles)
+
 
 def expand_hidden_content(soup: BeautifulSoup):
     """Expand hidden content by removing styles, classes, and attributes that hide elements."""
     for element in soup.find_all(True):
         # Remove hidden styles
-        if element.has_attr('style'):
-            cleaned_style = clean_styles(element['style'], HIDDEN_STYLES)
+        if element.has_attr("style"):
+            cleaned_style = clean_styles(element["style"], HIDDEN_STYLES)
             if cleaned_style:
-                element['style'] = cleaned_style
+                element["style"] = cleaned_style
             else:
-                del element['style']
+                del element["style"]
         # Remove hidden classes
-        if element.has_attr('class'):
-            visible_classes = [cls for cls in element['class'] if cls.lower() not in HIDDEN_CLASSES]
+        if element.has_attr("class"):
+            visible_classes = [
+                cls for cls in element["class"] if cls.lower() not in HIDDEN_CLASSES
+            ]
             if visible_classes:
-                element['class'] = visible_classes
+                element["class"] = visible_classes
             else:
-                del element['class']
+                del element["class"]
         # Remove hidden attributes
         for attr in HIDDEN_ATTRIBUTES:
             element.attrs.pop(attr, None)
+
 
 def remove_elements(soup: BeautifulSoup, condition_func):
     """Remove elements from the soup based on a condition function."""
@@ -468,10 +547,12 @@ def remove_elements(soup: BeautifulSoup, condition_func):
     for element in elements_to_remove:
         element.decompose()
 
+
 def remove_comments(soup: BeautifulSoup):
     """Remove comments from the soup."""
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
+
 
 def clean_html(html_content: str) -> str:
     """
@@ -484,7 +565,7 @@ def clean_html(html_content: str) -> str:
         str: The cleaned and compacted HTML content.
     """
     # Use lxml parser for better handling of malformed HTML (optional)
-    soup = BeautifulSoup(html_content, 'lxml')
+    soup = BeautifulSoup(html_content, "lxml")
 
     # Remove comments
     remove_comments(soup)
@@ -496,27 +577,28 @@ def clean_html(html_content: str) -> str:
     remove_elements(soup, is_navigation)
 
     # Remove script and style tags
-    for element in soup(['script', 'style']):
+    for element in soup(["script", "style"]):
         element.decompose()
 
     # Preserve formatting in pre and code tags
-    for tag in soup.find_all(['pre', 'code']):
-        tag.string = tag.prettify(formatter='html')
+    for tag in soup.find_all(["pre", "code"]):
+        tag.string = tag.prettify(formatter="html")
 
     # Get the compact HTML string
-    compact_html = soup.decode(formatter='minimal')
+    compact_html = soup.decode(formatter="minimal")
 
     # Remove excessive whitespace, except within pre and code tags
-    compact_html = re.sub(r'\s+(?![^<>]*</(?:pre|code)>)', ' ', compact_html)
+    compact_html = re.sub(r"\s+(?![^<>]*</(?:pre|code)>)", " ", compact_html)
 
     return compact_html
-    
+
 
 # ============================
 # Playwright Scraper Module
 # ============================
 
 # Copied from user-provided scraper module
+
 
 def get_best_invocation_for_this_python() -> str:
     """Try to figure out the best way to invoke the current Python."""
@@ -547,6 +629,7 @@ def touch_file(fname: Union[str, Path]) -> bool:
     except OSError:
         return False
 
+
 def printable_shell_command(cmd_list: List[str]) -> str:
     """
     Convert a list of command arguments to a properly shell-escaped string.
@@ -561,7 +644,8 @@ def printable_shell_command(cmd_list: List[str]) -> str:
         return subprocess.list2cmdline(cmd_list)
     else:
         return shlex.join(cmd_list)
-        
+
+
 def get_pip_install(args: List[str]) -> List[str]:
     cmd = [
         get_best_invocation_for_this_python(),
@@ -574,6 +658,7 @@ def get_pip_install(args: List[str]) -> List[str]:
     ]
     cmd += args
     return cmd
+
 
 def run_install(cmd: List[str]) -> Tuple[bool, str]:
     print()
@@ -618,6 +703,7 @@ def run_install(cmd: List[str]) -> Tuple[bool, str]:
 
     return False, "".join(output)
 
+
 class Spinner:
     spinner_chars = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
 
@@ -628,11 +714,16 @@ class Spinner:
         self.spinner_thread = threading.Thread(target=self._spin)
         self.spinner_thread.daemon = True
 
-    def __enter__(self) -> 'Spinner':
+    def __enter__(self) -> "Spinner":
         self.start()
         return self
 
-    def __exit__(self, exc_type: Optional[Type[BaseException]], exc_value: Optional[BaseException], traceback: Optional[TracebackType]) -> None:
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
         self.stop()
 
     def start(self) -> None:
@@ -677,9 +768,11 @@ class Spinner:
     def _clear_line(self) -> None:
         print("\r" + " " * (shutil.get_terminal_size().columns - 1), end="", flush=True)
 
+
 def spinner_context(text: str) -> Spinner:
     spinner = Spinner(text)
     return spinner
+
 
 def find_common_root(abs_fnames: List[str]) -> str:
     if len(abs_fnames) == 1:
@@ -687,6 +780,7 @@ def find_common_root(abs_fnames: List[str]) -> str:
     if abs_fnames:
         return safe_abs_path(os.path.commonpath(list(abs_fnames)))
     return safe_abs_path(os.getcwd())
+
 
 def install_playwright() -> bool:
     try:
@@ -736,11 +830,17 @@ def install_playwright() -> bool:
 
     return True
 
+
 class Scraper:
     playwright_available: Optional[bool] = None
     playwright_instructions_shown: bool = False
 
-    def __init__(self, playwright_available: Optional[bool] = None, verify_ssl: bool = True, timeout: int = 30):
+    def __init__(
+        self,
+        playwright_available: Optional[bool] = None,
+        verify_ssl: bool = True,
+        timeout: int = 30,
+    ):
         """
         `print_error` - a function to call to print error/debug info.
         `verify_ssl` - if False, disable SSL certificate verification when scraping.
@@ -749,7 +849,11 @@ class Scraper:
 
         self.print_error: Callable[[str], None] = print
 
-        self.playwright_available = playwright_available if playwright_available is not None else install_playwright()
+        self.playwright_available = (
+            playwright_available
+            if playwright_available is not None
+            else install_playwright()
+        )
         self.verify_ssl = verify_ssl
         self.timeout = timeout
 
@@ -771,7 +875,7 @@ class Scraper:
             install_playwright()
 
         content, mime_type = self.scrape_with_playwright(url)
-        
+
         if not content:
             self.print_error(f"Failed to retrieve content from {url}")
             return None, None
@@ -817,20 +921,22 @@ class Scraper:
                 r"<h[1-6]\b",
             ]
             # Check if any of the patterns match
-            if any(re.search(pattern, content, re.IGNORECASE) for pattern in html_patterns):
+            if any(
+                re.search(pattern, content, re.IGNORECASE) for pattern in html_patterns
+            ):
                 return True
-            
+
             # Additional check for HTML entity references
             if re.search(r"&[a-z]+;|&#\d+;", content, re.IGNORECASE):
                 return True
-            
+
             # Check for a high ratio of HTML-like content
             total_length = len(content)
             html_like_content = re.findall(r"<[^>]+>", content)
             html_ratio = sum(len(tag) for tag in html_like_content) / total_length
             if html_ratio > 0.1:  # If more than 10% of content looks like HTML tags
                 return True
-        
+
         return False
 
     def scrape_with_playwright(self, url: str) -> Tuple[Optional[str], Optional[str]]:
@@ -850,20 +956,24 @@ class Scraper:
                         return None, None
 
                     try:
-                        context = browser.new_context(ignore_https_errors=not self.verify_ssl)
+                        context = browser.new_context(
+                            ignore_https_errors=not self.verify_ssl
+                        )
                         page = context.new_page()
 
                         user_agent = page.evaluate("navigator.userAgent")
                         user_agent = user_agent.replace("Headless", "")
                         user_agent = user_agent.replace("headless", "")
-                        #user_agent += " " + custom_user_agent
+                        # user_agent += " " + custom_user_agent
 
                         page.set_extra_http_headers({"User-Agent": user_agent})
 
                         response = None
                         try:
                             spinner.update_text(f"Loading {url}")
-                            response = page.goto(url, wait_until="networkidle", timeout=5000)
+                            response = page.goto(
+                                url, wait_until="networkidle", timeout=5000
+                            )
                         except PlaywrightTimeoutError:
                             self.print_error(f"Timeout while loading {url}")
                         except PlaywrightError as e:
@@ -897,7 +1007,18 @@ class Scraper:
         except OSError as err:
             print(f"Unable to write file {filename}: {err}")
 
-def slimdown_html(page_source: str) -> Tuple[str, Optional[str], List[str], List[str], List[str], List[str], List[Tuple[str, str]]]:
+
+def slimdown_html(
+    page_source: str,
+) -> Tuple[
+    str,
+    Optional[str],
+    List[str],
+    List[str],
+    List[str],
+    List[str],
+    List[Tuple[str, str]],
+]:
 
     # Clean the HTML content from navigation elements and ads
     cleaned_html = clean_html(page_source)
@@ -911,8 +1032,8 @@ def slimdown_html(page_source: str) -> Tuple[str, Optional[str], List[str], List
     # Extract and remove images
     images = []
     for img in soup.find_all("img"):
-        if 'src' in img.attrs:
-            images.append(img['src'])
+        if "src" in img.attrs:
+            images.append(img["src"])
         img.decompose()
 
     # Remove data URIs
@@ -922,50 +1043,53 @@ def slimdown_html(page_source: str) -> Tuple[str, Optional[str], List[str], List
         tag.decompose()
 
     # Remove script and style tags
-    for tag in soup.find_all(['script', 'style']):
+    for tag in soup.find_all(["script", "style"]):
         tag.decompose()
 
     # Extract code examples
     code_examples = []
-    for code in soup.find_all('pre'):
+    for code in soup.find_all("pre"):
         code_examples.append(code.get_text())
-        code['class'] = code.get('class', []) + ['extracted-code']
+        code["class"] = code.get("class", []) + ["extracted-code"]
 
     # Extract method signatures
     method_signatures = []
-    for method in soup.find_all('div', class_='method-signature'):
+    for method in soup.find_all("div", class_="method-signature"):
         method_signatures.append(method.get_text())
-        method['class'] = method.get('class', []) + ['extracted-method']
+        method["class"] = method.get("class", []) + ["extracted-method"]
 
     # Extract class definitions
     class_definitions = []
-    for class_def in soup.find_all('div', class_='class-definition'):
+    for class_def in soup.find_all("div", class_="class-definition"):
         class_definitions.append(class_def.get_text())
-        class_def['class'] = class_def.get('class', []) + ['extracted-class']
+        class_def["class"] = class_def.get("class", []) + ["extracted-class"]
 
     # Extract links
     links = []
-    for a in soup.find_all('a', href=True):
-        links.append((a['href'], a.get_text()))
+    for a in soup.find_all("a", href=True):
+        links.append((a["href"], a.get_text()))
 
     # Remove all attributes except href and class
     for tag in soup.find_all(True):
         for attr in list(tag.attrs):
-            if attr not in ['href', 'class']:
+            if attr not in ["href", "class"]:
                 tag.attrs.pop(attr, None)
-    
+
     # Remove empty tags
     for tag in soup.find_all():
-        if len(tag.get_text(strip=True)) == 0 and tag.name not in ['br', 'hr']:
+        if len(tag.get_text(strip=True)) == 0 and tag.name not in ["br", "hr"]:
             tag.decompose()
 
-    return (str(soup), 
-            soup.title.string if soup.title else "scraped_page",
-            code_examples,
-            method_signatures,
-            class_definitions,
-            images,
-            links)
+    return (
+        str(soup),
+        soup.title.string if soup.title else "scraped_page",
+        code_examples,
+        method_signatures,
+        class_definitions,
+        images,
+        links,
+    )
+
 
 def start_scraping(url: str) -> Optional[str]:
     url = url.strip()
@@ -974,15 +1098,13 @@ def start_scraping(url: str) -> Optional[str]:
         return None
 
     print(f"Scraping {url}...")
-    
+
     res = install_playwright()
     if not res:
         print("Unable to initialize playwright.")
         return None
 
-    scraper = Scraper(
-        playwright_available=res, verify_ssl=False
-    )
+    scraper = Scraper(playwright_available=res, verify_ssl=False)
 
     try:
         content, mime_type = scraper.scrape(url)
@@ -997,9 +1119,11 @@ def start_scraping(url: str) -> Optional[str]:
         print(f"Error during scraping: {str(e)}")
         return None
 
+
 # ============================
 # Sitemap Processing from DSL
 # ============================
+
 
 def extract_urls_from_sitemap(
     sitemap_file: Optional[str] = None,
@@ -1015,7 +1139,9 @@ def extract_urls_from_sitemap(
     def process_pattern_list(pattern_str: Optional[str]) -> Optional[List[str]]:
         if not pattern_str:
             return None
-        return [pattern.strip() for pattern in pattern_str.split(",") if pattern.strip()]
+        return [
+            pattern.strip() for pattern in pattern_str.split(",") if pattern.strip()
+        ]
 
     whitelist_patterns = process_pattern_list(whitelist_str)
     blacklist_patterns = process_pattern_list(blacklist_str)
@@ -1057,11 +1183,15 @@ def extract_urls_from_sitemap(
 
             # Apply whitelist
             if whitelist_patterns:
-                include_url = any(fnmatch.fnmatch(url, pattern) for pattern in whitelist_patterns)
+                include_url = any(
+                    fnmatch.fnmatch(url, pattern) for pattern in whitelist_patterns
+                )
 
             # Apply blacklist
             if include_url and blacklist_patterns:
-                include_url = not any(fnmatch.fnmatch(url, pattern) for pattern in blacklist_patterns)
+                include_url = not any(
+                    fnmatch.fnmatch(url, pattern) for pattern in blacklist_patterns
+                )
 
             if include_url:
                 urls.append(url)
@@ -1069,76 +1199,90 @@ def extract_urls_from_sitemap(
     logger.info(f"Extracted {len(urls)} URLs from sitemap.")
     return urls
 
+
 # ============================
 # LLM Processing using OpenAI
 # ============================
+
 
 # Load model pricing info with retry
 @retry(stop=stop_after_attempt(10), wait=wait_exponential(multiplier=1, min=4, max=30))
 def load_model_pricing() -> Optional[Dict[str, Any]]:
     """Attempt to extract JSON from a string."""
     pricing_urls = [
-        'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json',
-        'https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json',
-        'https://raw.fastgit.org/BerriAI/litellm/main/model_prices_and_context_window.json'
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+        "https://cdn.jsdelivr.net/gh/BerriAI/litellm@main/model_prices_and_context_window.json",
+        "https://raw.fastgit.org/BerriAI/litellm/main/model_prices_and_context_window.json",
     ]
     for pricing_url in pricing_urls:
         try:
             response = requests.get(pricing_url, timeout=10)
             response.raise_for_status()
-            logger.info(f"Successfully fetched model pricing information from {pricing_url}")
+            logger.info(
+                f"Successfully fetched model pricing information from {pricing_url}"
+            )
             return cast(Dict[str, Any], response.json())
         except requests.RequestException as e:
-            logger.warning(f"Error fetching model pricing information from {pricing_url}: {e}")
-    raise RuntimeError("Failed to fetch model pricing information from all available mirrors.")
-
+            logger.warning(
+                f"Error fetching model pricing information from {pricing_url}: {e}"
+            )
+    raise RuntimeError(
+        "Failed to fetch model pricing information from all available mirrors."
+    )
 
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RequestException, TimeoutError))
+    retry=retry_if_exception_type((RequestException, TimeoutError)),
 )
-def make_openai_request(api_key: str, prompt: str, pricing_info: Dict[str, Dict[str, float]], model: str="gpt-4o-mini") -> Dict[str, Any]:
+def make_openai_request(
+    api_key: str,
+    prompt: str,
+    pricing_info: Dict[str, Dict[str, float]],
+    model: str = "gpt-4o-mini",
+) -> Dict[str, Any]:
     global total_cost
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     url = "https://api.openai.com/v1/chat/completions"
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are an assistant that converts HTML to XML."},
-            {"role": "user", "content": prompt}
+            {
+                "role": "system",
+                "content": "You are an assistant that converts HTML to XML.",
+            },
+            {"role": "user", "content": prompt},
         ],
-        "temperature": 0
+        "temperature": 0,
     }
 
     try:
-        response = requests.post(url, headers=headers, json=data, timeout=600)  # Increased timeout to 600 seconds
+        response = requests.post(
+            url, headers=headers, json=data, timeout=600
+        )  # Increased timeout to 600 seconds
         response.raise_for_status()
         response_json = response.json()
-        
+
         # Compute cost
-        usage = response_json.get('usage', {})
-        prompt_tokens = usage.get('prompt_tokens', 0)
-        completion_tokens = usage.get('completion_tokens', 0)
-        
+        usage = response_json.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
         model_pricing = pricing_info.get(model, {})
-        input_cost = prompt_tokens * model_pricing.get('input_cost_per_token', 0)
-        output_cost = completion_tokens * model_pricing.get('output_cost_per_token', 0)
+        input_cost = prompt_tokens * model_pricing.get("input_cost_per_token", 0)
+        output_cost = completion_tokens * model_pricing.get("output_cost_per_token", 0)
         request_cost = input_cost + output_cost
-        
+
         with cost_lock:
             total_cost += request_cost
-        
+
         logger.info(f"OpenAI API request successful. Cost: ${request_cost:.6f}")
         logger.info(f"Total cost so far: ${total_cost:.6f}")
-        
-        response_json['request_cost'] = request_cost
-        response_json['finish_reason'] = response_json['choices'][0]['finish_reason']
-        
+
+        response_json["request_cost"] = request_cost
+        response_json["finish_reason"] = response_json["choices"][0]["finish_reason"]
+
         return cast(Dict[str, Any], response_json)
     except RequestException as e:
         logger.error(f"OpenAI API request failed: {e}")
@@ -1147,17 +1291,25 @@ def make_openai_request(api_key: str, prompt: str, pricing_info: Dict[str, Dict[
         logger.error(f"OpenAI API request timed out: {e}")
         raise
 
-def call_openai_api(prompt: str, pricing_info: Dict[str, Dict[str, float]]) -> Tuple[str, float]:
+
+def call_openai_api(
+    prompt: str, pricing_info: Dict[str, Dict[str, float]]
+) -> Tuple[str, float]:
     """
     Makes a request to the OpenAI API using the requests library.
     """
     api_key = get_openai_api_key()
     response_json = make_openai_request(api_key, prompt, pricing_info=pricing_info)
-    content = str(response_json['choices'][0]['message']['content']).strip()
-    request_cost = response_json.get('request_cost', 0)
+    content = str(response_json["choices"][0]["message"]["content"]).strip()
+    request_cost = response_json.get("request_cost", 0)
     return content, request_cost
 
-def call_llm_to_convert_html_to_xml(html_content: str, additional_content: Dict[str, List[str]], pricing_info: Dict[str, Dict[str, float]]) -> Tuple[Optional[str], float]:
+
+def call_llm_to_convert_html_to_xml(
+    html_content: str,
+    additional_content: Dict[str, List[str]],
+    pricing_info: Dict[str, Dict[str, float]],
+) -> Tuple[Optional[str], float]:
     """
     Uses OpenAI's API to convert HTML content to structured XML.
     """
@@ -1196,7 +1348,9 @@ Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be su
             xml_output = extract_xml_from_input(xml_output)
             return xml_output, request_cost
         except Exception as e:
-            logger.error(f"LLM processing failed (attempt {attempt + 1}/{max_retries}): {e}")
+            logger.error(
+                f"LLM processing failed (attempt {attempt + 1}/{max_retries}): {e}"
+            )
             if attempt == max_retries - 1:
                 logger.error("All attempts to process with LLM failed. Returning None.")
                 return None, 0.0
@@ -1208,12 +1362,15 @@ Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be su
 # Web Scraper Replacement
 # ============================
 
+
 def web_scraper(url: str) -> Optional[str]:
     try:
         content = start_scraping(url)
         if content:
             content_size = len(content) / 1024  # Convert to KB
-            logger.info(f"Scraping successful for {url}. {content_size:.2f} KB scraped.")
+            logger.info(
+                f"Scraping successful for {url}. {content_size:.2f} KB scraped."
+            )
             return content
         else:
             logger.error(f"No content retrieved from {url}")
@@ -1221,6 +1378,7 @@ def web_scraper(url: str) -> Optional[str]:
     except Exception as e:
         logger.error(f"Error scraping {url}: {str(e)}", exc_info=True)
         return None
+
 
 # ============================
 # Main Workflow Functions
@@ -1230,6 +1388,7 @@ def web_scraper(url: str) -> Optional[str]:
 # Sitemap Processing Functions
 # ============================
 
+
 def fetch_sitemap(urls: List[str]) -> Optional[str]:
     """
     Fetches the sitemap.xml from the base domain of the given URLs using HTTP requests.
@@ -1237,7 +1396,7 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
     for url in urls:
         parsed_url = urlparse(url)
         base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
-        sitemap_url = base_url.rstrip('/') + '/sitemap.xml'
+        sitemap_url = base_url.rstrip("/") + "/sitemap.xml"
         logger.info(f"Fetching sitemap from {sitemap_url}")
         try:
             with Spinner("Fetching sitemap...") as spinner:
@@ -1250,53 +1409,67 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
     logger.error("Failed to fetch sitemap.xml from all provided URLs")
     return None
 
+
 # ============================
 # Main Workflow Functions
 # ============================
 
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]]) -> Optional[str]:
+def process_single_page(
+    url: str, pricing_info: Dict[str, Dict[str, float]]
+) -> Optional[str]:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
     """
     logger.info("Processing single page.")
-    
+
     html_content: Optional[str] = None
     xml_content: Optional[str] = None
-    
+
     def process_in_background() -> None:
         nonlocal html_content, xml_content
         html_content = web_scraper(url)
         if not html_content:
             logger.error("Failed to retrieve HTML content for single page processing.")
             return
-        
-        slimmed_html, page_title, code_examples, method_signatures, class_definitions, images, links = slimdown_html(html_content)
-        
+
+        (
+            slimmed_html,
+            page_title,
+            code_examples,
+            method_signatures,
+            class_definitions,
+            images,
+            links,
+        ) = slimdown_html(html_content)
+
         # Prepare additional content for LLM
         additional_content: Dict[str, List[str]] = {
             "code_examples": code_examples,
             "method_signatures": method_signatures,
             "class_definitions": class_definitions,
             "images": images,
-            "links": [f"{href}: {text}" for href, text in links]
+            "links": [f"{href}: {text}" for href, text in links],
         }
-        
-        result = call_llm_to_convert_html_to_xml(slimmed_html, additional_content, pricing_info)
+
+        result = call_llm_to_convert_html_to_xml(
+            slimmed_html, additional_content, pricing_info
+        )
         if result is None:
             logger.error("Failed to convert HTML to XML.")
             return None
         xml_content, _ = result
-        
+
         if xml_content:
             # Include source URL in XML content
-            xml_content = f'<SOURCE_URL>{url}</SOURCE_URL>\n' + xml_content
-            
+            xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
+
             # Save individual XML file
             xml_file = temp_folder / "processed_single_page.xml"
-            with open(xml_file, 'w', encoding='utf-8') as f:
+            with open(xml_file, "w", encoding="utf-8") as f:
                 f.write(xml_content)
-    
+
     with Spinner("Processing page...") as spinner:
         thread = threading.Thread(target=process_in_background)
         thread.start()
@@ -1308,15 +1481,22 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]]) -> 
     if xml_content is not None:
         merged_xml = merge_xmls(temp_folder)
         merged_xml_file = temp_folder / "merged_output.xml"
-        with open(merged_xml_file, 'w', encoding='utf-8') as f:
+        with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
     else:
         logger.error("Failed to convert HTML to XML. No XML content generated.")
     return xml_content
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10), retry=retry_if_exception_type(RequestException))
-def process_url(url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]) -> Optional[str]:
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(RequestException),
+)
+def process_url(
+    url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
+) -> Optional[str]:
     global progress_tracker
     """
     Process a single URL: scrape, convert to XML, and save temp files.
@@ -1340,16 +1520,19 @@ def process_url(url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str
         html_content = web_scraper(url)
         if not html_content:
             logger.warning(f"Failed to retrieve HTML content for {url}")
-            progress_tracker[url] = {"status": "failed", "cost": progress_tracker[url].get("cost", 0.0)}
+            progress_tracker[url] = {
+                "status": "failed",
+                "cost": progress_tracker[url].get("cost", 0.0),
+            }
             with cost_lock:
                 update_progress_file()
             return None
-        
+
         logger.info(f"Saving HTML content for URL: {url}")
         html_file = temp_folder / f"scraped_{idx}.html"
-        with open(html_file, 'w', encoding='utf-8') as f:
+        with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_content)
-        
+
         if shutdown_flag:
             logger.info(f"Shutdown requested. Skipping LLM processing for URL {url}")
             progress_tracker[url]["status"] = "pending"
@@ -1358,94 +1541,139 @@ def process_url(url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str
 
         logger.info(f"Converting HTML to XML for URL: {url}")
         additional_content: Dict[str, List[str]] = {}
-        result = call_llm_to_convert_html_to_xml(html_content, additional_content, pricing_info)
+        result = call_llm_to_convert_html_to_xml(
+            html_content, additional_content, pricing_info
+        )
         if result is None:
             logger.warning(f"Failed to convert HTML to XML for {url}")
-            progress_tracker[url] = {"status": "failed", "cost": progress_tracker[url].get("cost", 0.0)}
+            progress_tracker[url] = {
+                "status": "failed",
+                "cost": progress_tracker[url].get("cost", 0.0),
+            }
             update_progress_file()
             return None
-        
+
         xml_content, request_cost = result
-        
+
         with cost_lock:
-            progress_tracker[url] = {"status": progress_tracker[url].get("status", "pending"), "cost": float(progress_tracker[url].get("cost", 0.0)) + request_cost}
-        
+            progress_tracker[url] = {
+                "status": progress_tracker[url].get("status", "pending"),
+                "cost": float(progress_tracker[url].get("cost", 0.0)) + request_cost,
+            }
+
         # Include source URL in XML content
         if xml_content is not None:
-            xml_content = xml_content.replace('<?xml version="1.0" encoding="UTF-8"?>\n<XML>', f'<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n<SOURCE_URL>{url}</SOURCE_URL>')
+            xml_content = xml_content.replace(
+                '<?xml version="1.0" encoding="UTF-8"?>\n<XML>',
+                f'<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n<SOURCE_URL>{url}</SOURCE_URL>',
+            )
             logger.info(f"Saving XML content for URL: {url}")
             xml_file = temp_folder / f"processed_{idx}.xml"
-            with open(xml_file, 'w', encoding='utf-8') as f:
+            with open(xml_file, "w", encoding="utf-8") as f:
                 f.write(xml_content)
         else:
             logger.warning(f"No XML content generated for URL: {url}")
-            progress_tracker[url] = {"status": "failed", "cost": progress_tracker[url].get("cost", 0.0)}
+            progress_tracker[url] = {
+                "status": "failed",
+                "cost": progress_tracker[url].get("cost", 0.0),
+            }
             update_progress_file()
             return None
-        
+
         if xml_content:
             logger.info(f"Saving XML content for URL: {url}")
             xml_file = temp_folder / f"processed_{idx}.xml"
-            with open(xml_file, 'w', encoding='utf-8') as f:
+            with open(xml_file, "w", encoding="utf-8") as f:
                 f.write(xml_content)
         else:
             logger.warning(f"No XML content to save for URL: {url}")
-        
+
         logger.info(f"Successfully processed URL {idx}/{total}: {url}")
         is_valid_xml = validate_xml(xml_content)
-        progress_tracker[url] = {"status": "successful", "cost": progress_tracker[url].get("cost", 0.0), "valid_xml": is_valid_xml}
+        progress_tracker[url] = {
+            "status": "successful",
+            "cost": progress_tracker[url].get("cost", 0.0),
+            "valid_xml": is_valid_xml,
+        }
         update_progress_file()
         return xml_content
     except RequestException as e:
         error_message = f"Request error processing URL {url}: {str(e)}"
         logger.error(error_message)
-        with open(error_log_file, 'a', encoding='utf-8') as f:
+        with open(error_log_file, "a", encoding="utf-8") as f:
             f.write(f"{error_message}\n")
-        progress_tracker[url] = {"status": "failed", "cost": progress_tracker[url].get("cost", 0.0)}
+        progress_tracker[url] = {
+            "status": "failed",
+            "cost": progress_tracker[url].get("cost", 0.0),
+        }
         update_progress_file()
         return None
     except Exception as e:
         error_message = f"Error processing URL {url}: {str(e)}"
         logger.error(error_message)
-        with open(error_log_file, 'a', encoding='utf-8') as f:
+        with open(error_log_file, "a", encoding="utf-8") as f:
             f.write(f"{error_message}\n")
-        progress_tracker[url] = {"status": "failed", "cost": progress_tracker[url].get("cost", 0.0)}
+        progress_tracker[url] = {
+            "status": "failed",
+            "cost": progress_tracker[url].get("cost", 0.0),
+        }
         update_progress_file()
         return None
+
 
 def update_progress_file():
     global progress_file, temp_folder
     if progress_file:
         with cost_lock:
-            with open(progress_file, 'w') as f:
-                json.dump({
-                    "output_folder": str(temp_folder),
-                    "urls": [{"index": i, "url": url, "status": data["status"], "costs": data["cost"], "valid_xml": data.get("valid_xml")} 
-                             for i, (url, data) in enumerate(progress_tracker.items())]
-                }, f, indent=2)
+            with open(progress_file, "w") as f:
+                json.dump(
+                    {
+                        "output_folder": str(temp_folder),
+                        "urls": [
+                            {
+                                "index": i,
+                                "url": url,
+                                "status": data["status"],
+                                "costs": data["cost"],
+                                "valid_xml": data.get("valid_xml"),
+                            }
+                            for i, (url, data) in enumerate(progress_tracker.items())
+                        ],
+                    },
+                    f,
+                    indent=2,
+                )
     else:
         logger.warning("Progress file path not set. Unable to update progress.")
 
-def process_multiple_pages(urls: List[str], pricing_info: Dict[str, Dict[str, float]], num_threads: int = 5) -> Optional[str]:
+
+def process_multiple_pages(
+    urls: List[str], pricing_info: Dict[str, Dict[str, float]], num_threads: int = 5
+) -> Optional[str]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
     """
     global shutdown_flag
-    logger.info(f"Processing multiple pages: {len(urls)} URLs found using {num_threads} threads.")
+    logger.info(
+        f"Processing multiple pages: {len(urls)} URLs found using {num_threads} threads."
+    )
     xml_list = []
-    
+
     spinner = Spinner("Processing URLs")
     spinner.start()
-    
+
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            future_to_url = {executor.submit(process_url, url, idx+1, len(urls), pricing_info): url for idx, url in enumerate(urls)}
+            future_to_url = {
+                executor.submit(process_url, url, idx + 1, len(urls), pricing_info): url
+                for idx, url in enumerate(urls)
+            }
             for future in concurrent.futures.as_completed(future_to_url):
                 if shutdown_flag:
                     logger.info("Shutdown requested. Cancelling remaining tasks.")
                     executor.shutdown(wait=False)
                     break
-                
+
                 url = future_to_url[future]
                 try:
                     xml_content = future.result()
@@ -1456,28 +1684,28 @@ def process_multiple_pages(urls: List[str], pricing_info: Dict[str, Dict[str, fl
                     logger.error(f"Unhandled exception for URL {url}: {str(e)}")
     finally:
         spinner.end()
-    
+
     if shutdown_flag:
         logger.info("Shutdown initiated. Saving partial results.")
-    
+
     logger.info("Merging XML content from all processed pages")
     merged_xml = merge_xmls(temp_folder)
-    
+
     if not merged_xml or merged_xml == "<TEXTUAL_API />":
         logger.error("No valid XML content extracted from pages.")
         return None
-    
+
     logger.info("Saving merged XML output")
     merged_xml_file = temp_folder / "merged_output.xml"
     try:
         temp_folder.mkdir(parents=True, exist_ok=True)
-        with open(merged_xml_file, 'w', encoding='utf-8') as f:
+        with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
         logger.info(f"Merged XML saved successfully to {merged_xml_file}")
     except OSError as e:
         logger.error(f"Error saving merged XML file: {e}")
         return None
-    
+
     return merged_xml
 
 
@@ -1488,35 +1716,41 @@ def read_patterns_from_file(file_path: str) -> Optional[str]:
     if not file_path:
         return None
     try:
-        with open(file_path, 'r') as f:
+        with open(file_path, "r") as f:
             patterns = [line.strip() for line in f if line.strip()]
         if not patterns:
             logger.warning(f"No valid patterns found in {file_path}")
             return None
-        return ','.join(patterns)
+        return ",".join(patterns)
     except OSError as e:
         logger.error(f"Error reading file {file_path}: {e}")
         return None
 
 
-def display_scraping_summary(result: Dict[str, Any], urls: List[str], temp_folder: Path, error_log_file: Path) -> None:
+def display_scraping_summary(
+    result: Dict[str, Any], urls: List[str], temp_folder: Path, error_log_file: Path
+) -> None:
     summary_data = {
         "Base URL": urls[0] if urls else "N/A",
         "Sitemap.xml URL": f"{urls[0].rstrip('/')}/sitemap.xml" if urls else "N/A",
         "Number of URLs before filtering": str(result.get("total_urls", "N/A")),
         "Number of URLs after filtering": str(result.get("filtered_urls", "N/A")),
         "Number of Scraped URLs": str(result.get("scraped_urls", "N/A")),
-        "Number of Successfully Processed URLs": str(result.get("successful_urls", "N/A")),
+        "Number of Successfully Processed URLs": str(
+            result.get("successful_urls", "N/A")
+        ),
         "Number of URLs failed to scrape": str(result.get("failed_urls", "N/A")),
-        "Total number of XML files generated": str(result.get("total_xml_files", "N/A")),
+        "Total number of XML files generated": str(
+            result.get("total_xml_files", "N/A")
+        ),
         "Valid XML files generated": str(result.get("valid_xml_files", "N/A")),
         "Invalid XML files generated": str(result.get("invalid_xml_files", "N/A")),
         "Total costs of the scraping job": f"${result['total_cost']:.6f}",
         "Temporary folder path": str(temp_folder),
         "Error log file path": str(error_log_file),
-        "Merged XML file path": str(temp_folder / 'merged_output.xml')
+        "Merged XML file path": str(temp_folder / "merged_output.xml"),
     }
-    
+
     summary_box = create_summary_box(summary_data)
 
     if result["result"] == "already_completed":
@@ -1536,14 +1770,13 @@ def display_scraping_summary(result: Dict[str, Any], urls: List[str], temp_folde
         print(ERROR_SEPARATOR)
 
 
-
 def main_workflow(
     urls: List[str],
     mode: str = "single",
     whitelist: Optional[str] = None,
     blacklist: Optional[str] = None,
     num_threads: int = 5,
-    resume_file: Optional[str] = None
+    resume_file: Optional[str] = None,
 ) -> Dict[str, Union[Optional[str], float, int]]:
     global progress_tracker, total_cost
     """
@@ -1564,7 +1797,7 @@ def main_workflow(
         "failed_urls": 0,
         "total_xml_files": 0,
         "valid_xml_files": 0,
-        "invalid_xml_files": 0
+        "invalid_xml_files": 0,
     }
 
     try:
@@ -1582,58 +1815,87 @@ def main_workflow(
         if resume_file:
             resume_file = os.path.abspath(resume_file)
             if os.path.exists(resume_file):
-                with open(resume_file, 'r') as f:
+                with open(resume_file, "r") as f:
                     resume_data = json.load(f)
                 temp_folder = Path(resume_data.get("output_folder", temp_folder))
-                progress_tracker = {url_data["url"]: {"status": url_data["status"], "cost": float(url_data["costs"]), "valid_xml": url_data.get("valid_xml")} 
-                                    for url_data in resume_data["urls"]}
+                progress_tracker = {
+                    url_data["url"]: {
+                        "status": url_data["status"],
+                        "cost": float(url_data["costs"]),
+                        "valid_xml": url_data.get("valid_xml"),
+                    }
+                    for url_data in resume_data["urls"]
+                }
                 progress_file = resume_file
                 urls = [url_data["url"] for url_data in resume_data["urls"]]
-                
+
                 # Check if all URLs are already processed successfully
-                successful_urls = sum(1 for url_data in progress_tracker.values() if url_data.get("status") == "successful")
+                successful_urls = sum(
+                    1
+                    for url_data in progress_tracker.values()
+                    if url_data.get("status") == "successful"
+                )
                 total_urls = len(urls)
-                total_cost = sum(float(url_data.get("cost", 0.0)) for url_data in progress_tracker.values())
-                
+                total_cost = sum(
+                    float(url_data.get("cost", 0.0))
+                    for url_data in progress_tracker.values()
+                )
+
                 if successful_urls == total_urls:
-                    logger.info(f"Scraping process already completed successfully ({successful_urls}/{total_urls}). Total costs: ${total_cost:.6f}")
-                    result.update({
-                        "result": "already_completed",
-                        "total_cost": total_cost,
-                        "total_urls": total_urls,
-                        "filtered_urls": total_urls,
-                        "scraped_urls": successful_urls,
-                        "successful_urls": successful_urls,
-                        "failed_urls": 0,
-                        "total_xml_files": successful_urls,
-                        "valid_xml_files": successful_urls,
-                        "invalid_xml_files": 0
-                    })
-                    result["result"] = cast(Optional[str], result["result"])
-                    return result
-                elif successful_urls > 0:
-                    logger.info(f"Scraping process partially completed. ({successful_urls} successful, {total_urls - successful_urls} failed). Total costs so far: ${total_cost:.6f}")
-                    user_input = input("Do you want to attempt the failed URLs again? (y/n): ").lower()
-                    if user_input != 'y':
-                        logger.info("Exiting without processing failed URLs.")
-                        result.update({
+                    logger.info(
+                        f"Scraping process already completed successfully ({successful_urls}/{total_urls}). Total costs: ${total_cost:.6f}"
+                    )
+                    result.update(
+                        {
+                            "result": "already_completed",
                             "total_cost": total_cost,
                             "total_urls": total_urls,
                             "filtered_urls": total_urls,
                             "scraped_urls": successful_urls,
                             "successful_urls": successful_urls,
-                            "failed_urls": total_urls - successful_urls,
+                            "failed_urls": 0,
                             "total_xml_files": successful_urls,
                             "valid_xml_files": successful_urls,
-                            "invalid_xml_files": 0
-                        })
+                            "invalid_xml_files": 0,
+                        }
+                    )
+                    result["result"] = cast(Optional[str], result["result"])
+                    return result
+                elif successful_urls > 0:
+                    logger.info(
+                        f"Scraping process partially completed. ({successful_urls} successful, {total_urls - successful_urls} failed). Total costs so far: ${total_cost:.6f}"
+                    )
+                    user_input = input(
+                        "Do you want to attempt the failed URLs again? (y/n): "
+                    ).lower()
+                    if user_input != "y":
+                        logger.info("Exiting without processing failed URLs.")
+                        result.update(
+                            {
+                                "total_cost": total_cost,
+                                "total_urls": total_urls,
+                                "filtered_urls": total_urls,
+                                "scraped_urls": successful_urls,
+                                "successful_urls": successful_urls,
+                                "failed_urls": total_urls - successful_urls,
+                                "total_xml_files": successful_urls,
+                                "valid_xml_files": successful_urls,
+                                "invalid_xml_files": 0,
+                            }
+                        )
                         return result
-                    urls = [url for url, data in progress_tracker.items() if data.get("status") != "successful"]
+                    urls = [
+                        url
+                        for url, data in progress_tracker.items()
+                        if data.get("status") != "successful"
+                    ]
                     logger.info(f"Resuming scraping for {len(urls)} failed URLs")
                 else:
                     logger.info(f"Resuming scraping for {len(urls)} URLs")
             else:
-                logger.info(f"Resume file {resume_file} does not exist. Creating a new one.")
+                logger.info(
+                    f"Resume file {resume_file} does not exist. Creating a new one."
+                )
                 progress_tracker = {}
                 progress_file = resume_file
         else:
@@ -1650,7 +1912,7 @@ def main_workflow(
 
         # Create an empty error log file at the start of the workflow
         error_log_file = temp_folder / "error_log.txt"
-        with open(error_log_file, 'w', encoding='utf-8') as f:
+        with open(error_log_file, "w", encoding="utf-8") as f:
             pass
 
         # Process whitelist and blacklist inputs
@@ -1674,7 +1936,7 @@ def main_workflow(
                 sitemap_content=sitemap_content,
                 sitemap_file=None,
                 whitelist_str=whitelist_str,
-                blacklist_str=blacklist_str
+                blacklist_str=blacklist_str,
             )
             if extracted_urls:
                 result["total_urls"] = len(extracted_urls)
@@ -1705,54 +1967,68 @@ def main_workflow(
             xml_result = process_single_page(urls[0], pricing_info)
             if xml_result:
                 is_valid = validate_xml(xml_result)
-                print(f"The XML file was successfully generated and it is {'valid' if is_valid else 'non valid'} XML")
-                result.update({
-                    "result": xml_result,
-                    "scraped_urls": 1,
-                    "successful_urls": 1,
-                    "failed_urls": 0,
-                    "total_xml_files": 1,
-                    "valid_xml_files": 1 if is_valid else 0,
-                    "invalid_xml_files": 0 if is_valid else 1
-                })
+                print(
+                    f"The XML file was successfully generated and it is {'valid' if is_valid else 'non valid'} XML"
+                )
+                result.update(
+                    {
+                        "result": xml_result,
+                        "scraped_urls": 1,
+                        "successful_urls": 1,
+                        "failed_urls": 0,
+                        "total_xml_files": 1,
+                        "valid_xml_files": 1 if is_valid else 0,
+                        "invalid_xml_files": 0 if is_valid else 1,
+                    }
+                )
                 result["result"] = cast(Optional[str], result["result"])
             else:
-                result.update({
-                    "scraped_urls": 1,
-                    "successful_urls": 0,
-                    "failed_urls": 1,
-                    "total_xml_files": 0,
-                    "valid_xml_files": 0,
-                    "invalid_xml_files": 0
-                })
+                result.update(
+                    {
+                        "scraped_urls": 1,
+                        "successful_urls": 0,
+                        "failed_urls": 1,
+                        "total_xml_files": 0,
+                        "valid_xml_files": 0,
+                        "invalid_xml_files": 0,
+                    }
+                )
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
             xml_result = process_multiple_pages(urls, pricing_info, num_threads)
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
-                print(f"Successfully generated {total_count} XML files ({valid_count} are valid XML, {total_count - valid_count} are non valid XML).")
-                result.update({
-                    "result": xml_result,
-                    "scraped_urls": len(urls),
-                    "successful_urls": total_count,
-                    "failed_urls": len(urls) - total_count,
-                    "total_xml_files": total_count,
-                    "valid_xml_files": valid_count,
-                    "invalid_xml_files": total_count - valid_count
-                })
+                print(
+                    f"Successfully generated {total_count} XML files ({valid_count} are valid XML, {total_count - valid_count} are non valid XML)."
+                )
+                result.update(
+                    {
+                        "result": xml_result,
+                        "scraped_urls": len(urls),
+                        "successful_urls": total_count,
+                        "failed_urls": len(urls) - total_count,
+                        "total_xml_files": total_count,
+                        "valid_xml_files": valid_count,
+                        "invalid_xml_files": total_count - valid_count,
+                    }
+                )
                 result["result"] = cast(Optional[str], result["result"])
             elif xml_result:
-                logger.warning("Temporary folder not found. Unable to count valid XML files.")
+                logger.warning(
+                    "Temporary folder not found. Unable to count valid XML files."
+                )
                 result["result"] = cast(Optional[str], xml_result)
             else:
-                result.update({
-                    "scraped_urls": len(urls),
-                    "successful_urls": 0,
-                    "failed_urls": len(urls),
-                    "total_xml_files": 0,
-                    "valid_xml_files": 0,
-                    "invalid_xml_files": 0
-                })
+                result.update(
+                    {
+                        "scraped_urls": len(urls),
+                        "successful_urls": 0,
+                        "failed_urls": len(urls),
+                        "total_xml_files": 0,
+                        "valid_xml_files": 0,
+                        "invalid_xml_files": 0,
+                    }
+                )
         else:
             logger.error(f"Invalid mode specified: {mode}. Choose 'single' or 'batch'.")
 
@@ -1778,6 +2054,7 @@ def main_workflow(
         result["total_cost"] = total_cost
         return result
 
+
 def start_resume_mode(json_file_path: str) -> None:
     # Check if the resume file exists
     if not os.path.exists(json_file_path):
@@ -1786,33 +2063,40 @@ def start_resume_mode(json_file_path: str) -> None:
 
     # Load progress from the resume file
     try:
-        with open(json_file_path, 'r') as f:
+        with open(json_file_path, "r") as f:
             progress_data = json.load(f)
         urls = [url_data["url"] for url_data in progress_data.get("urls", [])]
         if not urls:
             print(f"Error: No valid URLs found in the resume file {json_file_path}")
             sys.exit(1)
-        
+
         # Update global variables with saved data
         global temp_folder, total_cost, progress_tracker
         temp_folder = Path(progress_data.get("output_folder", temp_folder))
-        total_cost = sum(float(url_data.get("costs", 0.0)) for url_data in progress_data["urls"])
+        total_cost = sum(
+            float(url_data.get("costs", 0.0)) for url_data in progress_data["urls"]
+        )
         progress_tracker = {
             url_data["url"]: {
                 "status": url_data["status"],
                 "cost": float(url_data["costs"]),
-                "valid_xml": url_data.get("valid_xml", False)
-            } for url_data in progress_data["urls"]
+                "valid_xml": url_data.get("valid_xml", False),
+            }
+            for url_data in progress_data["urls"]
         }
-        
+
     except json.JSONDecodeError:
         print(f"Error: The resume file {json_file_path} is not a valid JSON file.")
         sys.exit(1)
     except KeyError:
-        print(f"Error: The resume file {json_file_path} does not have the expected structure.")
+        print(
+            f"Error: The resume file {json_file_path} does not have the expected structure."
+        )
         sys.exit(1)
     except Exception as e:
-        print(f"Error: An unexpected error occurred while reading the resume file: {str(e)}")
+        print(
+            f"Error: An unexpected error occurred while reading the resume file: {str(e)}"
+        )
         sys.exit(1)
 
     result = main_workflow(
@@ -1821,26 +2105,25 @@ def start_resume_mode(json_file_path: str) -> None:
         whitelist=None,
         blacklist=None,
         num_threads=5,
-        resume_file=json_file_path
+        resume_file=json_file_path,
     )
 
     display_scraping_summary(result, urls, temp_folder, error_log_file)
 
 
 def start_single_scrape(url: str) -> None:
-    result = main_workflow(
-        urls=[url],
-        mode="single",
-        num_threads=1
-    )
+    result = main_workflow(urls=[url], mode="single", num_threads=1)
     display_scraping_summary(result, [url], temp_folder, error_log_file)
+
 
 def create_summary_box(summary_data: Dict[str, str]) -> str:
     terminal_width = shutil.get_terminal_size().columns
     max_label_length = max(len(label) for label in summary_data.keys())
     max_value_length = max(len(str(value)) for value in summary_data.values())
-    
-    box_width = min(terminal_width - 3, max(max_label_length + max_value_length + 5, 50))
+
+    box_width = min(
+        terminal_width - 3, max(max_label_length + max_value_length + 5, 50)
+    )
     content_width = box_width - 2
 
     def create_line(left: str, middle: str, right: str, fill: str = "─") -> str:
@@ -1855,14 +2138,15 @@ def create_summary_box(summary_data: Dict[str, str]) -> str:
     box = [
         create_line("┌", "┬", "┐"),
         f"│{'Scraping Job Summary'.center(box_width - 2)}│",
-        create_line("├", "┼", "┤")
+        create_line("├", "┼", "┤"),
     ]
 
     for label, value in summary_data.items():
-        box.extend(format_item(label, str(value)).split('\n'))
+        box.extend(format_item(label, str(value)).split("\n"))
 
     box.append(create_line("└", "┴", "┘"))
-    return '\n'.join(box)
+    return "\n".join(box)
+
 
 def start_batch_scrape(url: str, whitelist: str, blacklist: str) -> None:
     result = main_workflow(
@@ -1870,7 +2154,7 @@ def start_batch_scrape(url: str, whitelist: str, blacklist: str) -> None:
         mode="batch",
         whitelist=whitelist,
         blacklist=blacklist,
-        num_threads=5
+        num_threads=5,
     )
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
@@ -1879,9 +2163,10 @@ def start_batch_scrape(url: str, whitelist: str, blacklist: str) -> None:
 # Command-Line Interface
 # ============================
 
+
 class APIDocument:
     """Class representing a parsed API document."""
-    
+
     def __init__(self, content: str) -> None:
         """Initialize APIDocument with raw content."""
         self.content = content
@@ -1889,93 +2174,133 @@ class APIDocument:
         self.methods = []
         self.descriptions = []
         self._parse()
-    
+
     def _parse(self) -> None:
         """Parse the raw content into structured data."""
-        lines = self.content.split('\n')
+        lines = self.content.split("\n")
         for line in lines:
             line = line.strip()
-            if '/api/' in line:
+            if "/api/" in line:
                 self.endpoints.append(line)
-            if any(method in line.upper() for method in ['GET', 'POST', 'PUT', 'DELETE']):
+            if any(
+                method in line.upper() for method in ["GET", "POST", "PUT", "DELETE"]
+            ):
                 self.methods.append(line)
-            if line and not line.startswith('#'):
+            if line and not line.startswith("#"):
                 self.descriptions.append(line)
-    
+
     def to_markdown(self) -> str:
         """Convert the document to markdown format."""
         return "\n".join(self.descriptions)
-    
+
     def to_json(self) -> Dict:
         """Convert the document to a dictionary."""
         return {
             "endpoints": self.endpoints,
             "methods": self.methods,
-            "descriptions": self.descriptions
+            "descriptions": self.descriptions,
         }
-    
+
     def save(self, path: Union[str, Path]) -> None:
         """Save the document to a file."""
         path = Path(path)
-        with open(path, 'w') as f:
+        with open(path, "w") as f:
             f.write(self.to_markdown())
-            
+
     def __str__(self) -> str:
         """Return a string representation of the document."""
-        return "\n".join(
-            self.endpoints + 
-            self.methods + 
-            self.descriptions
-        )
+        return "\n".join(self.endpoints + self.methods + self.descriptions)
+
 
 def parse_documentation(doc_content: str) -> APIDocument:
     """Parse API documentation content and extract structured information.
-    
+
     Args:
         doc_content: Raw API documentation text
-        
+
     Returns:
         APIDocument: Structured API documentation
     """
     if not isinstance(doc_content, str):
         raise TypeError("Documentation content must be a string")
-    
+
     return APIDocument(doc_content)
+
 
 def validate_config(config: dict) -> bool:
     """Validate the configuration dictionary.
-    
+
     Args:
         config: Configuration dictionary to validate
-        
+
     Returns:
         bool: True if configuration is valid, False otherwise
     """
-    required_fields = {'base_url', 'output_format'}
-    
+    required_fields = {"base_url", "output_format"}
+
     # Check if all required fields are present
     if not all(field in config for field in required_fields):
         return False
-        
+
     # Validate base_url format
-    if not isinstance(config['base_url'], str) or not config['base_url'].startswith('http'):
+    if not isinstance(config["base_url"], str) or not config["base_url"].startswith(
+        "http"
+    ):
         return False
-        
+
     # Validate output_format
-    if not isinstance(config['output_format'], str) or config['output_format'] not in ['markdown', 'html', 'xml']:
+    if not isinstance(config["output_format"], str) or config["output_format"] not in [
+        "markdown",
+        "html",
+        "xml",
+    ]:
         return False
-        
+
     return True
+
 
 def main():
     parser = argparse.ArgumentParser(description="Web API Retrieval and XML Extraction")
-    parser.add_argument("-r", "--resume", type=str, default=None, help="Path to the resume file (JSON)", required=False)
-    parser.add_argument("-u", "--url", type=str, default=None, help="Base url to scrape", required=False)
-    parser.add_argument("-w", "--whitelist", type=str, default=None, help="Path to the txt file with urls patterns to whitelist (one for each line)", required=False)
-    parser.add_argument("-b", "--blacklist", type=str, default=None, help="Path to the txt file with urls patterns to blacklist (one for each line)", required=False)
-    parser.add_argument("-m", "--mode", type=str, default='single', help="Scraping mode: single or batch (if -m=batch the script will parse the sitemap.xml file of the domain from the base url)", required=False)
-    parser.add_argument('--version', action='version', version=f'APIAS - API AUTO SCRAPER version {VERSION}')
-    
+    parser.add_argument(
+        "-r",
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to the resume file (JSON)",
+        required=False,
+    )
+    parser.add_argument(
+        "-u", "--url", type=str, default=None, help="Base url to scrape", required=False
+    )
+    parser.add_argument(
+        "-w",
+        "--whitelist",
+        type=str,
+        default=None,
+        help="Path to the txt file with urls patterns to whitelist (one for each line)",
+        required=False,
+    )
+    parser.add_argument(
+        "-b",
+        "--blacklist",
+        type=str,
+        default=None,
+        help="Path to the txt file with urls patterns to blacklist (one for each line)",
+        required=False,
+    )
+    parser.add_argument(
+        "-m",
+        "--mode",
+        type=str,
+        default="single",
+        help="Scraping mode: single or batch (if -m=batch the script will parse the sitemap.xml file of the domain from the base url)",
+        required=False,
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"APIAS - API AUTO SCRAPER version {VERSION}",
+    )
 
     args = parser.parse_args()
 
@@ -1983,25 +2308,31 @@ def main():
         print("Error: you need to specify an url or a json file.")
         sys.exit()
 
-    if args.mode == 'single' and (args.whitelist or args.blacklist):
-        print("Error: when using the single mode (default) you cannot use whitelist or blacklist.")
+    if args.mode == "single" and (args.whitelist or args.blacklist):
+        print(
+            "Error: when using the single mode (default) you cannot use whitelist or blacklist."
+        )
     if args.resume:
         # When using --resume, ignore other parameters
         if any([args.url, args.blacklist, args.whitelist, args.mode]):
             print("Warning: When using --resume, other parameters will be ignored.")
         start_resume_mode(args.resume)
-    elif args.url and args.mode == 'single':
+    elif args.url and args.mode == "single":
         start_single_scrape(args.url)
-    elif args.url and args.mode == 'batch':
+    elif args.url and args.mode == "batch":
         start_batch_scrape(args.url, args.whitelist, args.blacklist)
     else:
-        print("Error: Invalid combination of arguments. Please provide either --resume or --url argument.")
+        print(
+            "Error: Invalid combination of arguments. Please provide either --resume or --url argument."
+        )
         print()
         print("EXAMPLE USAGE for a single url:")
         print('    python apias.py --url "https://example.com" --mode single')
         print()
         print("EXAMPLE USAGE for multiple urls from the same domain:")
-        print('    python apias.py --url "https://example.com" --mode batch --whitelist "whitelist.txt" --blacklist "blacklist.txt"')
+        print(
+            '    python apias.py --url "https://example.com" --mode batch --whitelist "whitelist.txt" --blacklist "blacklist.txt"'
+        )
         print()
         print("EXAMPLE USAGE for resuming a batch job terminated prematurely:")
         print('    python apias.py --resume "./temp_output_folder/progress.json"')
@@ -2010,12 +2341,6 @@ def main():
 
     print("Job Finished.\n")
 
+
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-

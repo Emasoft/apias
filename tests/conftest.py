@@ -1,5 +1,6 @@
 import pytest
 
+
 @pytest.fixture
 def sample_api_doc():
     return """
@@ -9,9 +10,7 @@ def sample_api_doc():
     Returns a list of users
     """
 
+
 @pytest.fixture
 def sample_config():
-    return {
-        "base_url": "http://example.com",
-        "output_format": "markdown"
-    }
+    return {"base_url": "http://example.com", "output_format": "markdown"}
