@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apias"
-dynamic = ["version"]
+version = "0.1.2"
 description = "AI powered API documentation scraper and converter"
 readme = "README.md"
 requires-python = ">=3.9"

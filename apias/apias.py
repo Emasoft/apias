@@ -97,9 +97,11 @@ by fmuaddib
 
      
 """
+from . import __version__
+
 APP_NAME = "APIAS - API AUTO SCRAPER"
 APP_FILENAME = "apias.py"
-VERSION = "0.1.0"
+VERSION = __version__
 
 import os
 import sys
@@ -1966,14 +1968,13 @@ def validate_config(config: dict) -> bool:
     return True
 
 def main():
-    print("APIAS - API AUTO SCRAPER")
-    print(f"Version {VERSION}\n")
     parser = argparse.ArgumentParser(description="Web API Retrieval and XML Extraction")
     parser.add_argument("-r", "--resume", type=str, default=None, help="Path to the resume file (JSON)", required=False)
     parser.add_argument("-u", "--url", type=str, default=None, help="Base url to scrape", required=False)
     parser.add_argument("-w", "--whitelist", type=str, default=None, help="Path to the txt file with urls patterns to whitelist (one for each line)", required=False)
     parser.add_argument("-b", "--blacklist", type=str, default=None, help="Path to the txt file with urls patterns to blacklist (one for each line)", required=False)
     parser.add_argument("-m", "--mode", type=str, default='single', help="Scraping mode: single or batch (if -m=batch the script will parse the sitemap.xml file of the domain from the base url)", required=False)
+    parser.add_argument('--version', action='version', version=f'APIAS - API AUTO SCRAPER version {VERSION}')
     
 
     args = parser.parse_args()
