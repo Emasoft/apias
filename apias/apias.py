@@ -208,8 +208,9 @@ with open(error_log_file, "w", encoding="utf-8") as f:
 def get_openai_api_key() -> str:
     openai_api_key = os.getenv("OPENAI_API_KEY")
     if not openai_api_key:
-        logger.error("OPENAI_API_KEY environment variable not set.")
-        sys.exit(1)
+        raise ValueError("OPENAI_API_KEY environment variable not set")
+    if not openai_api_key.startswith("sk-"):
+        raise ValueError("Invalid OpenAI API key format - should start with 'sk-'")
     return openai_api_key
 
 
@@ -1232,9 +1233,14 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
 
 
 @retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RequestException, TimeoutError)),
+    stop=stop_after_attempt(5),  # Increased attempts
+    wait=wait_exponential(multiplier=1, min=4, max=60),  # Wider backoff range
+    retry=retry_if_exception_type((
+        requests.exceptions.RequestException,
+        requests.exceptions.Timeout,
+        requests.exceptions.ConnectionError,
+        requests.exceptions.HTTPError
+    ))
 )
 def make_openai_request(
     api_key: str,
@@ -1248,19 +1254,32 @@ def make_openai_request(
     data = {
         "model": model,
         "messages": [
-            {
-                "role": "system",
-                "content": "You are an assistant that converts HTML to XML.",
-            },
+            {"role": "system", "content": "You are an assistant that converts HTML to XML."},
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
     }
 
     try:
-        response = requests.post(
-            url, headers=headers, json=data, timeout=600
-        )  # Increased timeout to 600 seconds
+        response = requests.post(url, headers=headers, json=data, timeout=600)
+        
+        if response.status_code == 401:
+            logger.error("Authentication error: Invalid API key or unauthorized access")
+            raise ValueError("Invalid OpenAI API key")
+            
+        if response.status_code == 429:
+            logger.error("Rate limit exceeded or quota exceeded")
+            raise requests.exceptions.RequestException("Rate limit exceeded")
+            
+        try:
+            error_data = response.json()
+            if 'error' in error_data:
+                error_msg = error_data['error'].get('message', 'Unknown error')
+                logger.error(f"OpenAI API error: {error_msg}")
+                raise requests.exceptions.RequestException(f"OpenAI API error: {error_msg}")
+        except ValueError:
+            pass  # Response wasn't JSON
+            
         response.raise_for_status()
         response_json = response.json()
 
@@ -1280,15 +1299,22 @@ def make_openai_request(
         logger.info(f"OpenAI API request successful. Cost: ${request_cost:.6f}")
         logger.info(f"Total cost so far: ${total_cost:.6f}")
 
+        # Log detailed response info for debugging
+        logger.debug(f"Response status code: {response.status_code}")
+        logger.debug(f"Response headers: {response.headers}")
+        logger.debug(f"Response content: {response.text}")
+
         response_json["request_cost"] = request_cost
         response_json["finish_reason"] = response_json["choices"][0]["finish_reason"]
 
         return cast(Dict[str, Any], response_json)
-    except RequestException as e:
-        logger.error(f"OpenAI API request failed: {e}")
-        raise
-    except TimeoutError as e:
-        logger.error(f"OpenAI API request timed out: {e}")
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"OpenAI API request failed: {str(e)}")
+        logger.debug(f"Request details: URL={url}, Headers={headers}, Data={data}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response status code: {e.response.status_code}")
+            logger.error(f"Response content: {e.response.text}")
         raise
 
 
@@ -1341,21 +1367,13 @@ Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be su
 {html_content}
 """
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            xml_output, request_cost = call_openai_api(prompt, pricing_info)
-            xml_output = extract_xml_from_input(xml_output)
-            return xml_output, request_cost
-        except Exception as e:
-            logger.error(
-                f"LLM processing failed (attempt {attempt + 1}/{max_retries}): {e}"
-            )
-            if attempt == max_retries - 1:
-                logger.error("All attempts to process with LLM failed. Returning None.")
-                return None, 0.0
-            time.sleep(5)  # Wait for 5 seconds before retrying
-    return None, 0.0
+    try:
+        xml_output, request_cost = call_openai_api(prompt, pricing_info)
+        xml_output = extract_xml_from_input(xml_output)
+        return xml_output, request_cost
+    except Exception as e:
+        logger.error(f"LLM processing failed: {e}")
+        return None, 0.0
 
 
 # ============================
