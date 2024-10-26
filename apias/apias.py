@@ -1517,8 +1517,6 @@ def process_single_page(
     
     logger.error("Failed to convert HTML to XML. No XML content generated.")
     return None
-                with open(xml_file, "w", encoding="utf-8") as f:
-                    f.write(result.xml_content)
 
     with Spinner("Processing page...") as spinner:
         thread = threading.Thread(target=process_in_background)
@@ -1544,11 +1542,9 @@ def process_single_page(
     return None
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(RequestException)
-)
+@retry(stop=stop_after_attempt(3), 
+       wait=wait_exponential(multiplier=1, min=4, max=10),
+       retry=retry_if_exception_type(RequestException))
 def process_url(
     url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
 ) -> Optional[str]:
