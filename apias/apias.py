@@ -1439,24 +1439,24 @@ def process_single_page(
                 result.error = "Failed to retrieve HTML content for single page processing."
                 return
 
-        (
-            slimmed_html,
-            page_title,
-            code_examples,
-            method_signatures,
-            class_definitions,
-            images,
-            links,
-        ) = slimdown_html(html_content)
+            (
+                slimmed_html,
+                page_title,
+                code_examples,
+                method_signatures,
+                class_definitions,
+                images,
+                links,
+            ) = slimdown_html(result.html_content)
 
-        # Prepare additional content for LLM
-        additional_content: Dict[str, List[str]] = {
-            "code_examples": code_examples,
-            "method_signatures": method_signatures,
-            "class_definitions": class_definitions,
-            "images": images,
-            "links": [f"{href}: {text}" for href, text in links],
-        }
+            # Prepare additional content for LLM
+            additional_content: Dict[str, List[str]] = {
+                "code_examples": code_examples,
+                "method_signatures": method_signatures,
+                "class_definitions": class_definitions,
+                "images": images,
+                "links": [f"{href}: {text}" for href, text in links],
+            }
 
             llm_result = call_llm_to_convert_html_to_xml(
                 slimmed_html, additional_content, pricing_info
@@ -1467,6 +1467,38 @@ def process_single_page(
             
             xml_content, _ = llm_result
             if xml_content:
+                # Include source URL in XML content
+                result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
+
+                # Save individual XML file
+                xml_file = temp_folder / "processed_single_page.xml"
+                with open(xml_file, "w", encoding="utf-8") as f:
+                    f.write(result.xml_content)
+        except Exception as e:
+            result.error = f"Error processing page: {str(e)}"
+
+    with Spinner("Processing page...") as spinner:
+        thread = threading.Thread(target=process_in_background)
+        thread.start()
+        while thread.is_alive():
+            spinner.step()
+            time.sleep(0.1)
+        thread.join()
+
+    if result.error:
+        logger.error(result.error)
+        return None
+
+    if result.xml_content is not None:
+        merged_xml = merge_xmls(temp_folder)
+        merged_xml_file = temp_folder / "merged_output.xml"
+        with open(merged_xml_file, "w", encoding="utf-8") as f:
+            f.write(merged_xml)
+        logger.info(f"Merged XML saved to {merged_xml_file}")
+        return result.xml_content
+    
+    logger.error("Failed to convert HTML to XML. No XML content generated.")
+    return None
                 # Include source URL in XML content
                 result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
 
