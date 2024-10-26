@@ -1474,7 +1474,7 @@ def process_multiple_pages(urls: List[str], pricing_info: Dict[str, Dict[str, fl
         with open(merged_xml_file, 'w', encoding='utf-8') as f:
             f.write(merged_xml)
         logger.info(f"Merged XML saved successfully to {merged_xml_file}")
-    except IOError as e:
+    except OSError as e:
         logger.error(f"Error saving merged XML file: {e}")
         return None
     
@@ -1494,7 +1494,7 @@ def read_patterns_from_file(file_path: str) -> Optional[str]:
             logger.warning(f"No valid patterns found in {file_path}")
             return None
         return ','.join(patterns)
-    except IOError as e:
+    except OSError as e:
         logger.error(f"Error reading file {file_path}: {e}")
         return None
 
