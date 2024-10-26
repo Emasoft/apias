@@ -1517,11 +1517,6 @@ def process_single_page(
     
     logger.error("Failed to convert HTML to XML. No XML content generated.")
     return None
-                # Include source URL in XML content
-                result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
-
-                # Save individual XML file
-                xml_file = temp_folder / "processed_single_page.xml"
                 with open(xml_file, "w", encoding="utf-8") as f:
                     f.write(result.xml_content)
 
@@ -1552,7 +1547,7 @@ def process_single_page(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(RequestException),
+    retry=retry_if_exception_type(RequestException)
 )
 def process_url(
     url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
