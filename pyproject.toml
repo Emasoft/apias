@@ -28,6 +28,8 @@ dependencies = [
     "lxml>=4.9.0",
     "tenacity>=8.2.0",
     "playwright>=1.39.0",
+    "types-requests>=2.31.0",
+    "types-beautifulsoup4>=4.12.0",
 ]
 
 [project.optional-dependencies]
