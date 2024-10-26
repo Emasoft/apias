@@ -27,13 +27,14 @@ jobs:
         pip install -e ".[dev,test]"
         
     - name: Lint and fix with ruff
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
         ruff check --fix .
         git add .
-        git diff --staged --quiet || git commit -m "style: apply automatic fixes"
-        git push
+        git diff --staged --quiet || (git commit -m "style: apply automatic fixes" && git push https://$GITHUB_TOKEN@github.com/${{ github.repository }}.git HEAD:${{ github.ref }})
         
     - name: Check formatting with black
       run: |
