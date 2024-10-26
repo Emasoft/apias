@@ -44,9 +44,11 @@ jobs:
           git push https://$GITHUB_TOKEN@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}
         fi
         
-    - name: Check formatting with black
+    - name: Format with black
       run: |
-        black --check .
+        black .
+        git add .
+        git diff --staged --quiet || (git commit -m "style: apply black formatting" && git push https://$GITHUB_TOKEN@github.com/${{ github.repository }}.git HEAD:${{ github.ref }})
         
     - name: Type check with mypy
       run: |
