@@ -1233,8 +1233,8 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
 
 
 @retry(
-    stop=stop_after_attempt(5),  # Increased attempts
-    wait=wait_exponential(multiplier=1, min=4, max=60),  # Wider backoff range
+    stop=stop_after_attempt(70),  # Increased attempts
+    wait=wait_exponential(multiplier=1, min=4, max=70),  # Wider backoff range
     retry=retry_if_exception_type((
         requests.exceptions.RequestException,
         requests.exceptions.Timeout,
