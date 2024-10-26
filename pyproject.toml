@@ -150,7 +150,8 @@ ignore = [
     "I001",  # Import block is un-sorted or un-formatted
     "UP015", # Unnecessary open mode parameters
     "C901",  # Function is too complex
-    "W291"   # Trailing whitespace
+    "W291",  # Trailing whitespace
+    "UP006"  # Use X instead of typing.X
 ]
 fix = true  # Enable autofix behavior
 

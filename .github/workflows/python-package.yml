@@ -36,7 +36,7 @@ jobs:
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-        ruff check --fix .
+        ruff check --fix --unsafe-fixes .
         git add .
         git diff --staged --quiet || (git commit -m "style: apply automatic fixes" && git push https://$GITHUB_TOKEN@github.com/${{ github.repository }}.git HEAD:${{ github.ref }})
         
