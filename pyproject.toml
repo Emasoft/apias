@@ -147,8 +147,12 @@ ignore = [
     "F842",  # Local variable is assigned to but never referenced
     "F401",  # Imported but unused
     "W293",  # Blank line contains whitespace
-    "I001"   # Import block is un-sorted or un-formatted
+    "I001",  # Import block is un-sorted or un-formatted
+    "UP015", # Unnecessary open mode parameters
+    "C901",  # Function is too complex
+    "W291"   # Trailing whitespace
 ]
+fix = true  # Enable autofix behavior
 
 [tool.ruff.per-file-ignores]
 "__init__.py" = ["F401"]
