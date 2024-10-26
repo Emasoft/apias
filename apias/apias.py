@@ -137,7 +137,7 @@ from signal import SIGINT, signal
 import json
 
 
-def validate_xml(xml_string):
+def validate_xml(xml_string: str) -> bool:
     try:
         ET.fromstring(xml_string)
         return True
@@ -145,7 +145,7 @@ def validate_xml(xml_string):
         return False
 
 
-def count_valid_xml_files(folder):
+def count_valid_xml_files(folder: Path) -> tuple[int, int]:
     valid_count = 0
     total_count = 0
     for xml_file in folder.glob("processed_*.xml"):
@@ -517,7 +517,7 @@ def clean_styles(styles: str, hidden_styles: List[str]) -> str:
     return "; ".join(visible_styles)
 
 
-def expand_hidden_content(soup: BeautifulSoup):
+def expand_hidden_content(soup: BeautifulSoup) -> None:
     """Expand hidden content by removing styles, classes, and attributes that hide elements."""
     for element in soup.find_all(True):
         # Remove hidden styles
@@ -541,14 +541,14 @@ def expand_hidden_content(soup: BeautifulSoup):
             element.attrs.pop(attr, None)
 
 
-def remove_elements(soup: BeautifulSoup, condition_func):
+def remove_elements(soup: BeautifulSoup, condition_func: Callable[[Any], bool]) -> None:
     """Remove elements from the soup based on a condition function."""
     elements_to_remove = soup.find_all(condition_func)
     for element in elements_to_remove:
         element.decompose()
 
 
-def remove_comments(soup: BeautifulSoup):
+def remove_comments(soup: BeautifulSoup) -> None:
     """Remove comments from the soup."""
     for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
         comment.extract()
@@ -1424,15 +1424,20 @@ def process_single_page(
     """
     logger.info("Processing single page.")
 
-    html_content: Optional[str] = None
-    xml_content: Optional[str] = None
+    class ProcessingResult:
+        def __init__(self):
+            self.html_content: Optional[str] = None
+            self.xml_content: Optional[str] = None
+            self.error: Optional[str] = None
+
+    result = ProcessingResult()
 
     def process_in_background() -> None:
-        nonlocal html_content, xml_content
-        html_content = web_scraper(url)
-        if not html_content:
-            logger.error("Failed to retrieve HTML content for single page processing.")
-            return
+        try:
+            result.html_content = web_scraper(url)
+            if not result.html_content:
+                result.error = "Failed to retrieve HTML content for single page processing."
+                return
 
         (
             slimmed_html,
@@ -1453,22 +1458,22 @@ def process_single_page(
             "links": [f"{href}: {text}" for href, text in links],
         }
 
-        result = call_llm_to_convert_html_to_xml(
-            slimmed_html, additional_content, pricing_info
-        )
-        if result is None:
-            logger.error("Failed to convert HTML to XML.")
-            return None
-        xml_content, _ = result
+            llm_result = call_llm_to_convert_html_to_xml(
+                slimmed_html, additional_content, pricing_info
+            )
+            if llm_result is None:
+                result.error = "Failed to convert HTML to XML."
+                return
+            
+            xml_content, _ = llm_result
+            if xml_content:
+                # Include source URL in XML content
+                result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
 
-        if xml_content:
-            # Include source URL in XML content
-            xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
-
-            # Save individual XML file
-            xml_file = temp_folder / "processed_single_page.xml"
-            with open(xml_file, "w", encoding="utf-8") as f:
-                f.write(xml_content)
+                # Save individual XML file
+                xml_file = temp_folder / "processed_single_page.xml"
+                with open(xml_file, "w", encoding="utf-8") as f:
+                    f.write(result.xml_content)
 
     with Spinner("Processing page...") as spinner:
         thread = threading.Thread(target=process_in_background)
@@ -1478,15 +1483,20 @@ def process_single_page(
             time.sleep(0.1)
         thread.join()
 
-    if xml_content is not None:
+    if result.error:
+        logger.error(result.error)
+        return None
+
+    if result.xml_content is not None:
         merged_xml = merge_xmls(temp_folder)
         merged_xml_file = temp_folder / "merged_output.xml"
         with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
-    else:
-        logger.error("Failed to convert HTML to XML. No XML content generated.")
-    return xml_content
+        return result.xml_content
+    
+    logger.error("Failed to convert HTML to XML. No XML content generated.")
+    return None
 
 
 @retry(
@@ -2169,10 +2179,10 @@ class APIDocument:
 
     def __init__(self, content: str) -> None:
         """Initialize APIDocument with raw content."""
-        self.content = content
-        self.endpoints = []
-        self.methods = []
-        self.descriptions = []
+        self.content: str = content
+        self.endpoints: list[str] = []
+        self.methods: list[str] = []
+        self.descriptions: list[str] = []
         self._parse()
 
     def _parse(self) -> None:
@@ -2259,7 +2269,7 @@ def validate_config(config: dict) -> bool:
     return True
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Web API Retrieval and XML Extraction")
     parser.add_argument(
         "-r",
