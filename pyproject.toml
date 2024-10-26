@@ -128,6 +128,9 @@ fail_under = 80
 [tool.ruff]
 line-length = 88
 target-version = "py39"
+fix = true  # Enable autofix behavior
+
+[tool.ruff.lint]
 select = [
     "E",  # pycodestyle errors
     "W",  # pycodestyle warnings
@@ -151,10 +154,11 @@ ignore = [
     "UP015", # Unnecessary open mode parameters
     "C901",  # Function is too complex
     "W291",  # Trailing whitespace
-    "UP006"  # Use X instead of typing.X
+    "UP006", # Use X instead of typing.X
+    "UP035", # Use built-in type alias
+    "B012"   # Return inside finally block
 ]
-fix = true  # Enable autofix behavior
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
 "tests/**/*" = ["S101"]
