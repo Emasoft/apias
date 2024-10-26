@@ -1235,12 +1235,14 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
 @retry(
     stop=stop_after_attempt(70),  # Increased attempts
     wait=wait_exponential(multiplier=1, min=4, max=70),  # Wider backoff range
-    retry=retry_if_exception_type((
-        requests.exceptions.RequestException,
-        requests.exceptions.Timeout,
-        requests.exceptions.ConnectionError,
-        requests.exceptions.HTTPError
-    ))
+    retry=retry_if_exception_type(
+        (
+            requests.exceptions.RequestException,
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.HTTPError,
+        )
+    ),
 )
 def make_openai_request(
     api_key: str,
@@ -1254,7 +1256,10 @@ def make_openai_request(
     data = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "You are an assistant that converts HTML to XML."},
+            {
+                "role": "system",
+                "content": "You are an assistant that converts HTML to XML.",
+            },
             {"role": "user", "content": prompt},
         ],
         "temperature": 0,
@@ -1262,24 +1267,26 @@ def make_openai_request(
 
     try:
         response = requests.post(url, headers=headers, json=data, timeout=600)
-        
+
         if response.status_code == 401:
             logger.error("Authentication error: Invalid API key or unauthorized access")
             raise ValueError("Invalid OpenAI API key")
-            
+
         if response.status_code == 429:
             logger.error("Rate limit exceeded or quota exceeded")
             raise requests.exceptions.RequestException("Rate limit exceeded")
-            
+
         try:
             error_data = response.json()
-            if 'error' in error_data:
-                error_msg = error_data['error'].get('message', 'Unknown error')
+            if "error" in error_data:
+                error_msg = error_data["error"].get("message", "Unknown error")
                 logger.error(f"OpenAI API error: {error_msg}")
-                raise requests.exceptions.RequestException(f"OpenAI API error: {error_msg}")
+                raise requests.exceptions.RequestException(
+                    f"OpenAI API error: {error_msg}"
+                )
         except ValueError:
             pass  # Response wasn't JSON
-            
+
         response.raise_for_status()
         response_json = response.json()
 
@@ -1308,11 +1315,11 @@ def make_openai_request(
         response_json["finish_reason"] = response_json["choices"][0]["finish_reason"]
 
         return cast(Dict[str, Any], response_json)
-        
+
     except requests.exceptions.RequestException as e:
         logger.error(f"OpenAI API request failed: {str(e)}")
         logger.debug(f"Request details: URL={url}, Headers={headers}, Data={data}")
-        if hasattr(e, 'response') and e.response is not None:
+        if hasattr(e, "response") and e.response is not None:
             logger.error(f"Response status code: {e.response.status_code}")
             logger.error(f"Response content: {e.response.text}")
         raise
@@ -1454,7 +1461,9 @@ def process_single_page(
         try:
             result.html_content = web_scraper(url)
             if not result.html_content:
-                result.error = "Failed to retrieve HTML content for single page processing."
+                result.error = (
+                    "Failed to retrieve HTML content for single page processing."
+                )
                 return
 
             (
@@ -1482,7 +1491,7 @@ def process_single_page(
             if llm_result is None:
                 result.error = "Failed to convert HTML to XML."
                 return
-            
+
             xml_content, _ = llm_result
             if xml_content:
                 # Include source URL in XML content
@@ -1514,7 +1523,7 @@ def process_single_page(
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
         return result.xml_content
-    
+
     logger.error("Failed to convert HTML to XML. No XML content generated.")
     return None
 
@@ -1537,14 +1546,16 @@ def process_single_page(
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
         return result.xml_content
-    
+
     logger.error("Failed to convert HTML to XML. No XML content generated.")
     return None
 
 
-@retry(stop=stop_after_attempt(3), 
-       wait=wait_exponential(multiplier=1, min=4, max=10),
-       retry=retry_if_exception_type(RequestException))
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(RequestException),
+)
 def process_url(
     url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
 ) -> Optional[str]:
