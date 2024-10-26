@@ -144,7 +144,10 @@ ignore = [
     "E266",  # Too many leading '#' for block comment
     "W505",  # Doc line too long
     "F841",  # Local variable is assigned to but never used
-    "F842"   # Local variable is assigned to but never referenced
+    "F842",  # Local variable is assigned to but never referenced
+    "F401",  # Imported but unused
+    "W293",  # Blank line contains whitespace
+    "I001"   # Import block is un-sorted or un-formatted
 ]
 
 [tool.ruff.per-file-ignores]
