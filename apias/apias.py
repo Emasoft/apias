@@ -9,17 +9,17 @@ by fmuaddib
     LLM does not know the latest version of the libraries or service APIs
     that you are using in your project. But converting such documentation
     into a format good enough for the LLM is not easy. An ideal format should
-    be compact (to consume the minimum amount of tokens), well semantically 
-    annotated (to ensure that the scraped text meaning is not lost), and 
+    be compact (to consume the minimum amount of tokens), well semantically
+    annotated (to ensure that the scraped text meaning is not lost), and
     well structured (to be able to be machine readable by the LLM without
     errors).
     API AUTO SCRAPER is a program written in Python that does just that:
     scraping the documentations websites of the libraries to get their
     API specifications, remove all unneded html elements, and using an
-    llm service from OpenAI (model: gpt-4o-mini) it transform the html
-    into a well structured and annotated XML file. 
+    llm service from OpenAI (model: gpt-5-nano) it transform the html
+    into a well structured and annotated XML file.
     It also produces a merged xml file concatenating all the scraped
-    pages, so that with just adding such file to the LLM chat context, 
+    pages, so that with just adding such file to the LLM chat context,
     the AI can learn the updated API of the library.
     For example aider-chat has an option to add a read only document
     to the llm chat context (i.e. "/read-only api_doc.xml").
@@ -31,12 +31,12 @@ by fmuaddib
     sitemap.xml and scrape only the ones you are interested in.
 
     Enjoy!
-    
+
 **REQUIREMENTS**
     Your package installer (pip, pipx, conda, poetry..) may have troubles
     installing all dependencies. In that case, here is the guide to install
     the required libraries manually:
-    
+
     *the Playwright library*
     You can install it manually with those two commands:
 
@@ -72,31 +72,32 @@ by fmuaddib
    Replace `'your-api-key-here'` with your actual OpenAI API key.
 
    If you don't have an API key, you can get it here:
-   
+
    https://platform.openai.com/api-keys
 
 **Run the Script:**
 
    - **Single Page Processing:**
-     
+
      python apias.py --url "https://example.com" --mode single
 
-     This command processes the base URL `https://example.com`, extracting XML from the main page. 
+     This command processes the base URL `https://example.com`, extracting XML from the main page.
 
    - **Batch Mode Processing:**
-     
+
      python apias.py --url "https://example.com" --mode batch --whitelist "whitelist.txt" --blacklist "blacklist.txt"
-     
+
      This command processes all URLs extracted from the sitemap.xml of the base url, optionally filtering the urls using a whitelist text file (only urls matching at least one whitelist pattern are scraped) and a blacklist text file (the urls matching at least one blacklist pattern are not scraped). The resulting xml files are saved in a temp folder.
 
    - **Resume Batch Scrape Job:**
-     
+
      python apias.py --resume "./temp_dir/progress.json"
 
      This command resumes a batch scraping job that was interrupted (or that ended with some urls failed to be scraped into xml). The --resume (or -r) parameter must be followed by the path to the "progress.json" file that is inside the temp folder of the scrape job to resume.
 
-     
+
 """
+
 from . import __version__
 
 APP_NAME = "APIAS - API AUTO SCRAPER"
@@ -165,6 +166,29 @@ cost_lock = threading.Lock()
 progress_tracker: Dict[str, Dict[str, Union[str, float]]] = {}
 progress_file = "progress.json"
 
+# JSON Schema for structured XML output from GPT-5 Nano
+# This ensures the model returns properly formatted XML with guaranteed structure
+XML_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "xml_content": {
+            "type": "string",
+            "description": "The complete XML document as a properly escaped XML string",
+        },
+        "document_type": {
+            "type": "string",
+            "enum": ["CLASS", "MODULE", "API_USAGE"],
+            "description": "The classification of the documentation page",
+        },
+        "completeness_check": {
+            "type": "boolean",
+            "description": "Confirmation that all content from the HTML was extracted without omissions",
+        },
+    },
+    "required": ["xml_content", "document_type", "completeness_check"],
+    "additionalProperties": False,
+}
+
 # Unicode block characters for separators and box drawing
 SEPARATOR = "━" * 80
 DOUBLE_SEPARATOR = "═" * 80
@@ -190,7 +214,7 @@ BOX_CROSS = "┼"
 
 # Configure Logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -581,9 +605,8 @@ def clean_html(html_content: str) -> str:
     for element in soup(["script", "style"]):
         element.decompose()
 
-    # Preserve formatting in pre and code tags
-    for tag in soup.find_all(["pre", "code"]):
-        tag.string = tag.prettify(formatter="html")
+    # DO NOT prettify pre/code tags - this causes double-escaping and bloats HTML size!
+    # Just leave them as-is - BeautifulSoup will handle them correctly
 
     # Get the compact HTML string
     compact_html = soup.decode(formatter="minimal")
@@ -1020,13 +1043,19 @@ def slimdown_html(
     List[str],
     List[Tuple[str, str]],
 ]:
+    logger.debug(f"=== slimdown_html invoked ===")
+    logger.debug(f"Input HTML size: {len(page_source)} characters")
 
     # Clean the HTML content from navigation elements and ads
+    logger.debug("Cleaning HTML (removing navigation and ads)...")
     cleaned_html = clean_html(page_source)
+    logger.debug(f"After clean_html: {len(cleaned_html)} characters")
 
     soup = BeautifulSoup(cleaned_html, "html.parser")
 
     # Remove SVG elements
+    svg_count = len(soup.find_all("svg"))
+    logger.debug(f"Removing {svg_count} SVG elements...")
     for svg in soup.find_all("svg"):
         svg.decompose()
 
@@ -1036,14 +1065,20 @@ def slimdown_html(
         if "src" in img.attrs:
             images.append(img["src"])
         img.decompose()
+    logger.debug(f"Extracted and removed {len(images)} images")
 
     # Remove data URIs
+    data_href_count = len(soup.find_all(href=lambda x: x and x.startswith("data:")))
+    data_src_count = len(soup.find_all(src=lambda x: x and x.startswith("data:")))
+    logger.debug(f"Removing {data_href_count + data_src_count} data URI elements...")
     for tag in soup.find_all(href=lambda x: x and x.startswith("data:")):
         tag.decompose()
     for tag in soup.find_all(src=lambda x: x and x.startswith("data:")):
         tag.decompose()
 
     # Remove script and style tags
+    script_style_count = len(soup.find_all(["script", "style"]))
+    logger.debug(f"Removing {script_style_count} script/style tags...")
     for tag in soup.find_all(["script", "style"]):
         tag.decompose()
 
@@ -1052,38 +1087,59 @@ def slimdown_html(
     for code in soup.find_all("pre"):
         code_examples.append(code.get_text())
         code["class"] = code.get("class", []) + ["extracted-code"]
+    logger.debug(f"Extracted {len(code_examples)} code examples")
 
     # Extract method signatures
     method_signatures = []
     for method in soup.find_all("div", class_="method-signature"):
         method_signatures.append(method.get_text())
         method["class"] = method.get("class", []) + ["extracted-method"]
+    logger.debug(f"Extracted {len(method_signatures)} method signatures")
 
     # Extract class definitions
     class_definitions = []
     for class_def in soup.find_all("div", class_="class-definition"):
         class_definitions.append(class_def.get_text())
         class_def["class"] = class_def.get("class", []) + ["extracted-class"]
+    logger.debug(f"Extracted {len(class_definitions)} class definitions")
 
     # Extract links
     links = []
     for a in soup.find_all("a", href=True):
         links.append((a["href"], a.get_text()))
+    logger.debug(f"Extracted {len(links)} links")
 
     # Remove all attributes except href and class
+    logger.debug("Removing unnecessary attributes (keeping only href and class)...")
     for tag in soup.find_all(True):
         for attr in list(tag.attrs):
             if attr not in ["href", "class"]:
                 tag.attrs.pop(attr, None)
 
     # Remove empty tags
+    initial_tag_count = len(soup.find_all())
+    empty_tags_removed = 0
     for tag in soup.find_all():
         if len(tag.get_text(strip=True)) == 0 and tag.name not in ["br", "hr"]:
             tag.decompose()
+            empty_tags_removed += 1
+    logger.debug(
+        f"Removed {empty_tags_removed} empty tags (kept {initial_tag_count - empty_tags_removed})"
+    )
+
+    final_html = str(soup)
+    page_title = soup.title.string if soup.title else "scraped_page"
+
+    logger.debug(f"=== slimdown_html completed ===")
+    logger.debug(f"Final HTML size: {len(final_html)} characters")
+    logger.debug(f"Page title: {page_title}")
+    logger.debug(
+        f"Extraction summary - Code: {len(code_examples)}, Methods: {len(method_signatures)}, Classes: {len(class_definitions)}, Images: {len(images)}, Links: {len(links)}"
+    )
 
     return (
-        str(soup),
-        soup.title.string if soup.title else "scraped_page",
+        final_html,
+        page_title,
         code_examples,
         method_signatures,
         class_definitions,
@@ -1248,7 +1304,7 @@ def make_openai_request(
     api_key: str,
     prompt: str,
     pricing_info: Dict[str, Dict[str, float]],
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5-nano-2025-08-07",
 ) -> Dict[str, Any]:
     global total_cost
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
@@ -1258,15 +1314,36 @@ def make_openai_request(
         "messages": [
             {
                 "role": "system",
-                "content": "You are an assistant that converts HTML to XML.",
+                "content": "You are an expert assistant that converts HTML API documentation to structured XML format. You must extract ALL content comprehensively without omissions, following the exact XML structure specifications provided.",
             },
             {"role": "user", "content": prompt},
         ],
-        "temperature": 0,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "xml_documentation_output",
+                "strict": True,
+                "schema": XML_OUTPUT_SCHEMA,
+            },
+        },
     }
 
+    # Debug logging: Request details
+    logger.debug(f"=== OpenAI API Request ===")
+    logger.debug(f"Model: {model}")
+    logger.debug(f"URL: {url}")
+    logger.debug(f"Prompt length: {len(prompt)} characters")
+    logger.debug(
+        f"Request headers (sanitized): Content-Type: application/json, Authorization: Bearer ***"
+    )
+    logger.debug(f"Using structured output with schema: {XML_OUTPUT_SCHEMA}")
+    logger.debug(f"Temperature: {data.get('temperature', 'default (1)')}")
+
     try:
+        logger.debug(f"Sending POST request to OpenAI API...")
         response = requests.post(url, headers=headers, json=data, timeout=600)
+        logger.debug(f"Received response with status code: {response.status_code}")
+        logger.debug(f"Response headers: {dict(response.headers)}")
 
         if response.status_code == 401:
             logger.error("Authentication error: Invalid API key or unauthorized access")
@@ -1290,15 +1367,27 @@ def make_openai_request(
         response.raise_for_status()
         response_json = response.json()
 
+        logger.debug(f"=== OpenAI API Response ===")
+        logger.debug(f"Full response JSON keys: {list(response_json.keys())}")
+
         # Compute cost
         usage = response_json.get("usage", {})
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
 
+        logger.debug(
+            f"Token usage - Prompt: {prompt_tokens}, Completion: {completion_tokens}"
+        )
+
         model_pricing = pricing_info.get(model, {})
+        logger.debug(f"Model pricing config: {model_pricing}")
         input_cost = prompt_tokens * model_pricing.get("input_cost_per_token", 0)
         output_cost = completion_tokens * model_pricing.get("output_cost_per_token", 0)
         request_cost = input_cost + output_cost
+
+        logger.debug(
+            f"Cost breakdown - Input: ${input_cost:.6f}, Output: ${output_cost:.6f}, Total: ${request_cost:.6f}"
+        )
 
         with cost_lock:
             total_cost += request_cost
@@ -1307,9 +1396,10 @@ def make_openai_request(
         logger.info(f"Total cost so far: ${total_cost:.6f}")
 
         # Log detailed response info for debugging
-        logger.debug(f"Response status code: {response.status_code}")
-        logger.debug(f"Response headers: {response.headers}")
-        logger.debug(f"Response content: {response.text}")
+        finish_reason = response_json["choices"][0]["finish_reason"]
+        logger.debug(f"Finish reason: {finish_reason}")
+        logger.debug(f"Response content length: {len(response.text)} characters")
+        logger.debug(f"Full response content:\n{response.text}")
 
         response_json["request_cost"] = request_cost
         response_json["finish_reason"] = response_json["choices"][0]["finish_reason"]
@@ -1330,12 +1420,147 @@ def call_openai_api(
 ) -> Tuple[str, float]:
     """
     Makes a request to the OpenAI API using the requests library.
+    Parses the structured JSON response to extract the XML content.
     """
+    logger.debug(f"=== call_openai_api invoked ===")
+    logger.debug(f"Getting OpenAI API key...")
     api_key = get_openai_api_key()
+    logger.debug(f"API key retrieved (length: {len(api_key)})")
+
+    logger.debug(f"Making OpenAI request...")
     response_json = make_openai_request(api_key, prompt, pricing_info=pricing_info)
-    content = str(response_json["choices"][0]["message"]["content"]).strip()
+    logger.debug(f"OpenAI request completed")
+
+    # Parse the structured JSON response
+    content_str = str(response_json["choices"][0]["message"]["content"]).strip()
+    logger.debug(f"=== Parsing Structured Response ===")
+    logger.debug(f"Raw content string length: {len(content_str)}")
+    logger.debug(f"Raw content (first 500 chars): {content_str[:500]}...")
+
+    try:
+        structured_response = json.loads(content_str)
+        logger.debug(f"Successfully parsed JSON response")
+        logger.debug(f"Structured response keys: {list(structured_response.keys())}")
+
+        # Extract the XML content from the structured response
+        xml_content = structured_response.get("xml_content", "")
+        completeness = structured_response.get("completeness_check", False)
+        document_type = structured_response.get("document_type", "UNKNOWN")
+
+        logger.debug(f"Document type: {document_type}")
+        logger.debug(f"Completeness check: {completeness}")
+        logger.debug(f"XML content length: {len(xml_content)} characters")
+
+        if not completeness:
+            logger.warning("Model indicated content extraction may not be complete")
+
+        content = xml_content
+        logger.debug(f"Successfully extracted XML content from structured response")
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to parse structured JSON response: {e}")
+        logger.debug(f"Attempted to parse: {content_str[:1000]}...")
+        # Fallback to raw content if JSON parsing fails
+        content = content_str
+        logger.debug(f"Using raw content as fallback")
+
     request_cost = response_json.get("request_cost", 0)
+    logger.debug(f"Request cost: ${request_cost:.6f}")
+    logger.debug(f"=== call_openai_api completed ===")
     return content, request_cost
+
+
+def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
+    """
+    Split HTML content into chunks that won't exceed token limits.
+    Tries to split on logical boundaries (doc objects, sections).
+    Max chars ~200K = ~85K tokens with safety margin for GPT-5 Nano.
+    """
+    if len(html_content) <= max_chars:
+        return [html_content]
+
+    chunks = []
+    soup = BeautifulSoup(html_content, "html.parser")
+
+    # Try to find doc objects (class members, methods, etc.)
+    doc_objects = soup.find_all(class_=re.compile(r"doc-object"))
+
+    if doc_objects and len(doc_objects) > 1:
+        # Split by doc objects
+        chunk_header = str(soup.find("h1")) if soup.find("h1") else ""
+        header_size = len(chunk_header)
+        
+        # Reserve space for header in each chunk
+        effective_max = max_chars - header_size
+        
+        current_chunk = ""
+        
+        for obj in doc_objects:
+            obj_html = str(obj)
+            obj_size = len(obj_html)
+            
+            # If this single object exceeds the limit, split it further
+            if obj_size > effective_max:
+                # Save current chunk if not empty
+                if current_chunk:
+                    chunks.append(chunk_header + current_chunk)
+                    current_chunk = ""
+                
+                # Try to split the large object by its internal doc-objects or sections
+                obj_soup = BeautifulSoup(obj_html, "html.parser")
+                sub_objects = obj_soup.find_all(class_=re.compile(r"doc-object|doc-section"))
+                
+                if sub_objects and len(sub_objects) > 1:
+                    # Can split by sub-objects
+                    sub_chunk = ""
+                    for sub_obj in sub_objects:
+                        sub_html = str(sub_obj)
+                        if sub_chunk and len(sub_chunk) + len(sub_html) > effective_max:
+                            chunks.append(chunk_header + sub_chunk)
+                            sub_chunk = ""
+                        sub_chunk += sub_html
+                    if sub_chunk:
+                        chunks.append(chunk_header + sub_chunk)
+                else:
+                    # Cannot split further, just put it in its own chunk (will exceed limit)
+                    logger.warning(
+                        f"Single doc-object is {obj_size} chars, exceeding {effective_max} char limit. "
+                        f"Placing in its own chunk anyway."
+                    )
+                    chunks.append(chunk_header + obj_html)
+                continue
+            
+            # If adding this object would exceed limit, save current chunk
+            if current_chunk and len(current_chunk) + obj_size > effective_max:
+                chunks.append(chunk_header + current_chunk)
+                current_chunk = ""
+            
+            current_chunk += obj_html
+        
+        # Add final chunk
+        if current_chunk:
+            chunks.append(chunk_header + current_chunk)
+    else:
+        # Fallback: split by character count at tag boundaries
+        content_parts = re.split(r"(</[^>]+>)", html_content)
+        current_chunk = ""
+        
+        for part in content_parts:
+            if len(current_chunk) + len(part) > max_chars:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+            current_chunk += part
+        
+        if current_chunk:
+            chunks.append(current_chunk)
+
+    logger.info(f"Split HTML into {len(chunks)} chunks")
+    for i, chunk in enumerate(chunks):
+        logger.debug(
+            f"Chunk {i + 1} size: {len(chunk)} chars (~{len(chunk) // 3} tokens estimated)"
+        )
+
+    return chunks
 
 
 def call_llm_to_convert_html_to_xml(
@@ -1345,9 +1570,71 @@ def call_llm_to_convert_html_to_xml(
 ) -> Tuple[Optional[str], float]:
     """
     Uses OpenAI's API to convert HTML content to structured XML.
+    Implements chunking for large content that exceeds safe token limits.
     """
-    prompt = f"""
-You must examine the following html file and extract its content into a XML API document. The page is about the API of the python Textual library. There are detailed informations about the python classes and their usage. The XML output should provide a structured version of the documentation contained in the page. It should contains all the informations found in the html document, excluding side menus, indexes, and or other navigation elements of the page, without missing anything of the content. Ignore images or data encoded in base64. Remove links. The XML output should be machine readable. There can be only two html page classifications: <CLASS> or <API_USAGE>. If the html page is about a introduction, tutorial, guide, example, how-to, quickstart, etc. then you must wrap the content inside the <API_USAGE> tags. If the html page is about the class description and its members, then you must wrap the content inside the <CLASS> tags, and inside it you should divide it in two sub branches: <CLASS_DESCRIPTION> and <CLASS_API> tags. Inside the <API_USAGE> you must categorize simply with a division in <SUB_SECTION> tags, each one with inside the <TITLE> of the subject followed by its content. Inside the usage examples sections you can identify sub section titles by the h1, h2, h3, etc. tags. In the CLASS API sections instead, the h1, h2, h3, etc headers are likely to be class members or member descriptions, but there can be exceptions. Sometimes the html page describes a module instead of a class. In this case wrap the section with the <MODULE> tags, and the members with <FUNCTION>, <VARIABLE>, <CONSTANT>, etc. indicating name, signature, return types and modifiers when available. You must explicitly indicate the type of the member and its return type when available, and possibly the modifiers. Do not miss any entry. Completeness is mandatory: even if some information about a type, member, a method or a return type is missing from the html page because it is implicit, you must infer it from the context and explicitly declare it in the XML document. Tables must be converted to XML structures. Remember to escape XML characters of all text inside the XML text strings and attributes values. You must escape the text strings and the attribute values exactly as this python function:
+    # Check if content needs chunking (>200K chars ≈ >85K tokens)
+    chunks = chunk_html_by_size(html_content, max_chars=200000)
+
+    if len(chunks) == 1:
+        # Single chunk - process normally
+        return _process_single_chunk(html_content, pricing_info)
+
+    # Multiple chunks - process each and merge
+    logger.info(f"Processing {len(chunks)} chunks separately...")
+    all_xml_parts = []
+    total_cost = 0.0
+
+    for i, chunk in enumerate(chunks, 1):
+        logger.info(f"Processing chunk {i}/{len(chunks)}...")
+        xml_part, cost = _process_single_chunk(chunk, pricing_info, chunk_num=i)
+
+        if xml_part:
+            # Extract just the content, strip wrapper tags
+            xml_part = xml_part.strip()
+            if xml_part.startswith("<?xml"):
+                # Remove XML declaration
+                xml_part = re.sub(r"<\?xml[^>]+\?>\s*", "", xml_part)
+            if xml_part.startswith("<XML>"):
+                xml_part = re.sub(r"^<XML>\s*", "", xml_part)
+                xml_part = re.sub(r"\s*</XML>$", "", xml_part)
+
+            all_xml_parts.append(xml_part)
+            total_cost += cost
+        else:
+            logger.error(f"Failed to process chunk {i}/{len(chunks)}")
+
+    if not all_xml_parts:
+        return None, total_cost
+
+    # Merge all XML parts
+    merged_xml = "\n".join(all_xml_parts)
+    logger.info(f"Merged {len(all_xml_parts)} chunks into final XML")
+
+    return merged_xml, total_cost
+
+
+def _process_single_chunk(
+    html_content: str,
+    pricing_info: Dict[str, Dict[str, float]],
+    chunk_num: Optional[int] = None,
+) -> Tuple[Optional[str], float]:
+    """Process a single chunk of HTML content."""
+    chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
+
+    # Original detailed prompt
+    prompt = f"""You must examine the following html file and extract its content into a XML API document. The page is about the API of the python Textual library. There are detailed informations about the python classes and their usage. The XML output should provide a structured version of the documentation contained in the page. It should contains all the informations found in the html document, excluding side menus, indexes, and or other navigation elements of the page, without missing anything of the content. Ignore images or data encoded in base64. Remove links. The XML output should be machine readable. 
+
+There can be three html page classifications: <CLASS>, <MODULE>, or <API_USAGE>. 
+
+If the html page is about a introduction, tutorial, guide, example, how-to, quickstart, etc. then you must wrap the content inside the <API_USAGE> tags. Inside the <API_USAGE> you must categorize simply with a division in <SUB_SECTION> tags, each one with inside the <TITLE> of the subject followed by its content. Inside the usage examples sections you can identify sub section titles by the h1, h2, h3, etc. tags.
+
+If the html page is about the class description and its members, then you must wrap the content inside the <CLASS> tags, and inside it you should divide it in two sub branches: <CLASS_DESCRIPTION> and <CLASS_API> tags. In the CLASS API sections, the h1, h2, h3, etc headers are likely to be class members or member descriptions, but there can be exceptions.
+
+Sometimes the html page describes a module instead of a class. In this case wrap the section with the <MODULE> tags, and the members with <FUNCTION>, <VARIABLE>, <CONSTANT>, etc. indicating name, signature, return types and modifiers when available.
+
+You must explicitly indicate the type of the member and its return type when available, and possibly the modifiers. Do not miss any entry. Completeness is mandatory: even if some information about a type, member, a method or a return type is missing from the html page because it is implicit, you must infer it from the context and explicitly declare it in the XML document. Tables must be converted to XML structures.
+
+Remember to escape XML characters of all text inside the XML text strings and attributes values. You must escape the text strings and the attribute values exactly as this python function:
 
 ```python
 def escape_xml(xml_doc: str) -> str:
@@ -1360,6 +1647,7 @@ def escape_xml(xml_doc: str) -> str:
     xml_doc = xml_doc.replace('&', '&amp;')
     return xml_doc
 ```
+
 For example writing an XML string like this one is wrong:
 ```xml
 <DESCRIPTION>Grow space by (<top>, <right>, <bottom>, <left>).</DESCRIPTION>
@@ -1368,18 +1656,36 @@ Instead you should write:
 ```xml
 <DESCRIPTION>Grow space by (&lt;top&gt;, &lt;right&gt;, &lt;bottom&gt;, &lt;left&gt;).</DESCRIPTION>
 ```
-Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be sure to produce a solid reliable XML document. DO NOT ADD, ANNOTATE OR COMMENT ANYTHING. Your output must be only the document in XML format, nothing else.
+
+Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be sure to produce a solid reliable XML document.
+
+Your response must be a valid JSON object with this exact structure:
+```json
+{{
+  "xml_content": "<complete XML document as escaped string>",
+  "document_type": "CLASS|MODULE|API_USAGE",
+  "completeness_check": true
+}}
+```
+
+Set `completeness_check` to `true` ONLY if you are certain ALL content was extracted without omissions. Set it to `false` if you had to truncate or skip any content.
 
 <TEXT>
 {html_content}
-"""
+</TEXT>
+
+Remember: Your response must be ONLY the JSON object specified above. The xml_content field must contain the complete XML document. No additional commentary, annotations, or explanations outside the JSON object."""
 
     try:
+        logger.debug(f"Processing{chunk_label}: {len(html_content)} chars")
         xml_output, request_cost = call_openai_api(prompt, pricing_info)
         xml_output = extract_xml_from_input(xml_output)
+        logger.info(
+            f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${request_cost:.6f}"
+        )
         return xml_output, request_cost
     except Exception as e:
-        logger.error(f"LLM processing failed: {e}")
+        logger.error(f"LLM processing failed{chunk_label}: {e}")
         return None, 0.0
 
 
@@ -1389,19 +1695,26 @@ Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be su
 
 
 def web_scraper(url: str) -> Optional[str]:
+    logger.debug(f"=== web_scraper invoked ===")
+    logger.debug(f"Target URL: {url}")
     try:
+        logger.debug("Starting scraping process...")
         content = start_scraping(url)
         if content:
             content_size = len(content) / 1024  # Convert to KB
             logger.info(
                 f"Scraping successful for {url}. {content_size:.2f} KB scraped."
             )
+            logger.debug(f"Content preview (first 200 chars): {content[:200]}...")
+            logger.debug(f"=== web_scraper completed successfully ===")
             return content
         else:
             logger.error(f"No content retrieved from {url}")
+            logger.debug(f"=== web_scraper failed (no content) ===")
             return None
     except Exception as e:
         logger.error(f"Error scraping {url}: {str(e)}", exc_info=True)
+        logger.debug(f"=== web_scraper failed (exception) ===")
         return None
 
 
@@ -1428,7 +1741,8 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
                 response = requests.get(sitemap_url, timeout=10)
                 response.raise_for_status()
             logger.info("Fetched sitemap successfully.")
-            return response.text
+            sitemap_content: str = response.text
+            return sitemap_content
         except requests.RequestException as e:
             logger.error(f"Failed to fetch sitemap.xml from {sitemap_url}: {e}")
     logger.error("Failed to fetch sitemap.xml from all provided URLs")
@@ -1446,11 +1760,15 @@ def process_single_page(
 ) -> Optional[str]:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
+    Note: slimdown_html is already called inside web_scraper/Scraper.scrape(),
+    so we don't call it again here.
     """
     logger.info("Processing single page.")
+    logger.debug(f"=== process_single_page invoked ===")
+    logger.debug(f"URL: {url}")
 
     class ProcessingResult:
-        def __init__(self):
+        def __init__(self) -> None:
             self.html_content: Optional[str] = None
             self.xml_content: Optional[str] = None
             self.error: Optional[str] = None
@@ -1459,51 +1777,83 @@ def process_single_page(
 
     def process_in_background() -> None:
         try:
+            logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
             result.html_content = web_scraper(url)
             if not result.html_content:
                 result.error = (
                     "Failed to retrieve HTML content for single page processing."
                 )
+                logger.debug("Step 1 FAILED: No HTML content retrieved")
                 return
+            logger.debug(
+                f"Step 1 SUCCESS: Retrieved {len(result.html_content)} characters (already slimmed)"
+            )
 
-            (
-                slimmed_html,
-                page_title,
-                code_examples,
-                method_signatures,
-                class_definitions,
-                images,
-                links,
-            ) = slimdown_html(result.html_content)
+            # Note: slimdown_html was already called in Scraper.scrape()
+            # The content is already cleaned, so we use it directly
+            slimmed_html = result.html_content
+            
+            # Extract additional metadata from the HTML for context
+            # We still need to parse for code examples, etc.
+            soup = BeautifulSoup(slimmed_html, "html.parser")
+            page_title = soup.find("title").get_text(strip=True) if soup.find("title") else "Unknown"
+            
+            # Extract code examples
+            code_examples = []
+            for code_tag in soup.find_all("code"):
+                code_text = code_tag.get_text(strip=True)
+                if code_text:
+                    code_examples.append(code_text)
+            
+            # Extract links
+            links = []
+            for link in soup.find_all("a", href=True):
+                href = link["href"]
+                text = link.get_text(strip=True)
+                if text:
+                    links.append((href, text))
 
             # Prepare additional content for LLM
             additional_content: Dict[str, List[str]] = {
                 "code_examples": code_examples,
-                "method_signatures": method_signatures,
-                "class_definitions": class_definitions,
-                "images": images,
+                "method_signatures": [],  # Already extracted in slimdown_html
+                "class_definitions": [],  # Already extracted in slimdown_html
+                "images": [],  # Already extracted in slimdown_html
                 "links": [f"{href}: {text}" for href, text in links],
             }
+            logger.debug(
+                f"Step 2: Extracted metadata - Title: {page_title}, Code: {len(code_examples)}, Links: {len(links)}"
+            )
 
+            logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
             llm_result = call_llm_to_convert_html_to_xml(
                 slimmed_html, additional_content, pricing_info
             )
             if llm_result is None:
-                result.error = "Failed to convert HTML to XML."
+                result.error = "Failed to convert HTML to XML."  # type: ignore[unreachable]
+                logger.debug("Step 3 FAILED: LLM conversion returned None")
                 return
 
             xml_content, _ = llm_result
+            logger.debug(
+                f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)"
+            )
+
             if xml_content:
                 # Include source URL in XML content
                 result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
+                logger.debug(f"Step 4: Saving XML to file...")
 
                 # Save individual XML file
                 xml_file = temp_folder / "processed_single_page.xml"
                 with open(xml_file, "w", encoding="utf-8") as f:
                     f.write(result.xml_content)
+                logger.debug(f"Step 4 SUCCESS: Saved XML to {xml_file}")
         except Exception as e:
             result.error = f"Error processing page: {str(e)}"
+            logger.debug(f"Background processing FAILED with exception: {str(e)}")
 
+    logger.debug("Starting background processing thread...")
     with Spinner("Processing page...") as spinner:
         thread = threading.Thread(target=process_in_background)
         thread.start()
@@ -1511,43 +1861,28 @@ def process_single_page(
             spinner.step()
             time.sleep(0.1)
         thread.join()
+    logger.debug("Background processing thread completed")
 
     if result.error:
         logger.error(result.error)
+        logger.debug(f"=== process_single_page FAILED ===")
         return None
 
     if result.xml_content is not None:
+        logger.debug("Step 5: Merging XML files...")
         merged_xml = merge_xmls(temp_folder)
         merged_xml_file = temp_folder / "merged_output.xml"
         with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
+        logger.debug(
+            f"Step 5 SUCCESS: Merged XML file created ({len(merged_xml)} characters)"
+        )
+        logger.debug(f"=== process_single_page completed successfully ===")
         return result.xml_content
 
     logger.error("Failed to convert HTML to XML. No XML content generated.")
-    return None
-
-    with Spinner("Processing page...") as spinner:
-        thread = threading.Thread(target=process_in_background)
-        thread.start()
-        while thread.is_alive():
-            spinner.step()
-            time.sleep(0.1)
-        thread.join()
-
-    if result.error:
-        logger.error(result.error)
-        return None
-
-    if result.xml_content is not None:
-        merged_xml = merge_xmls(temp_folder)
-        merged_xml_file = temp_folder / "merged_output.xml"
-        with open(merged_xml_file, "w", encoding="utf-8") as f:
-            f.write(merged_xml)
-        logger.info(f"Merged XML saved to {merged_xml_file}")
-        return result.xml_content
-
-    logger.error("Failed to convert HTML to XML. No XML content generated.")
+    logger.debug(f"=== process_single_page FAILED (no XML content) ===")
     return None
 
 
@@ -1596,7 +1931,7 @@ def process_url(
             f.write(html_content)
 
         if shutdown_flag:
-            logger.info(f"Shutdown requested. Skipping LLM processing for URL {url}")
+            logger.info(f"Shutdown requested. Skipping LLM processing for URL {url}")  # type: ignore[unreachable]
             progress_tracker[url]["status"] = "pending"
             update_progress_file()
             return None
@@ -1607,7 +1942,7 @@ def process_url(
             html_content, additional_content, pricing_info
         )
         if result is None:
-            logger.warning(f"Failed to convert HTML to XML for {url}")
+            logger.warning(f"Failed to convert HTML to XML for {url}")  # type: ignore[unreachable]
             progress_tracker[url] = {
                 "status": "failed",
                 "cost": progress_tracker[url].get("cost", 0.0),
@@ -1683,7 +2018,7 @@ def process_url(
         return None
 
 
-def update_progress_file():
+def update_progress_file() -> None:
     global progress_file, temp_folder
     if progress_file:
         with cost_lock:
