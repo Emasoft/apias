@@ -1289,8 +1289,8 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
 
 
 @retry(
-    stop=stop_after_attempt(70),  # Increased attempts
-    wait=wait_exponential(multiplier=1, min=4, max=70),  # Wider backoff range
+    stop=stop_after_attempt(5),  # Reasonable retry limit (was 70 - could run for hours!)
+    wait=wait_exponential(multiplier=2, min=4, max=60),  # Exponential backoff: 4s, 8s, 16s, 32s, 60s
     retry=retry_if_exception_type(
         (
             requests.exceptions.RequestException,
@@ -1340,8 +1340,15 @@ def make_openai_request(
     logger.debug(f"Temperature: {data.get('temperature', 'default (1)')}")
 
     try:
+        # Calculate proportional timeout based on payload size
+        # Base: 60s + 0.1s per 1K chars, max 20 minutes (1200s)
+        # Examples: 10K chars = 61s, 100K chars = 70s, 500K chars = 110s
+        payload_chars = len(prompt)
+        timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
+
+        logger.debug(f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s")
         logger.debug(f"Sending POST request to OpenAI API...")
-        response = requests.post(url, headers=headers, json=data, timeout=600)
+        response = requests.post(url, headers=headers, json=data, timeout=timeout_seconds)
         logger.debug(f"Received response with status code: {response.status_code}")
         logger.debug(f"Response headers: {dict(response.headers)}")
 
@@ -2674,34 +2681,59 @@ def check_for_running_apias_instances() -> None:
     from making simultaneous API calls and wasting money.
     """
     try:
-        # Get current process ID
+        # Get current process ID and parent process info
         current_pid = os.getpid()
         
-        # Use ps command to find all APIAS processes
-        # Look for processes running "uv run apias" specifically
+        # Use ps command with full command line output
         result = subprocess.run(
-            ["ps", "aux"],
+            ["ps", "-eo", "pid,command"],
             capture_output=True,
             text=True,
             timeout=5
         )
         
-        # Count APIAS processes (must contain "uv run apias" in command line)
+        # Find APIAS processes by matching Python processes running apias.py or apias module
         apias_processes = []
         for line in result.stdout.split('\n'):
-            # Only match lines that contain the actual apias command
-            # Not just any process in a directory path containing "apias"
-            if 'uv run apias' in line or '/bin/apias' in line:
-                # Extract PID (second column in ps aux output)
-                parts = line.split()
-                if len(parts) >= 2:
-                    try:
-                        pid = int(parts[1])
-                        # Exclude current process
-                        if pid != current_pid:
-                            apias_processes.append((pid, line))
-                    except ValueError:
-                        continue
+            # Skip header line and current process
+            if not line.strip() or 'PID' in line:
+                continue
+                
+            # Parse PID and command
+            parts = line.strip().split(None, 1)
+            if len(parts) < 2:
+                continue
+                
+            try:
+                pid = int(parts[0])
+                command = parts[1]
+            except ValueError:
+                continue
+            
+            # Skip current process
+            if pid == current_pid:
+                continue
+            
+            # Match actual APIAS execution patterns:
+            # 1. "uv run apias" (NOT just "apias" in path!)
+            # 2. "python.*apias.py" or "python.*-m apias"
+            # Must be a command being executed, not just a directory path
+            is_apias = False
+            
+            # Check for "uv run apias" as a command (with word boundaries)
+            if re.search(r'\buv\s+run\s+apias\b', command):
+                is_apias = True
+            # Check for Python executing apias.py or apias module
+            elif re.search(r'\bpython[0-9.]*\s+.*apias\.py\b', command):
+                is_apias = True
+            elif re.search(r'\bpython[0-9.]*\s+-m\s+apias\b', command):
+                is_apias = True
+            # Check for direct apias script execution
+            elif re.search(r'\b/[^\s]*/apias\s+', command):
+                is_apias = True
+                
+            if is_apias:
+                apias_processes.append((pid, command))
         
         if apias_processes:
             print("=" * 80)
@@ -2710,7 +2742,7 @@ def check_for_running_apias_instances() -> None:
             print("\nRunning multiple APIAS instances simultaneously wastes money on API calls.")
             print("\nFound the following APIAS process(es):")
             for pid, cmdline in apias_processes:
-                print(f"  PID {pid}: {cmdline.strip()}")
+                print(f"  PID {pid}: {cmdline[:100]}...")
             print("\nPlease wait for the existing process to complete, or kill it with:")
             print(f"  kill {apias_processes[0][0]}")
             print("\nExiting to prevent duplicate API calls.")
@@ -2723,7 +2755,7 @@ def check_for_running_apias_instances() -> None:
     except Exception as e:
         # If check fails for any reason, just continue
         # (better to possibly have duplicates than to block legitimate runs)
-        pass
+        logger.debug(f"Singleton check failed: {e}")
 
 
 def main() -> None:
