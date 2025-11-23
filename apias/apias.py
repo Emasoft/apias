@@ -44,11 +44,6 @@ by fmuaddib
 
     python -m playwright install --with-deps chromium
 
-    *the Tenacity library*
-    You can install it manually with this command:
-
-    python -m pip install --upgrade --upgrade-strategy only-if-needed tenacity
-
     *the BeautifulSoup library*
     You can install it manually with this command:
 
@@ -110,6 +105,7 @@ import time
 import shutil
 import logging
 import argparse
+import asyncio
 import concurrent.futures
 from typing import Dict, List, Optional, Tuple, Union, Any, Callable, Type, cast
 from bs4 import BeautifulSoup, Comment
@@ -118,14 +114,15 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 import requests
-from openai import OpenAI
-from openai import OpenAIError, APIConnectionError, APITimeoutError, RateLimitError, APIStatusError
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
+from openai import AsyncOpenAI
+from openai import (
+    OpenAIError,
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    APIStatusError,
 )
+# tenacity import removed - AsyncOpenAI handles retries internally
 from requests.exceptions import RequestException
 import fnmatch
 import itertools
@@ -1045,7 +1042,7 @@ def slimdown_html(
     List[str],
     List[Tuple[str, str]],
 ]:
-    logger.debug(f"=== slimdown_html invoked ===")
+    logger.debug("=== slimdown_html invoked ===")
     logger.debug(f"Input HTML size: {len(page_source)} characters")
 
     # Clean the HTML content from navigation elements and ads
@@ -1132,7 +1129,7 @@ def slimdown_html(
     final_html = str(soup)
     page_title = soup.title.string if soup.title else "scraped_page"
 
-    logger.debug(f"=== slimdown_html completed ===")
+    logger.debug("=== slimdown_html completed ===")
     logger.debug(f"Final HTML size: {len(final_html)} characters")
     logger.debug(f"Page title: {page_title}")
     logger.debug(
@@ -1290,7 +1287,7 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
     )
 
 
-def make_openai_request(
+async def make_openai_request(
     api_key: str,
     prompt: str,
     pricing_info: Dict[str, Dict[str, float]],
@@ -1299,7 +1296,7 @@ def make_openai_request(
     global total_cost
 
     # Debug logging: Request details
-    logger.debug(f"=== OpenAI API Request ===")
+    logger.debug("=== OpenAI API Request ===")
     logger.debug(f"Model: {model}")
     logger.debug(f"Prompt length: {len(prompt)} characters")
     logger.debug(f"Using structured output with schema: {XML_OUTPUT_SCHEMA}")
@@ -1309,21 +1306,23 @@ def make_openai_request(
     payload_chars = len(prompt)
     timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
 
-    logger.debug(f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s")
+    logger.debug(
+        f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s"
+    )
 
     try:
-        # Create OpenAI client with timeout and max_retries
+        # Create AsyncOpenAI client with timeout and max_retries
         # The library handles retries automatically (default is 2)
-        client = OpenAI(
+        client = AsyncOpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
             max_retries=2,  # OpenAI library handles retries with exponential backoff
         )
 
-        logger.debug(f"Sending request to OpenAI API (library will handle retries)...")
+        logger.debug("Sending request to OpenAI API (library will handle retries)...")
 
-        # Make the API call with structured output
-        response = client.chat.completions.create(
+        # Make the async API call with structured output
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {
@@ -1342,7 +1341,7 @@ def make_openai_request(
             },
         )
 
-        logger.debug(f"=== OpenAI API Response ===")
+        logger.debug("=== OpenAI API Response ===")
         logger.debug(f"Response ID: {response.id}")
         logger.debug(f"Model: {response.model}")
         logger.debug(f"Finish reason: {response.choices[0].finish_reason}")
@@ -1398,12 +1397,16 @@ def make_openai_request(
             "finish_reason": response.choices[0].finish_reason,
         }
 
-        logger.debug(f"Response content length: {len(response.choices[0].message.content or '')} characters")
+        logger.debug(
+            f"Response content length: {len(response.choices[0].message.content or '')} characters"
+        )
 
-        return cast(Dict[str, Any], response_dict)
+        return response_dict
 
     except APITimeoutError as e:
-        logger.error(f"OpenAI API request timed out after {timeout_seconds:.1f}s: {str(e)}")
+        logger.error(
+            f"OpenAI API request timed out after {timeout_seconds:.1f}s: {str(e)}"
+        )
         raise
 
     except RateLimitError as e:
@@ -1425,31 +1428,33 @@ def make_openai_request(
         raise
 
 
-def call_openai_api(
+async def call_openai_api(
     prompt: str, pricing_info: Dict[str, Dict[str, float]]
 ) -> Tuple[str, float]:
     """
-    Makes a request to the OpenAI API using the requests library.
+    Makes a request to the OpenAI API using the async OpenAI client.
     Parses the structured JSON response to extract the XML content.
     """
-    logger.debug(f"=== call_openai_api invoked ===")
-    logger.debug(f"Getting OpenAI API key...")
+    logger.debug("=== call_openai_api invoked ===")
+    logger.debug("Getting OpenAI API key...")
     api_key = get_openai_api_key()
     logger.debug(f"API key retrieved (length: {len(api_key)})")
 
-    logger.debug(f"Making OpenAI request...")
-    response_json = make_openai_request(api_key, prompt, pricing_info=pricing_info)
-    logger.debug(f"OpenAI request completed")
+    logger.debug("Making OpenAI request...")
+    response_json = await make_openai_request(
+        api_key, prompt, pricing_info=pricing_info
+    )
+    logger.debug("OpenAI request completed")
 
     # Parse the structured JSON response
     content_str = str(response_json["choices"][0]["message"]["content"]).strip()
-    logger.debug(f"=== Parsing Structured Response ===")
+    logger.debug("=== Parsing Structured Response ===")
     logger.debug(f"Raw content string length: {len(content_str)}")
     logger.debug(f"Raw content (first 500 chars): {content_str[:500]}...")
 
     try:
         structured_response = json.loads(content_str)
-        logger.debug(f"Successfully parsed JSON response")
+        logger.debug("Successfully parsed JSON response")
         logger.debug(f"Structured response keys: {list(structured_response.keys())}")
 
         # Extract the XML content from the structured response
@@ -1460,17 +1465,17 @@ def call_openai_api(
         logger.debug(f"XML content length: {len(xml_content)} characters")
 
         content = xml_content
-        logger.debug(f"Successfully extracted XML content from structured response")
+        logger.debug("Successfully extracted XML content from structured response")
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse structured JSON response: {e}")
         logger.debug(f"Attempted to parse: {content_str[:1000]}...")
         # Fallback to raw content if JSON parsing fails
         content = content_str
-        logger.debug(f"Using raw content as fallback")
+        logger.debug("Using raw content as fallback")
 
     request_cost = response_json.get("request_cost", 0)
     logger.debug(f"Request cost: ${request_cost:.6f}")
-    logger.debug(f"=== call_openai_api completed ===")
+    logger.debug("=== call_openai_api completed ===")
     return content, request_cost
 
 
@@ -1493,27 +1498,29 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
         # Split by doc objects
         chunk_header = str(soup.find("h1")) if soup.find("h1") else ""
         header_size = len(chunk_header)
-        
+
         # Reserve space for header in each chunk
         effective_max = max_chars - header_size
-        
+
         current_chunk = ""
-        
+
         for obj in doc_objects:
             obj_html = str(obj)
             obj_size = len(obj_html)
-            
+
             # If this single object exceeds the limit, split it further
             if obj_size > effective_max:
                 # Save current chunk if not empty
                 if current_chunk:
                     chunks.append(chunk_header + current_chunk)
                     current_chunk = ""
-                
+
                 # Try to split the large object by its internal doc-objects or sections
                 obj_soup = BeautifulSoup(obj_html, "html.parser")
-                sub_objects = obj_soup.find_all(class_=re.compile(r"doc-object|doc-section"))
-                
+                sub_objects = obj_soup.find_all(
+                    class_=re.compile(r"doc-object|doc-section")
+                )
+
                 if sub_objects and len(sub_objects) > 1:
                     # Can split by sub-objects
                     sub_chunk = ""
@@ -1533,14 +1540,14 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
                     )
                     chunks.append(chunk_header + obj_html)
                 continue
-            
+
             # If adding this object would exceed limit, save current chunk
             if current_chunk and len(current_chunk) + obj_size > effective_max:
                 chunks.append(chunk_header + current_chunk)
                 current_chunk = ""
-            
+
             current_chunk += obj_html
-        
+
         # Add final chunk
         if current_chunk:
             chunks.append(chunk_header + current_chunk)
@@ -1548,14 +1555,14 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
         # Fallback: split by character count at tag boundaries
         content_parts = re.split(r"(</[^>]+>)", html_content)
         current_chunk = ""
-        
+
         for part in content_parts:
             if len(current_chunk) + len(part) > max_chars:
                 if current_chunk:
                     chunks.append(current_chunk)
                     current_chunk = ""
             current_chunk += part
-        
+
         if current_chunk:
             chunks.append(current_chunk)
 
@@ -1568,13 +1575,13 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
     return chunks
 
 
-def call_llm_to_convert_html_to_xml(
+async def call_llm_to_convert_html_to_xml(
     html_content: str,
     additional_content: Dict[str, List[str]],
     pricing_info: Dict[str, Dict[str, float]],
 ) -> Tuple[Optional[str], float]:
     """
-    Uses OpenAI's API to convert HTML content to structured XML.
+    Uses OpenAI's API to convert HTML content to structured XML asynchronously.
     Implements chunking for large content that exceeds safe token limits.
     """
     # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
@@ -1583,16 +1590,20 @@ def call_llm_to_convert_html_to_xml(
 
     if len(chunks) == 1:
         # Single chunk - process normally
-        return _process_single_chunk(html_content, pricing_info)
+        return await _process_single_chunk(html_content, pricing_info)
 
-    # Multiple chunks - process in parallel
-    logger.info(f"Processing {len(chunks)} chunks in parallel with {max(20, len(chunks))} workers...")
+    # Multiple chunks - process in parallel using asyncio
+    logger.info(
+        f"Processing {len(chunks)} chunks in parallel with true async concurrency..."
+    )
 
-    def process_chunk_wrapper(args):
-        """Wrapper function for parallel processing"""
+    async def process_chunk_wrapper(
+        args: Tuple[int, str],
+    ) -> Tuple[int, Optional[str], float]:
+        """Async wrapper function for parallel processing"""
         i, chunk = args
         logger.info(f"Processing chunk {i}/{len(chunks)}...")
-        xml_part, cost = _process_single_chunk(chunk, pricing_info, chunk_num=i)
+        xml_part, cost = await _process_single_chunk(chunk, pricing_info, chunk_num=i)
 
         if xml_part:
             # Extract just the content, strip wrapper tags
@@ -1611,16 +1622,13 @@ def call_llm_to_convert_html_to_xml(
     # Prepare chunks with their indices (no delays - truly parallel)
     chunk_args = [(i, chunk) for i, chunk in enumerate(chunks, 1)]
 
-    # Process chunks in parallel using ThreadPoolExecutor
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-        futures = [executor.submit(process_chunk_wrapper, args) for args in chunk_args]
-        for future in concurrent.futures.as_completed(futures):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as e:
-                logger.error(f"Error processing chunk: {e}")
+    # Process chunks in parallel using asyncio.gather for true async concurrency
+    tasks = [process_chunk_wrapper(args) for args in chunk_args]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=False)
+    except Exception as e:
+        logger.error(f"Error processing chunks: {e}")
+        results = []
 
     # Sort results by chunk index to maintain order
     results.sort(key=lambda x: x[0])
@@ -1628,7 +1636,7 @@ def call_llm_to_convert_html_to_xml(
     # Extract XML parts and calculate total cost
     all_xml_parts = []
     total_cost = 0.0
-    for i, xml_part, cost in results:
+    for _i, xml_part, cost in results:
         if xml_part:
             all_xml_parts.append(xml_part)
         total_cost += cost
@@ -1639,17 +1647,19 @@ def call_llm_to_convert_html_to_xml(
     # Merge all XML parts into a valid XML document
     # Wrap all chunks in a root element to create valid XML structure
     merged_xml = f"<XML>\n{''.join(all_xml_parts)}\n</XML>"
-    logger.info(f"Merged {len(all_xml_parts)} chunks into final XML ({len(merged_xml)} chars)")
+    logger.info(
+        f"Merged {len(all_xml_parts)} chunks into final XML ({len(merged_xml)} chars)"
+    )
 
     return merged_xml, total_cost
 
 
-def _process_single_chunk(
+async def _process_single_chunk(
     html_content: str,
     pricing_info: Dict[str, Dict[str, float]],
     chunk_num: Optional[int] = None,
 ) -> Tuple[Optional[str], float]:
-    """Process a single chunk of HTML content."""
+    """Process a single chunk of HTML content asynchronously."""
     chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
 
     # Simplified prompt optimized for chunked processing
@@ -1681,11 +1691,11 @@ Classify the content and wrap it in the appropriate root tag:
 1. <CLASS>: Class documentation
    - Include <CLASS_DESCRIPTION> and <CLASS_API> sections
    - Each method/property as separate elements with full signatures
-   
+
 2. <MODULE>: Module documentation
    - Include <FUNCTION>, <VARIABLE>, <CONSTANT> elements
    - Each with name, signature, types, and modifiers
-   
+
 3. <API_USAGE>: Tutorials, guides, examples
    - Organize with <SUB_SECTION> elements
    - Each with <TITLE> and content
@@ -1723,7 +1733,7 @@ No additional commentary or explanations - ONLY the JSON object.
 
     try:
         logger.debug(f"Processing{chunk_label}: {len(html_content)} chars")
-        xml_output, request_cost = call_openai_api(prompt, pricing_info)
+        xml_output, request_cost = await call_openai_api(prompt, pricing_info)
         xml_output = extract_xml_from_input(xml_output)
         logger.info(
             f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${request_cost:.6f}"
@@ -1740,7 +1750,7 @@ No additional commentary or explanations - ONLY the JSON object.
 
 
 def web_scraper(url: str) -> Optional[str]:
-    logger.debug(f"=== web_scraper invoked ===")
+    logger.debug("=== web_scraper invoked ===")
     logger.debug(f"Target URL: {url}")
     try:
         logger.debug("Starting scraping process...")
@@ -1751,15 +1761,15 @@ def web_scraper(url: str) -> Optional[str]:
                 f"Scraping successful for {url}. {content_size:.2f} KB scraped."
             )
             logger.debug(f"Content preview (first 200 chars): {content[:200]}...")
-            logger.debug(f"=== web_scraper completed successfully ===")
+            logger.debug("=== web_scraper completed successfully ===")
             return content
         else:
             logger.error(f"No content retrieved from {url}")
-            logger.debug(f"=== web_scraper failed (no content) ===")
+            logger.debug("=== web_scraper failed (no content) ===")
             return None
     except Exception as e:
         logger.error(f"Error scraping {url}: {str(e)}", exc_info=True)
-        logger.debug(f"=== web_scraper failed (exception) ===")
+        logger.debug("=== web_scraper failed (exception) ===")
         return None
 
 
@@ -1809,7 +1819,7 @@ def process_single_page(
     so we don't call it again here.
     """
     logger.info("Processing single page.")
-    logger.debug(f"=== process_single_page invoked ===")
+    logger.debug("=== process_single_page invoked ===")
     logger.debug(f"URL: {url}")
 
     class ProcessingResult:
@@ -1820,7 +1830,7 @@ def process_single_page(
 
     result = ProcessingResult()
 
-    def process_in_background() -> None:
+    async def process_in_background_async() -> None:
         try:
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
             result.html_content = web_scraper(url)
@@ -1837,19 +1847,23 @@ def process_single_page(
             # Note: slimdown_html was already called in Scraper.scrape()
             # The content is already cleaned, so we use it directly
             slimmed_html = result.html_content
-            
+
             # Extract additional metadata from the HTML for context
             # We still need to parse for code examples, etc.
             soup = BeautifulSoup(slimmed_html, "html.parser")
-            page_title = soup.find("title").get_text(strip=True) if soup.find("title") else "Unknown"
-            
+            page_title = (
+                soup.find("title").get_text(strip=True)
+                if soup.find("title")
+                else "Unknown"
+            )
+
             # Extract code examples
             code_examples = []
             for code_tag in soup.find_all("code"):
                 code_text = code_tag.get_text(strip=True)
                 if code_text:
                     code_examples.append(code_text)
-            
+
             # Extract links
             links = []
             for link in soup.find_all("a", href=True):
@@ -1871,7 +1885,7 @@ def process_single_page(
             )
 
             logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
-            llm_result = call_llm_to_convert_html_to_xml(
+            llm_result = await call_llm_to_convert_html_to_xml(
                 slimmed_html, additional_content, pricing_info
             )
             if llm_result is None:
@@ -1887,7 +1901,7 @@ def process_single_page(
             if xml_content:
                 # Include source URL in XML content
                 result.xml_content = f"<SOURCE_URL>{url}</SOURCE_URL>\n" + xml_content
-                logger.debug(f"Step 4: Saving XML to file...")
+                logger.debug("Step 4: Saving XML to file...")
 
                 # Save individual XML file
                 xml_file = temp_folder / "processed_single_page.xml"
@@ -1897,6 +1911,10 @@ def process_single_page(
         except Exception as e:
             result.error = f"Error processing page: {str(e)}"
             logger.debug(f"Background processing FAILED with exception: {str(e)}")
+
+    def process_in_background() -> None:
+        """Wrapper to run async function in sync context"""
+        asyncio.run(process_in_background_async())
 
     logger.debug("Starting background processing thread...")
     with Spinner("Processing page...") as spinner:
@@ -1910,7 +1928,7 @@ def process_single_page(
 
     if result.error:
         logger.error(result.error)
-        logger.debug(f"=== process_single_page FAILED ===")
+        logger.debug("=== process_single_page FAILED ===")
         return None
 
     if result.xml_content is not None:
@@ -1923,11 +1941,11 @@ def process_single_page(
         logger.debug(
             f"Step 5 SUCCESS: Merged XML file created ({len(merged_xml)} characters)"
         )
-        logger.debug(f"=== process_single_page completed successfully ===")
+        logger.debug("=== process_single_page completed successfully ===")
         return result.xml_content
 
     logger.error("Failed to convert HTML to XML. No XML content generated.")
-    logger.debug(f"=== process_single_page FAILED (no XML content) ===")
+    logger.debug("=== process_single_page FAILED (no XML content) ===")
     return None
 
 
@@ -1983,8 +2001,10 @@ def process_url(
 
         logger.info(f"Converting HTML to XML for URL: {url}")
         additional_content: Dict[str, List[str]] = {}
-        result = call_llm_to_convert_html_to_xml(
-            html_content, additional_content, pricing_info
+        result = asyncio.run(
+            call_llm_to_convert_html_to_xml(
+                html_content, additional_content, pricing_info
+            )
         )
         if result is None:
             logger.warning(f"Failed to convert HTML to XML for {url}")  # type: ignore[unreachable]
@@ -2635,7 +2655,7 @@ class APIDocument:
         """Convert the document to markdown format."""
         return "\n".join(self.descriptions)
 
-    def to_json(self) -> Dict:
+    def to_json(self) -> Dict[str, List[str]]:
         """Convert the document to a dictionary."""
         return {
             "endpoints": self.endpoints,
@@ -2669,7 +2689,7 @@ def parse_documentation(doc_content: str) -> APIDocument:
     return APIDocument(doc_content)
 
 
-def validate_config(config: dict) -> bool:
+def validate_config(config: Dict[str, Any]) -> bool:
     """Validate the configuration dictionary.
 
     Args:
@@ -2714,17 +2734,14 @@ def check_for_running_apias_instances() -> None:
 
         # Use ps command with full command line output
         result = subprocess.run(
-            ["ps", "-eo", "pid,command"],
-            capture_output=True,
-            text=True,
-            timeout=5
+            ["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=5
         )
 
         # Find APIAS processes by matching Python processes running apias.py or apias module
         apias_processes = []
-        for line in result.stdout.split('\n'):
+        for line in result.stdout.split("\n"):
             # Skip header line and current process
-            if not line.strip() or 'PID' in line:
+            if not line.strip() or "PID" in line:
                 continue
 
             # Parse PID and command
@@ -2741,38 +2758,42 @@ def check_for_running_apias_instances() -> None:
             # Skip current process and parent process (shell/uv launcher)
             if pid == current_pid or pid == parent_pid:
                 continue
-            
+
             # Match actual APIAS execution patterns:
             # ONLY match Python processes running apias, NOT shell wrappers or uv launchers
             # This prevents false positives from parent shell processes
             is_apias = False
 
             # Check for Python executing apias.py or apias module
-            if re.search(r'\bpython[0-9.]*\s+.*apias\.py\b', command):
+            if re.search(r"\bpython[0-9.]*\s+.*apias\.py\b", command):
                 is_apias = True
-            elif re.search(r'\bpython[0-9.]*\s+-m\s+apias\b', command):
+            elif re.search(r"\bpython[0-9.]*\s+-m\s+apias\b", command):
                 is_apias = True
             # Check for direct apias script execution (installed via pip/uv)
-            elif re.search(r'\b/[^\s]*/bin/apias\s+', command):
+            elif re.search(r"\b/[^\s]*/bin/apias\s+", command):
                 is_apias = True
-                
+
             if is_apias:
                 apias_processes.append((pid, command))
-        
+
         if apias_processes:
             print("=" * 80)
             print("ERROR: Another APIAS process is already running!")
             print("=" * 80)
-            print("\nRunning multiple APIAS instances simultaneously wastes money on API calls.")
+            print(
+                "\nRunning multiple APIAS instances simultaneously wastes money on API calls."
+            )
             print("\nFound the following APIAS process(es):")
             for pid, cmdline in apias_processes:
                 print(f"  PID {pid}: {cmdline[:100]}...")
-            print("\nPlease wait for the existing process to complete, or kill it with:")
+            print(
+                "\nPlease wait for the existing process to complete, or kill it with:"
+            )
             print(f"  kill {apias_processes[0][0]}")
             print("\nExiting to prevent duplicate API calls.")
             print("=" * 80)
             sys.exit(1)
-            
+
     except subprocess.TimeoutExpired:
         # If ps command times out, just continue (better than blocking startup)
         pass

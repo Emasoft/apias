@@ -26,7 +26,6 @@ dependencies = [
     "requests>=2.31.0",
     "beautifulsoup4>=4.12.0",
     "lxml>=4.9.0",
-    "tenacity>=8.2.0",
     "playwright>=1.39.0",
     "types-requests>=2.31.0",
     "types-beautifulsoup4>=4.12.0",
@@ -89,10 +88,6 @@ namespace_packages = true
 explicit_package_bases = true
 
 # Per-module options for libraries with inline types but mypy doesn't find them
-[[tool.mypy.overrides]]
-module = ["tenacity", "tenacity.*"]
-ignore_missing_imports = true
-
 [[tool.mypy.overrides]]
 module = ["playwright", "playwright.*"]
 ignore_missing_imports = true
