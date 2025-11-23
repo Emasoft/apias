@@ -119,7 +119,7 @@ from datetime import datetime
 from urllib.parse import urlparse
 import requests
 from openai import OpenAI
-from openai import OpenAIError, APIConnectionError, APITimeoutError, RateLimitError
+from openai import OpenAIError, APIConnectionError, APITimeoutError, RateLimitError, APIStatusError
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -1290,21 +1290,6 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
     )
 
 
-@retry(
-    stop=stop_after_attempt(5),  # Reasonable retry limit (was 70 - could run for hours!)
-    wait=wait_exponential(multiplier=2, min=4, max=60),  # Exponential backoff: 4s, 8s, 16s, 32s, 60s
-    retry=retry_if_exception_type(
-        (
-            APIConnectionError,  # Connection errors (network issues)
-            APITimeoutError,     # Timeout errors
-            RateLimitError,      # Rate limit exceeded
-            requests.exceptions.RequestException,  # Keep for backward compatibility
-            requests.exceptions.Timeout,
-            requests.exceptions.ConnectionError,
-            requests.exceptions.HTTPError,
-        )
-    ),
-)
 def make_openai_request(
     api_key: str,
     prompt: str,
@@ -1321,17 +1306,21 @@ def make_openai_request(
 
     # Calculate proportional timeout based on payload size
     # Base: 60s + 0.1s per 1K chars, max 20 minutes (1200s)
-    # Examples: 10K chars = 61s, 100K chars = 70s, 500K chars = 110s
     payload_chars = len(prompt)
     timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
 
     logger.debug(f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s")
 
     try:
-        # Create OpenAI client with API key and timeout
-        client = OpenAI(api_key=api_key, timeout=timeout_seconds)
+        # Create OpenAI client with timeout and max_retries
+        # The library handles retries automatically (default is 2)
+        client = OpenAI(
+            api_key=api_key,
+            timeout=timeout_seconds,
+            max_retries=2,  # OpenAI library handles retries with exponential backoff
+        )
 
-        logger.debug(f"Sending request to OpenAI API using official Python library...")
+        logger.debug(f"Sending request to OpenAI API (library will handle retries)...")
 
         # Make the API call with structured output
         response = client.chat.completions.create(
@@ -1415,23 +1404,24 @@ def make_openai_request(
 
     except APITimeoutError as e:
         logger.error(f"OpenAI API request timed out after {timeout_seconds:.1f}s: {str(e)}")
-        logger.debug(f"Timeout error details: {e}")
         raise
 
     except RateLimitError as e:
-        logger.error(f"OpenAI API rate limit exceeded: {str(e)}")
-        logger.debug(f"Rate limit error details: {e}")
+        logger.error(f"Rate limit exceeded (429): {str(e)}")
         raise
 
     except APIConnectionError as e:
-        logger.error(f"OpenAI API connection failed: {str(e)}")
-        logger.debug(f"Connection error details: {e}")
+        logger.error(f"API connection failed: {str(e)}")
+        logger.error(f"Underlying cause: {e.__cause__}")
+        raise
+
+    except APIStatusError as e:
+        logger.error(f"API returned non-200 status code: {e.status_code}")
+        logger.error(f"Response: {e.response}")
         raise
 
     except OpenAIError as e:
         logger.error(f"OpenAI API error: {str(e)}")
-        logger.debug(f"Error type: {type(e).__name__}")
-        logger.debug(f"Error details: {e}")
         raise
 
 
