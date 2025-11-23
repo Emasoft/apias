@@ -118,6 +118,8 @@ from pathlib import Path
 from datetime import datetime
 from urllib.parse import urlparse
 import requests
+from openai import OpenAI
+from openai import OpenAIError, APIConnectionError, APITimeoutError, RateLimitError
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -1293,7 +1295,10 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
     wait=wait_exponential(multiplier=2, min=4, max=60),  # Exponential backoff: 4s, 8s, 16s, 32s, 60s
     retry=retry_if_exception_type(
         (
-            requests.exceptions.RequestException,
+            APIConnectionError,  # Connection errors (network issues)
+            APITimeoutError,     # Timeout errors
+            RateLimitError,      # Rate limit exceeded
+            requests.exceptions.RequestException,  # Keep for backward compatibility
             requests.exceptions.Timeout,
             requests.exceptions.ConnectionError,
             requests.exceptions.HTTPError,
@@ -1307,80 +1312,56 @@ def make_openai_request(
     model: str = "gpt-5-nano-2025-08-07",
 ) -> Dict[str, Any]:
     global total_cost
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    url = "https://api.openai.com/v1/chat/completions"
-    data = {
-        "model": model,
-        "messages": [
-            {
-                "role": "system",
-                "content": "You are an expert assistant that converts HTML API documentation to structured XML format. You must extract ALL content comprehensively without omissions, following the exact XML structure specifications provided.",
-            },
-            {"role": "user", "content": prompt},
-        ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "xml_documentation_output",
-                "strict": True,
-                "schema": XML_OUTPUT_SCHEMA,
-            },
-        },
-    }
 
     # Debug logging: Request details
     logger.debug(f"=== OpenAI API Request ===")
     logger.debug(f"Model: {model}")
-    logger.debug(f"URL: {url}")
     logger.debug(f"Prompt length: {len(prompt)} characters")
-    logger.debug(
-        f"Request headers (sanitized): Content-Type: application/json, Authorization: Bearer ***"
-    )
     logger.debug(f"Using structured output with schema: {XML_OUTPUT_SCHEMA}")
-    logger.debug(f"Temperature: {data.get('temperature', 'default (1)')}")
+
+    # Calculate proportional timeout based on payload size
+    # Base: 60s + 0.1s per 1K chars, max 20 minutes (1200s)
+    # Examples: 10K chars = 61s, 100K chars = 70s, 500K chars = 110s
+    payload_chars = len(prompt)
+    timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
+
+    logger.debug(f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s")
 
     try:
-        # Calculate proportional timeout based on payload size
-        # Base: 60s + 0.1s per 1K chars, max 20 minutes (1200s)
-        # Examples: 10K chars = 61s, 100K chars = 70s, 500K chars = 110s
-        payload_chars = len(prompt)
-        timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
+        # Create OpenAI client with API key and timeout
+        client = OpenAI(api_key=api_key, timeout=timeout_seconds)
 
-        logger.debug(f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s")
-        logger.debug(f"Sending POST request to OpenAI API...")
-        response = requests.post(url, headers=headers, json=data, timeout=timeout_seconds)
-        logger.debug(f"Received response with status code: {response.status_code}")
-        logger.debug(f"Response headers: {dict(response.headers)}")
+        logger.debug(f"Sending request to OpenAI API using official Python library...")
 
-        if response.status_code == 401:
-            logger.error("Authentication error: Invalid API key or unauthorized access")
-            raise ValueError("Invalid OpenAI API key")
-
-        if response.status_code == 429:
-            logger.error("Rate limit exceeded or quota exceeded")
-            raise requests.exceptions.RequestException("Rate limit exceeded")
-
-        try:
-            error_data = response.json()
-            if "error" in error_data:
-                error_msg = error_data["error"].get("message", "Unknown error")
-                logger.error(f"OpenAI API error: {error_msg}")
-                raise requests.exceptions.RequestException(
-                    f"OpenAI API error: {error_msg}"
-                )
-        except ValueError:
-            pass  # Response wasn't JSON
-
-        response.raise_for_status()
-        response_json = response.json()
+        # Make the API call with structured output
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert assistant that converts HTML API documentation to structured XML format. You must extract ALL content comprehensively without omissions, following the exact XML structure specifications provided.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "xml_documentation_output",
+                    "strict": True,
+                    "schema": XML_OUTPUT_SCHEMA,
+                },
+            },
+        )
 
         logger.debug(f"=== OpenAI API Response ===")
-        logger.debug(f"Full response JSON keys: {list(response_json.keys())}")
+        logger.debug(f"Response ID: {response.id}")
+        logger.debug(f"Model: {response.model}")
+        logger.debug(f"Finish reason: {response.choices[0].finish_reason}")
 
         # Compute cost
-        usage = response_json.get("usage", {})
-        prompt_tokens = usage.get("prompt_tokens", 0)
-        completion_tokens = usage.get("completion_tokens", 0)
+        usage = response.usage
+        prompt_tokens = usage.prompt_tokens if usage else 0
+        completion_tokens = usage.completion_tokens if usage else 0
 
         logger.debug(
             f"Token usage - Prompt: {prompt_tokens}, Completion: {completion_tokens}"
@@ -1402,23 +1383,55 @@ def make_openai_request(
         logger.info(f"OpenAI API request successful. Cost: ${request_cost:.6f}")
         logger.info(f"Total cost so far: ${total_cost:.6f}")
 
-        # Log detailed response info for debugging
-        finish_reason = response_json["choices"][0]["finish_reason"]
-        logger.debug(f"Finish reason: {finish_reason}")
-        logger.debug(f"Response content length: {len(response.text)} characters")
-        logger.debug(f"Full response content:\n{response.text}")
+        # Convert response to dictionary format for backward compatibility
+        response_dict = {
+            "id": response.id,
+            "object": response.object,
+            "created": response.created,
+            "model": response.model,
+            "choices": [
+                {
+                    "index": choice.index,
+                    "message": {
+                        "role": choice.message.role,
+                        "content": choice.message.content,
+                    },
+                    "finish_reason": choice.finish_reason,
+                }
+                for choice in response.choices
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": usage.total_tokens if usage else 0,
+            },
+            "request_cost": request_cost,
+            "finish_reason": response.choices[0].finish_reason,
+        }
 
-        response_json["request_cost"] = request_cost
-        response_json["finish_reason"] = response_json["choices"][0]["finish_reason"]
+        logger.debug(f"Response content length: {len(response.choices[0].message.content or '')} characters")
 
-        return cast(Dict[str, Any], response_json)
+        return cast(Dict[str, Any], response_dict)
 
-    except requests.exceptions.RequestException as e:
-        logger.error(f"OpenAI API request failed: {str(e)}")
-        logger.debug(f"Request details: URL={url}, Headers={headers}, Data={data}")
-        if hasattr(e, "response") and e.response is not None:
-            logger.error(f"Response status code: {e.response.status_code}")
-            logger.error(f"Response content: {e.response.text}")
+    except APITimeoutError as e:
+        logger.error(f"OpenAI API request timed out after {timeout_seconds:.1f}s: {str(e)}")
+        logger.debug(f"Timeout error details: {e}")
+        raise
+
+    except RateLimitError as e:
+        logger.error(f"OpenAI API rate limit exceeded: {str(e)}")
+        logger.debug(f"Rate limit error details: {e}")
+        raise
+
+    except APIConnectionError as e:
+        logger.error(f"OpenAI API connection failed: {str(e)}")
+        logger.debug(f"Connection error details: {e}")
+        raise
+
+    except OpenAIError as e:
+        logger.error(f"OpenAI API error: {str(e)}")
+        logger.debug(f"Error type: {type(e).__name__}")
+        logger.debug(f"Error details: {e}")
         raise
 
 
