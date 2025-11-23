@@ -1304,7 +1304,7 @@ def make_openai_request(
     api_key: str,
     prompt: str,
     pricing_info: Dict[str, Dict[str, float]],
-    model: str = "gpt-5-nano-2025-08-07",
+    model: str = "openai/gpt-5-nano-2025-08-07",
 ) -> Dict[str, Any]:
     global total_cost
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
