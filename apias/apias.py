@@ -1444,15 +1444,10 @@ def call_openai_api(
 
         # Extract the XML content from the structured response
         xml_content = structured_response.get("xml_content", "")
-        completeness = structured_response.get("completeness_check", False)
         document_type = structured_response.get("document_type", "UNKNOWN")
 
         logger.debug(f"Document type: {document_type}")
-        logger.debug(f"Completeness check: {completeness}")
         logger.debug(f"XML content length: {len(xml_content)} characters")
-
-        if not completeness:
-            logger.warning("Model indicated content extraction may not be complete")
 
         content = xml_content
         logger.debug(f"Successfully extracted XML content from structured response")
@@ -1572,8 +1567,9 @@ def call_llm_to_convert_html_to_xml(
     Uses OpenAI's API to convert HTML content to structured XML.
     Implements chunking for large content that exceeds safe token limits.
     """
-    # Check if content needs chunking (>200K chars ≈ >85K tokens)
-    chunks = chunk_html_by_size(html_content, max_chars=200000)
+    # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
+    # This ensures each chunk stays well within GPT-5 Nano's safe input limits
+    chunks = chunk_html_by_size(html_content, max_chars=80000)
 
     if len(chunks) == 1:
         # Single chunk - process normally
@@ -1606,9 +1602,10 @@ def call_llm_to_convert_html_to_xml(
     if not all_xml_parts:
         return None, total_cost
 
-    # Merge all XML parts
-    merged_xml = "\n".join(all_xml_parts)
-    logger.info(f"Merged {len(all_xml_parts)} chunks into final XML")
+    # Merge all XML parts into a valid XML document
+    # Wrap all chunks in a root element to create valid XML structure
+    merged_xml = f"<XML>\n{''.join(all_xml_parts)}\n</XML>"
+    logger.info(f"Merged {len(all_xml_parts)} chunks into final XML ({len(merged_xml)} chars)")
 
     return merged_xml, total_cost
 
@@ -1621,60 +1618,74 @@ def _process_single_chunk(
     """Process a single chunk of HTML content."""
     chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
 
-    # Original detailed prompt
-    prompt = f"""You must examine the following html file and extract its content into a XML API document. The page is about the API of the python Textual library. There are detailed informations about the python classes and their usage. The XML output should provide a structured version of the documentation contained in the page. It should contains all the informations found in the html document, excluding side menus, indexes, and or other navigation elements of the page, without missing anything of the content. Ignore images or data encoded in base64. Remove links. The XML output should be machine readable. 
+    # Simplified prompt optimized for chunked processing
+    # Focuses on extracting ALL content from THIS chunk without confusing "completeness" requirements
+    prompt = f"""You are extracting API documentation from HTML content into structured XML format.
 
-There can be three html page classifications: <CLASS>, <MODULE>, or <API_USAGE>. 
+The HTML content describes the Python Textual library API with detailed information about classes, modules, functions, or usage examples.
 
-If the html page is about a introduction, tutorial, guide, example, how-to, quickstart, etc. then you must wrap the content inside the <API_USAGE> tags. Inside the <API_USAGE> you must categorize simply with a division in <SUB_SECTION> tags, each one with inside the <TITLE> of the subject followed by its content. Inside the usage examples sections you can identify sub section titles by the h1, h2, h3, etc. tags.
+YOUR TASK:
+Extract ALL information from the provided HTML content completely and accurately.
 
-If the html page is about the class description and its members, then you must wrap the content inside the <CLASS> tags, and inside it you should divide it in two sub branches: <CLASS_DESCRIPTION> and <CLASS_API> tags. In the CLASS API sections, the h1, h2, h3, etc headers are likely to be class members or member descriptions, but there can be exceptions.
+EXCLUDE:
+- Navigation menus, side menus, indexes
+- Images, base64-encoded data
+- External links (remove href attributes)
 
-Sometimes the html page describes a module instead of a class. In this case wrap the section with the <MODULE> tags, and the members with <FUNCTION>, <VARIABLE>, <CONSTANT>, etc. indicating name, signature, return types and modifiers when available.
+PRESERVE AND EXTRACT:
+- All API documentation content
+- Method/function signatures with parameter names and types
+- Return types and type annotations
+- Class descriptions and member documentation
+- Code examples and usage patterns
+- Tables (convert to XML structures)
+- All descriptive text and documentation
 
-You must explicitly indicate the type of the member and its return type when available, and possibly the modifiers. Do not miss any entry. Completeness is mandatory: even if some information about a type, member, a method or a return type is missing from the html page because it is implicit, you must infer it from the context and explicitly declare it in the XML document. Tables must be converted to XML structures.
+CONTENT CLASSIFICATION:
+Classify the content and wrap it in the appropriate root tag:
 
-Remember to escape XML characters of all text inside the XML text strings and attributes values. You must escape the text strings and the attribute values exactly as this python function:
+1. <CLASS>: Class documentation
+   - Include <CLASS_DESCRIPTION> and <CLASS_API> sections
+   - Each method/property as separate elements with full signatures
+   
+2. <MODULE>: Module documentation
+   - Include <FUNCTION>, <VARIABLE>, <CONSTANT> elements
+   - Each with name, signature, types, and modifiers
+   
+3. <API_USAGE>: Tutorials, guides, examples
+   - Organize with <SUB_SECTION> elements
+   - Each with <TITLE> and content
 
-```python
-def escape_xml(xml_doc: str) -> str:
-    # to escape the text strings and the attributes values.
-    # DO NOT ESCAPE CDATA, Comments and Processing Instructions
-    xml_doc = xml_doc.replace('"', '&quot;')
-    xml_doc = xml_doc.replace("'", '&apos;')
-    xml_doc = xml_doc.replace('<', '&lt;')
-    xml_doc = xml_doc.replace('>', '&gt;')
-    xml_doc = xml_doc.replace('&', '&amp;')
-    return xml_doc
-```
+REQUIREMENTS:
+- Explicitly indicate types, return types, and modifiers when available
+- If type information is implicit or can be inferred from context, make it explicit in the XML
+- Use descriptive element names that reflect the content
+- Properly escape XML special characters in text content and attribute values:
+  - & → &amp;
+  - < → &lt;
+  - > → &gt;
+  - " → &quot;
+  - ' → &apos;
 
-For example writing an XML string like this one is wrong:
-```xml
-<DESCRIPTION>Grow space by (<top>, <right>, <bottom>, <left>).</DESCRIPTION>
-```
-Instead you should write:
-```xml
-<DESCRIPTION>Grow space by (&lt;top&gt;, &lt;right&gt;, &lt;bottom&gt;, &lt;left&gt;).</DESCRIPTION>
-```
+EXAMPLE ESCAPING:
+Wrong: <DESCRIPTION>Grow space by (<top>, <right>, <bottom>, <left>).</DESCRIPTION>
+Right: <DESCRIPTION>Grow space by (&lt;top&gt;, &lt;right&gt;, &lt;bottom&gt;, &lt;left&gt;).</DESCRIPTION>
 
-Be exhaustive and accurate. Do not allucinate or misinterpret the content. Be sure to produce a solid reliable XML document.
-
-Your response must be a valid JSON object with this exact structure:
+OUTPUT FORMAT:
+Your response must be ONLY a valid JSON object with this structure:
 ```json
 {{
-  "xml_content": "<complete XML document as escaped string>",
-  "document_type": "CLASS|MODULE|API_USAGE",
-  "completeness_check": true
+  "xml_content": "<complete XML document as string>",
+  "document_type": "CLASS|MODULE|API_USAGE"
 }}
 ```
 
-Set `completeness_check` to `true` ONLY if you are certain ALL content was extracted without omissions. Set it to `false` if you had to truncate or skip any content.
+The xml_content field must contain the complete XML document with all extracted content.
+No additional commentary or explanations - ONLY the JSON object.
 
 <TEXT>
 {html_content}
-</TEXT>
-
-Remember: Your response must be ONLY the JSON object specified above. The xml_content field must contain the complete XML document. No additional commentary, annotations, or explanations outside the JSON object."""
+</TEXT>"""
 
     try:
         logger.debug(f"Processing{chunk_label}: {len(html_content)} chars")
@@ -2656,7 +2667,69 @@ def validate_config(config: dict) -> bool:
     return True
 
 
+def check_for_running_apias_instances() -> None:
+    """
+    Check if any other APIAS process is already running.
+    If found, print error message and exit to prevent multiple instances
+    from making simultaneous API calls and wasting money.
+    """
+    try:
+        # Get current process ID
+        current_pid = os.getpid()
+        
+        # Use ps command to find all APIAS processes
+        # Look for processes running "uv run apias" specifically
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        
+        # Count APIAS processes (must contain "uv run apias" in command line)
+        apias_processes = []
+        for line in result.stdout.split('\n'):
+            # Only match lines that contain the actual apias command
+            # Not just any process in a directory path containing "apias"
+            if 'uv run apias' in line or '/bin/apias' in line:
+                # Extract PID (second column in ps aux output)
+                parts = line.split()
+                if len(parts) >= 2:
+                    try:
+                        pid = int(parts[1])
+                        # Exclude current process
+                        if pid != current_pid:
+                            apias_processes.append((pid, line))
+                    except ValueError:
+                        continue
+        
+        if apias_processes:
+            print("=" * 80)
+            print("ERROR: Another APIAS process is already running!")
+            print("=" * 80)
+            print("\nRunning multiple APIAS instances simultaneously wastes money on API calls.")
+            print("\nFound the following APIAS process(es):")
+            for pid, cmdline in apias_processes:
+                print(f"  PID {pid}: {cmdline.strip()}")
+            print("\nPlease wait for the existing process to complete, or kill it with:")
+            print(f"  kill {apias_processes[0][0]}")
+            print("\nExiting to prevent duplicate API calls.")
+            print("=" * 80)
+            sys.exit(1)
+            
+    except subprocess.TimeoutExpired:
+        # If ps command times out, just continue (better than blocking startup)
+        pass
+    except Exception as e:
+        # If check fails for any reason, just continue
+        # (better to possibly have duplicates than to block legitimate runs)
+        pass
+
+
 def main() -> None:
+    # Check for running APIAS instances to prevent multiple simultaneous API calls
+    check_for_running_apias_instances()
+
     parser = argparse.ArgumentParser(description="Web API Retrieval and XML Extraction")
     parser.add_argument(
         "-r",

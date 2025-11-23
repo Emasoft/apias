@@ -174,3 +174,25 @@ build/
 
 # Temporary directories created by the script
 temp_*/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# SERENA MCP
+.serena/
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# IDE - VSCode
+.vscode/
+*.code-workspace
+
+# IDE - PyCharm / IntelliJ
+.idea/
+
+# UV package manager
+uv.lock

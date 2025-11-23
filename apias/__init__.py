@@ -1,4 +1,4 @@
-__version__ = "0.1.2"
+__version__ = "0.1.4"
 from .apias import parse_documentation, validate_config
 
 __all__ = ["__version__", "parse_documentation", "validate_config"]
