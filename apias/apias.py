@@ -1261,8 +1261,7 @@ def extract_urls_from_sitemap(
 # ============================
 
 
-# Load model pricing info with retry
-@retry(stop=stop_after_attempt(10), wait=wait_exponential(multiplier=1, min=4, max=30))
+# Load model pricing info
 def load_model_pricing() -> Optional[Dict[str, Any]]:
     """Attempt to extract JSON from a string."""
     pricing_urls = [
@@ -1809,7 +1808,6 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
 # ============================
 
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def process_single_page(
     url: str, pricing_info: Dict[str, Dict[str, float]]
 ) -> Optional[str]:
@@ -1949,11 +1947,6 @@ def process_single_page(
     return None
 
 
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(RequestException),
-)
 def process_url(
     url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
 ) -> Optional[str]:
