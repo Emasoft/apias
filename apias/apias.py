@@ -1582,15 +1582,12 @@ def call_llm_to_convert_html_to_xml(
         # Single chunk - process normally
         return _process_single_chunk(html_content, pricing_info)
 
-    # Multiple chunks - process in parallel with staggered starts
-    logger.info(f"Processing {len(chunks)} chunks in parallel (with 0.5s delay between spawns)...")
+    # Multiple chunks - process in parallel
+    logger.info(f"Processing {len(chunks)} chunks in parallel with {max(20, len(chunks))} workers...")
 
     def process_chunk_wrapper(args):
-        """Wrapper function for parallel processing with delayed start"""
-        i, chunk, delay = args
-        # Stagger the start of each request by 0.5s to avoid API rate limits
-        if delay > 0:
-            time.sleep(delay)
+        """Wrapper function for parallel processing"""
+        i, chunk = args
         logger.info(f"Processing chunk {i}/{len(chunks)}...")
         xml_part, cost = _process_single_chunk(chunk, pricing_info, chunk_num=i)
 
@@ -1608,8 +1605,8 @@ def call_llm_to_convert_html_to_xml(
             logger.error(f"Failed to process chunk {i}/{len(chunks)}")
             return i, None, cost
 
-    # Prepare chunks with their indices and staggered delays
-    chunk_args = [(i, chunk, i * 0.5) for i, chunk in enumerate(chunks, 1)]
+    # Prepare chunks with their indices (no delays - truly parallel)
+    chunk_args = [(i, chunk) for i, chunk in enumerate(chunks, 1)]
 
     # Process chunks in parallel using ThreadPoolExecutor
     results = []
