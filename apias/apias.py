@@ -1582,12 +1582,15 @@ def call_llm_to_convert_html_to_xml(
         # Single chunk - process normally
         return _process_single_chunk(html_content, pricing_info)
 
-    # Multiple chunks - process each and merge
-    logger.info(f"Processing {len(chunks)} chunks separately...")
-    all_xml_parts = []
-    total_cost = 0.0
+    # Multiple chunks - process in parallel with staggered starts
+    logger.info(f"Processing {len(chunks)} chunks in parallel (with 0.5s delay between spawns)...")
 
-    for i, chunk in enumerate(chunks, 1):
+    def process_chunk_wrapper(args):
+        """Wrapper function for parallel processing with delayed start"""
+        i, chunk, delay = args
+        # Stagger the start of each request by 0.5s to avoid API rate limits
+        if delay > 0:
+            time.sleep(delay)
         logger.info(f"Processing chunk {i}/{len(chunks)}...")
         xml_part, cost = _process_single_chunk(chunk, pricing_info, chunk_num=i)
 
@@ -1600,11 +1603,35 @@ def call_llm_to_convert_html_to_xml(
             if xml_part.startswith("<XML>"):
                 xml_part = re.sub(r"^<XML>\s*", "", xml_part)
                 xml_part = re.sub(r"\s*</XML>$", "", xml_part)
-
-            all_xml_parts.append(xml_part)
-            total_cost += cost
+            return i, xml_part, cost
         else:
             logger.error(f"Failed to process chunk {i}/{len(chunks)}")
+            return i, None, cost
+
+    # Prepare chunks with their indices and staggered delays
+    chunk_args = [(i, chunk, i * 0.5) for i, chunk in enumerate(chunks, 1)]
+
+    # Process chunks in parallel using ThreadPoolExecutor
+    results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        futures = [executor.submit(process_chunk_wrapper, args) for args in chunk_args]
+        for future in concurrent.futures.as_completed(futures):
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing chunk: {e}")
+
+    # Sort results by chunk index to maintain order
+    results.sort(key=lambda x: x[0])
+
+    # Extract XML parts and calculate total cost
+    all_xml_parts = []
+    total_cost = 0.0
+    for i, xml_part, cost in results:
+        if xml_part:
+            all_xml_parts.append(xml_part)
+        total_cost += cost
 
     if not all_xml_parts:
         return None, total_cost
@@ -2683,7 +2710,8 @@ def check_for_running_apias_instances() -> None:
     try:
         # Get current process ID and parent process info
         current_pid = os.getpid()
-        
+        parent_pid = os.getppid()
+
         # Use ps command with full command line output
         result = subprocess.run(
             ["ps", "-eo", "pid,command"],
@@ -2691,45 +2719,41 @@ def check_for_running_apias_instances() -> None:
             text=True,
             timeout=5
         )
-        
+
         # Find APIAS processes by matching Python processes running apias.py or apias module
         apias_processes = []
         for line in result.stdout.split('\n'):
             # Skip header line and current process
             if not line.strip() or 'PID' in line:
                 continue
-                
+
             # Parse PID and command
             parts = line.strip().split(None, 1)
             if len(parts) < 2:
                 continue
-                
+
             try:
                 pid = int(parts[0])
                 command = parts[1]
             except ValueError:
                 continue
-            
-            # Skip current process
-            if pid == current_pid:
+
+            # Skip current process and parent process (shell/uv launcher)
+            if pid == current_pid or pid == parent_pid:
                 continue
             
             # Match actual APIAS execution patterns:
-            # 1. "uv run apias" (NOT just "apias" in path!)
-            # 2. "python.*apias.py" or "python.*-m apias"
-            # Must be a command being executed, not just a directory path
+            # ONLY match Python processes running apias, NOT shell wrappers or uv launchers
+            # This prevents false positives from parent shell processes
             is_apias = False
-            
-            # Check for "uv run apias" as a command (with word boundaries)
-            if re.search(r'\buv\s+run\s+apias\b', command):
-                is_apias = True
+
             # Check for Python executing apias.py or apias module
-            elif re.search(r'\bpython[0-9.]*\s+.*apias\.py\b', command):
+            if re.search(r'\bpython[0-9.]*\s+.*apias\.py\b', command):
                 is_apias = True
             elif re.search(r'\bpython[0-9.]*\s+-m\s+apias\b', command):
                 is_apias = True
-            # Check for direct apias script execution
-            elif re.search(r'\b/[^\s]*/apias\s+', command):
+            # Check for direct apias script execution (installed via pip/uv)
+            elif re.search(r'\b/[^\s]*/bin/apias\s+', command):
                 is_apias = True
                 
             if is_apias:
