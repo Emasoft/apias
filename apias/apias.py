@@ -700,18 +700,17 @@ def run_install(cmd: List[str]) -> Tuple[bool, str]:
             encoding=sys.stdout.encoding,
             errors="replace",
         )
-        spinner = Spinner("Installing...")
+        # Create and start the spinner using context manager
+        with Spinner("Installing...") as spinner:
+            assert process.stdout is not None
+            while True:
+                char = process.stdout.read(1)
+                if not char:
+                    break
 
-        assert process.stdout is not None
-        while True:
-            char = process.stdout.read(1)
-            if not char:
-                break
+                output.append(char)
+                spinner.step()
 
-            output.append(char)
-            spinner.step()
-
-        spinner.end()
         return_code = process.wait()
         output_str = "".join(output)
 
