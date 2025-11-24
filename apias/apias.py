@@ -756,7 +756,9 @@ class Spinner:
     def stop(self) -> None:
         self.stop_event.set()
         self.pause_event.set()
-        self.spinner_thread.join()
+        # Only join if thread was started
+        if self.spinner_thread.is_alive():
+            self.spinner_thread.join()
         self._clear_line()
 
     def pause(self) -> None:
@@ -1574,6 +1576,97 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
     return chunks
 
 
+def merge_duplicate_classes(xml_content: str) -> str:
+    """
+    Intelligently merge duplicate CLASS elements with the same name.
+    
+    When processing large HTML in chunks, a single class may be split across
+    multiple chunks, resulting in multiple <CLASS> elements with the same name.
+    This function merges those duplicates by combining all their child elements.
+    
+    Args:
+        xml_content: XML string potentially containing duplicate CLASS elements
+        
+    Returns:
+        XML string with duplicate classes merged into single elements
+    """
+    try:
+        # Parse the XML content using BeautifulSoup with xml parser
+        soup = BeautifulSoup(xml_content, "xml")
+        
+        # Find all CLASS elements
+        class_elements = soup.find_all("CLASS")
+        
+        if len(class_elements) <= 1:
+            # No duplicates possible with 0 or 1 class
+            return xml_content
+        
+        # Group classes by their CLASS_NAME
+        classes_by_name: Dict[str, List[Any]] = {}
+        for class_elem in class_elements:
+            # Get the CLASS_NAME element
+            class_name_elem = class_elem.find("CLASS_NAME")
+            if class_name_elem and class_name_elem.string:
+                class_name = class_name_elem.string.strip()
+                if class_name not in classes_by_name:
+                    classes_by_name[class_name] = []
+                classes_by_name[class_name].append(class_elem)
+        
+        # Merge duplicate classes
+        for class_name, class_list in classes_by_name.items():
+            if len(class_list) > 1:
+                logger.info(
+                    f"Merging {len(class_list)} duplicate CLASS elements for '{class_name}'"
+                )
+                
+                # Keep the first class as the base
+                base_class = class_list[0]
+                
+                # Find the CLASS_API section (where methods/properties/fields are stored)
+                base_api = base_class.find("CLASS_API")
+                if not base_api:
+                    # Create CLASS_API section if it doesn't exist
+                    base_api = soup.new_tag("CLASS_API")
+                    base_class.append(base_api)
+                
+                # Merge content from all other duplicate classes
+                for duplicate_class in class_list[1:]:
+                    # Get the CLASS_API section from duplicate
+                    dup_api = duplicate_class.find("CLASS_API")
+                    if dup_api:
+                        # Move all children from duplicate API to base API
+                        for child in list(dup_api.children):
+                            if child.name:  # Skip text nodes
+                                base_api.append(child)
+                    
+                    # Also check for any other sections (CLASS_DESCRIPTION, etc.)
+                    # and merge them if they exist in duplicate but not in base
+                    for child in list(duplicate_class.children):
+                        if child.name and child.name not in [
+                            "CLASS_NAME",
+                            "CLASS_API",
+                        ]:
+                            # Check if base already has this section
+                            if not base_class.find(child.name):
+                                base_class.append(child)
+                    
+                    # Remove the duplicate class element from the tree
+                    duplicate_class.decompose()
+        
+        # Convert back to string
+        merged_xml = str(soup)
+        
+        logger.info(
+            f"Class merging complete: {len(xml_content)} -> {len(merged_xml)} chars"
+        )
+        return merged_xml
+        
+    except Exception as e:
+        logger.error(f"Error merging duplicate classes: {e}")
+        # On error, return original content unchanged
+        return xml_content
+
+
 async def call_llm_to_convert_html_to_xml(
     html_content: str,
     additional_content: Dict[str, List[str]],
@@ -1650,6 +1743,9 @@ async def call_llm_to_convert_html_to_xml(
         f"Merged {len(all_xml_parts)} chunks into final XML ({len(merged_xml)} chars)"
     )
 
+    # Intelligently merge duplicate CLASS elements that were split across chunks
+    merged_xml = merge_duplicate_classes(merged_xml)
+
     return merged_xml, total_cost
 
 
@@ -1689,15 +1785,122 @@ Classify the content and wrap it in the appropriate root tag:
 
 1. <CLASS>: Class documentation
    - Include <CLASS_DESCRIPTION> and <CLASS_API> sections
-   - Each method/property as separate elements with full signatures
+   - Each method/property/field as separate elements with full signatures
 
 2. <MODULE>: Module documentation
    - Include <FUNCTION>, <VARIABLE>, <CONSTANT> elements
-   - Each with name, signature, types, and modifiers
+   - Each with name, signature, and modifiers
 
 3. <API_USAGE>: Tutorials, guides, examples
    - Organize with <SUB_SECTION> elements
    - Each with <TITLE> and content
+
+XML TAG SPECIFICATIONS:
+Use the correct XML tags based on the type of API element:
+
+FOR CLASS MEMBERS:
+- <METHOD>: Use for class/instance methods (functions that belong to a class)
+  * MUST include <RETURN_TYPE> tag with the return type
+  * Example: async def render(self) -> RenderResult
+  
+- <PROPERTY>: Use ONLY for @property decorators (getter/setter accessors)
+  * MUST include <RETURN_TYPE> tag with the property's type
+  * Example: @property def active_bindings(self) -> ActiveBindings
+  * NOT for regular methods or fields
+  
+- <FIELD>: Use for class member variables (class attributes or instance variables)
+  * Include type annotation if available
+  * Example: title: str = "My App"
+  * NOT for methods or properties
+
+FOR MODULE-LEVEL ELEMENTS:
+- <FUNCTION>: Use for standalone functions (not class methods)
+  * MUST include <RETURN_TYPE> tag with the return type
+  * Example: def main() -> int
+  
+- <VARIABLE>: Use for module-level variables and constants
+  * Include type in <SIGNATURE> tag only
+  * DO NOT create separate <TYPES> or <TYPE> tags
+  * Example: <SIGNATURE>AutopilotCallbackType = Callable[[Pilot[object]], Coroutine[Any, Any, None]]</SIGNATURE>
+
+IMPORTANT DISTINCTIONS:
+1. Methods vs Properties:
+   - Methods are callable functions: obj.method()
+   - Properties are accessed like attributes: obj.property (no parentheses)
+   
+2. Fields vs Properties:
+   - Fields are simple data attributes
+   - Properties have @property decorator and may have logic
+   
+3. Functions vs Methods:
+   - Functions are standalone (module-level)
+   - Methods belong to classes (have self/cls parameter)
+   
+4. Return Types:
+   - Always extract and include return type information
+   - Place in <RETURN_TYPE> tag, not in signature repetition
+   - If return type is missing from docs, infer from context when possible
+
+EXAMPLES OF CORRECT TAGGING:
+
+Correct CLASS METHOD:
+<METHOD>
+  <NAME>action_add_class</NAME>
+  <SIGNATURE>async action_add_class(selector, class_name)</SIGNATURE>
+  <RETURN_TYPE>None</RETURN_TYPE>
+  <DESCRIPTION>An action to add a CSS class to the selected widget.</DESCRIPTION>
+  <PARAMETERS>...</PARAMETERS>
+</METHOD>
+
+Correct PROPERTY (NOT "attribute"):
+<PROPERTY>
+  <NAME>active_bindings</NAME>
+  <SIGNATURE>@property active_bindings</SIGNATURE>
+  <RETURN_TYPE>ActiveBindings</RETURN_TYPE>
+  <DESCRIPTION>Get currently active bindings.</DESCRIPTION>
+</PROPERTY>
+
+Correct FIELD:
+<FIELD>
+  <NAME>title</NAME>
+  <SIGNATURE>title: str</SIGNATURE>
+  <DESCRIPTION>The title of the application.</DESCRIPTION>
+</FIELD>
+
+Correct MODULE FUNCTION:
+<FUNCTION>
+  <NAME>run_app</NAME>
+  <SIGNATURE>def run_app(app_class)</SIGNATURE>
+  <RETURN_TYPE>int</RETURN_TYPE>
+  <DESCRIPTION>Run the application.</DESCRIPTION>
+</FUNCTION>
+
+Correct MODULE VARIABLE (NO separate TYPES tag):
+<VARIABLE name='AutopilotCallbackType' modifiers='module-attribute'>
+  <SIGNATURE>AutopilotCallbackType = Callable[[Pilot[object]], Coroutine[Any, Any, None]]</SIGNATURE>
+  <DESCRIPTION>Signature for valid callbacks that can be used to control apps.</DESCRIPTION>
+</VARIABLE>
+
+INCORRECT EXAMPLES (DO NOT DO THIS):
+
+Wrong - Method labeled as ATTRIBUTE:
+<ATTRIBUTE>
+  <NAME>render</NAME>
+  <SIGNATURE>render()</SIGNATURE>
+</ATTRIBUTE>
+
+Wrong - Missing RETURN_TYPE:
+<METHOD>
+  <NAME>render</NAME>
+  <SIGNATURE>render()</SIGNATURE>
+  <TYPES>RenderResult</TYPES>  <!-- Should be <RETURN_TYPE> -->
+</METHOD>
+
+Wrong - Variable with redundant TYPES tag:
+<VARIABLE>
+  <SIGNATURE>my_var = 5</SIGNATURE>
+  <TYPES>int</TYPES>  <!-- Don't add separate TYPES tag -->
+</VARIABLE>
 
 REQUIREMENTS:
 - Explicitly indicate types, return types, and modifiers when available
@@ -1831,7 +2034,8 @@ def process_single_page(
     async def process_in_background_async() -> None:
         try:
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
-            result.html_content = web_scraper(url)
+            # Run the synchronous web_scraper in a separate thread to avoid Playwright sync/async conflicts
+            result.html_content = await asyncio.to_thread(web_scraper, url)
             if not result.html_content:
                 result.error = (
                     "Failed to retrieve HTML content for single page processing."
