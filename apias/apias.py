@@ -122,6 +122,7 @@ from openai import (
     RateLimitError,
     APIStatusError,
 )
+
 # tenacity import removed - AsyncOpenAI handles retries internally
 from requests.exceptions import RequestException
 import fnmatch
@@ -1579,28 +1580,28 @@ def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
 def merge_duplicate_classes(xml_content: str) -> str:
     """
     Intelligently merge duplicate CLASS elements with the same name.
-    
+
     When processing large HTML in chunks, a single class may be split across
     multiple chunks, resulting in multiple <CLASS> elements with the same name.
     This function merges those duplicates by combining all their child elements.
-    
+
     Args:
         xml_content: XML string potentially containing duplicate CLASS elements
-        
+
     Returns:
         XML string with duplicate classes merged into single elements
     """
     try:
         # Parse the XML content using BeautifulSoup with xml parser
         soup = BeautifulSoup(xml_content, "xml")
-        
+
         # Find all CLASS elements
         class_elements = soup.find_all("CLASS")
-        
+
         if len(class_elements) <= 1:
             # No duplicates possible with 0 or 1 class
             return xml_content
-        
+
         # Group classes by their CLASS_NAME
         classes_by_name: Dict[str, List[Any]] = {}
         for class_elem in class_elements:
@@ -1611,24 +1612,24 @@ def merge_duplicate_classes(xml_content: str) -> str:
                 if class_name not in classes_by_name:
                     classes_by_name[class_name] = []
                 classes_by_name[class_name].append(class_elem)
-        
+
         # Merge duplicate classes
         for class_name, class_list in classes_by_name.items():
             if len(class_list) > 1:
                 logger.info(
                     f"Merging {len(class_list)} duplicate CLASS elements for '{class_name}'"
                 )
-                
+
                 # Keep the first class as the base
                 base_class = class_list[0]
-                
+
                 # Find the CLASS_API section (where methods/properties/fields are stored)
                 base_api = base_class.find("CLASS_API")
                 if not base_api:
                     # Create CLASS_API section if it doesn't exist
                     base_api = soup.new_tag("CLASS_API")
                     base_class.append(base_api)
-                
+
                 # Merge content from all other duplicate classes
                 for duplicate_class in class_list[1:]:
                     # Get the CLASS_API section from duplicate
@@ -1638,7 +1639,7 @@ def merge_duplicate_classes(xml_content: str) -> str:
                         for child in list(dup_api.children):
                             if child.name:  # Skip text nodes
                                 base_api.append(child)
-                    
+
                     # Also check for any other sections (CLASS_DESCRIPTION, etc.)
                     # and merge them if they exist in duplicate but not in base
                     for child in list(duplicate_class.children):
@@ -1649,18 +1650,18 @@ def merge_duplicate_classes(xml_content: str) -> str:
                             # Check if base already has this section
                             if not base_class.find(child.name):
                                 base_class.append(child)
-                    
+
                     # Remove the duplicate class element from the tree
                     duplicate_class.decompose()
-        
+
         # Convert back to string
         merged_xml = str(soup)
-        
+
         logger.info(
             f"Class merging complete: {len(xml_content)} -> {len(merged_xml)} chars"
         )
         return merged_xml
-        
+
     except Exception as e:
         logger.error(f"Error merging duplicate classes: {e}")
         # On error, return original content unchanged
@@ -2012,7 +2013,7 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
 
 
 def process_single_page(
-    url: str, pricing_info: Dict[str, Dict[str, float]]
+    url: str, pricing_info: Dict[str, Dict[str, float]], scrape_only: bool = False
 ) -> Optional[str]:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
@@ -2020,6 +2021,8 @@ def process_single_page(
     so we don't call it again here.
     """
     logger.info("Processing single page.")
+    if scrape_only:
+        logger.info("Scrape-only mode: AI processing will be skipped")
     logger.debug("=== process_single_page invoked ===")
     logger.debug(f"URL: {url}")
 
@@ -2049,6 +2052,21 @@ def process_single_page(
             # Note: slimdown_html was already called in Scraper.scrape()
             # The content is already cleaned, so we use it directly
             slimmed_html = result.html_content
+
+            # Save the cleaned HTML in scrape-only mode
+            if scrape_only:
+                # Create a URL slug for the filename using urlparse (already imported at module level)
+                parsed_url = urlparse(url)
+                url_slug = parsed_url.path.strip("/").replace("/", "_") or "index"
+                if not url_slug or url_slug == "":
+                    url_slug = "index"
+
+                html_file = temp_folder / f"{url_slug}_cleaned.html"
+                with open(html_file, "w", encoding="utf-8") as f:
+                    f.write(slimmed_html)
+                logger.info(f"Scrape-only mode: Saved cleaned HTML to {html_file}")
+                logger.debug("=== process_single_page completed (scrape-only) ===")
+                return
 
             # Extract additional metadata from the HTML for context
             # We still need to parse for code examples, etc.
@@ -2133,6 +2151,11 @@ def process_single_page(
         logger.debug("=== process_single_page FAILED ===")
         return None
 
+    # In scrape-only mode, return success without XML
+    if scrape_only:
+        logger.info("Scrape-only mode: Successfully completed without XML generation")
+        return "scrape_only_completed"
+
     if result.xml_content is not None:
         logger.debug("Step 5: Merging XML files...")
         merged_xml = merge_xmls(temp_folder)
@@ -2152,7 +2175,11 @@ def process_single_page(
 
 
 def process_url(
-    url: str, idx: int, total: int, pricing_info: Dict[str, Dict[str, float]]
+    url: str,
+    idx: int,
+    total: int,
+    pricing_info: Dict[str, Dict[str, float]],
+    scrape_only: bool = False,
 ) -> Optional[str]:
     global progress_tracker
     """
@@ -2160,6 +2187,8 @@ def process_url(
     """
     global shutdown_flag, progress_tracker
     logger.info(f"Processing URL {idx}/{total}: {url}")
+    if scrape_only:
+        logger.info(f"Scrape-only mode: Skipping AI processing for URL {idx}/{total}")
     try:
         if shutdown_flag:
             logger.info(f"Shutdown requested. Skipping URL {url}")
@@ -2189,6 +2218,18 @@ def process_url(
         html_file = temp_folder / f"scraped_{idx}.html"
         with open(html_file, "w", encoding="utf-8") as f:
             f.write(html_content)
+
+        # In scrape-only mode, skip LLM processing
+        if scrape_only:
+            logger.info(
+                f"Scrape-only mode: HTML saved for URL {url}, skipping XML generation"
+            )
+            progress_tracker[url] = {
+                "status": "successful",
+                "cost": 0.0,
+            }
+            update_progress_file()
+            return "scrape_only_completed"
 
         if shutdown_flag:
             logger.info(f"Shutdown requested. Skipping LLM processing for URL {url}")  # type: ignore[unreachable]
@@ -2307,7 +2348,10 @@ def update_progress_file() -> None:
 
 
 def process_multiple_pages(
-    urls: List[str], pricing_info: Dict[str, Dict[str, float]], num_threads: int = 5
+    urls: List[str],
+    pricing_info: Dict[str, Dict[str, float]],
+    num_threads: int = 5,
+    scrape_only: bool = False,
 ) -> Optional[str]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
@@ -2316,6 +2360,8 @@ def process_multiple_pages(
     logger.info(
         f"Processing multiple pages: {len(urls)} URLs found using {num_threads} threads."
     )
+    if scrape_only:
+        logger.info("Scrape-only mode: AI processing and XML merging will be skipped")
     xml_list = []
 
     spinner = Spinner("Processing URLs")
@@ -2324,7 +2370,9 @@ def process_multiple_pages(
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
             future_to_url = {
-                executor.submit(process_url, url, idx + 1, len(urls), pricing_info): url
+                executor.submit(
+                    process_url, url, idx + 1, len(urls), pricing_info, scrape_only
+                ): url
                 for idx, url in enumerate(urls)
             }
             for future in concurrent.futures.as_completed(future_to_url):
@@ -2346,6 +2394,11 @@ def process_multiple_pages(
 
     if shutdown_flag:
         logger.info("Shutdown initiated. Saving partial results.")
+
+    # In scrape-only mode, skip XML merging
+    if scrape_only:
+        logger.info("Scrape-only mode: Completed successfully without XML merging")
+        return "scrape_only_completed"
 
     logger.info("Merging XML content from all processed pages")
     merged_xml = merge_xmls(temp_folder)
@@ -2436,6 +2489,7 @@ def main_workflow(
     blacklist: Optional[str] = None,
     num_threads: int = 5,
     resume_file: Optional[str] = None,
+    scrape_only: bool = False,
 ) -> Dict[str, Union[Optional[str], float, int]]:
     global progress_tracker, total_cost
     """
@@ -2444,6 +2498,8 @@ def main_workflow(
     global shutdown_flag, total_cost, progress_tracker, progress_file, temp_folder
     print(INFO_SEPARATOR)
     logger.info("Starting Web API Retrieval workflow.")
+    if scrape_only:
+        logger.info("Scrape-only mode enabled: AI processing will be skipped")
     print(INFO_SEPARATOR)
 
     result: Dict[str, Union[Optional[str], float, int]] = {
@@ -2623,7 +2679,7 @@ def main_workflow(
         # Determine processing type
         if mode == "single":
             logger.info("Workflow Type: Single Page Processing")
-            xml_result = process_single_page(urls[0], pricing_info)
+            xml_result = process_single_page(urls[0], pricing_info, scrape_only)
             if xml_result:
                 is_valid = validate_xml(xml_result)
                 print(
@@ -2641,6 +2697,23 @@ def main_workflow(
                     }
                 )
                 result["result"] = cast(Optional[str], result["result"])
+            elif scrape_only:
+                # In scrape-only mode, success means HTML was saved
+                logger.info(
+                    "Scrape-only mode: HTML saved successfully without XML generation"
+                )
+                result.update(
+                    {
+                        "result": "scrape_only_completed",
+                        "scraped_urls": 1,
+                        "successful_urls": 1,
+                        "failed_urls": 0,
+                        "total_xml_files": 0,
+                        "valid_xml_files": 0,
+                        "invalid_xml_files": 0,
+                    }
+                )
+                result["result"] = cast(Optional[str], result["result"])
             else:
                 result.update(
                     {
@@ -2654,7 +2727,9 @@ def main_workflow(
                 )
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
-            xml_result = process_multiple_pages(urls, pricing_info, num_threads)
+            xml_result = process_multiple_pages(
+                urls, pricing_info, num_threads, scrape_only
+            )
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
                 print(
@@ -2669,6 +2744,23 @@ def main_workflow(
                         "total_xml_files": total_count,
                         "valid_xml_files": valid_count,
                         "invalid_xml_files": total_count - valid_count,
+                    }
+                )
+                result["result"] = cast(Optional[str], result["result"])
+            elif scrape_only and xml_result:
+                # In scrape-only mode, success means HTML files were saved
+                logger.info(
+                    "Scrape-only mode: HTML files saved successfully without XML generation"
+                )
+                result.update(
+                    {
+                        "result": "scrape_only_completed",
+                        "scraped_urls": len(urls),
+                        "successful_urls": len(urls),
+                        "failed_urls": 0,
+                        "total_xml_files": 0,
+                        "valid_xml_files": 0,
+                        "invalid_xml_files": 0,
                     }
                 )
                 result["result"] = cast(Optional[str], result["result"])
@@ -2770,8 +2862,10 @@ def start_resume_mode(json_file_path: str) -> None:
     display_scraping_summary(result, urls, temp_folder, error_log_file)
 
 
-def start_single_scrape(url: str) -> None:
-    result = main_workflow(urls=[url], mode="single", num_threads=1)
+def start_single_scrape(url: str, scrape_only: bool = False) -> None:
+    result = main_workflow(
+        urls=[url], mode="single", num_threads=1, scrape_only=scrape_only
+    )
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
 
@@ -2807,13 +2901,16 @@ def create_summary_box(summary_data: Dict[str, str]) -> str:
     return "\n".join(box)
 
 
-def start_batch_scrape(url: str, whitelist: str, blacklist: str) -> None:
+def start_batch_scrape(
+    url: str, whitelist: str, blacklist: str, scrape_only: bool = False
+) -> None:
     result = main_workflow(
         urls=[url],
         mode="batch",
         whitelist=whitelist,
         blacklist=blacklist,
         num_threads=5,
+        scrape_only=scrape_only,
     )
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
@@ -3041,6 +3138,13 @@ def main() -> None:
         required=False,
     )
     parser.add_argument(
+        "--scrape-only",
+        action="store_true",
+        default=False,
+        help="Scrape and clean HTML only without AI model processing. Saves cleaned HTML files to temp folder.",
+        required=False,
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"APIAS - API AUTO SCRAPER version {VERSION}",
@@ -3062,9 +3166,9 @@ def main() -> None:
             print("Warning: When using --resume, other parameters will be ignored.")
         start_resume_mode(args.resume)
     elif args.url and args.mode == "single":
-        start_single_scrape(args.url)
+        start_single_scrape(args.url, args.scrape_only)
     elif args.url and args.mode == "batch":
-        start_batch_scrape(args.url, args.whitelist, args.blacklist)
+        start_batch_scrape(args.url, args.whitelist, args.blacklist, args.scrape_only)
     else:
         print(
             "Error: Invalid combination of arguments. Please provide either --resume or --url argument."
