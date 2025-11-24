@@ -1303,9 +1303,14 @@ async def make_openai_request(
     logger.debug(f"Using structured output with schema: {XML_OUTPUT_SCHEMA}")
 
     # Calculate proportional timeout based on payload size
-    # Base: 60s + 0.1s per 1K chars, max 20 minutes (1200s)
+    # The timeout must account for: base API response time + retry attempts with exponential backoff
+    # Base formula: 120s base + 0.5s per 1K chars (much more realistic for GPT-5)
+    # With max_retries=2, OpenAI will make up to 3 attempts with exponential backoff
+    # Total timeout = base_time * (1 + 2 + 4) = base_time * 7 (for 3 attempts with 2x backoff)
+    # Max: 30 minutes (1800s) to handle very large payloads
     payload_chars = len(prompt)
-    timeout_seconds = min(60 + (payload_chars / 1000 * 0.1), 1200)
+    base_timeout = min(120 + (payload_chars / 1000 * 0.5), 600)  # Cap single attempt at 600s (10 min)
+    timeout_seconds = min(base_timeout * 4, 1800)  # 4x for retries with backoff, max 30 min
 
     logger.debug(
         f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s"
