@@ -1309,8 +1309,12 @@ async def make_openai_request(
     # Total timeout = base_time * (1 + 2 + 4) = base_time * 7 (for 3 attempts with 2x backoff)
     # Max: 30 minutes (1800s) to handle very large payloads
     payload_chars = len(prompt)
-    base_timeout = min(120 + (payload_chars / 1000 * 0.5), 600)  # Cap single attempt at 600s (10 min)
-    timeout_seconds = min(base_timeout * 4, 1800)  # 4x for retries with backoff, max 30 min
+    base_timeout = min(
+        120 + (payload_chars / 1000 * 0.5), 600
+    )  # Cap single attempt at 600s (10 min)
+    timeout_seconds = min(
+        base_timeout * 4, 1800
+    )  # 4x for retries with backoff, max 30 min
 
     logger.debug(
         f"Payload size: {payload_chars} chars, timeout: {timeout_seconds:.1f}s"
@@ -1759,12 +1763,12 @@ async def _process_single_chunk(
     pricing_info: Dict[str, Dict[str, float]],
     chunk_num: Optional[int] = None,
 ) -> Tuple[Optional[str], float]:
-    """Process a single chunk of HTML content asynchronously."""
+    """Process a single chunk of HTML content asynchronously with automatic XML validation retry."""
     chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
 
     # Simplified prompt optimized for chunked processing
     # Focuses on extracting ALL content from THIS chunk without confusing "completeness" requirements
-    prompt = f"""You are extracting API documentation from HTML content into structured XML format.
+    base_prompt = f"""You are extracting API documentation from HTML content into structured XML format.
 
 The HTML content describes the Python Textual library API with detailed information about classes, modules, functions, or usage examples.
 
@@ -1807,12 +1811,12 @@ FOR CLASS MEMBERS:
 - <METHOD>: Use for class/instance methods (functions that belong to a class)
   * MUST include <RETURN_TYPE> tag with the return type
   * Example: async def render(self) -> RenderResult
-  
+
 - <PROPERTY>: Use ONLY for @property decorators (getter/setter accessors)
   * MUST include <RETURN_TYPE> tag with the property's type
   * Example: @property def active_bindings(self) -> ActiveBindings
   * NOT for regular methods or fields
-  
+
 - <FIELD>: Use for class member variables (class attributes or instance variables)
   * Include type annotation if available
   * Example: title: str = "My App"
@@ -1822,7 +1826,7 @@ FOR MODULE-LEVEL ELEMENTS:
 - <FUNCTION>: Use for standalone functions (not class methods)
   * MUST include <RETURN_TYPE> tag with the return type
   * Example: def main() -> int
-  
+
 - <VARIABLE>: Use for module-level variables and constants
   * Include type in <SIGNATURE> tag only
   * DO NOT create separate <TYPES> or <TYPE> tags
@@ -1832,15 +1836,15 @@ IMPORTANT DISTINCTIONS:
 1. Methods vs Properties:
    - Methods are callable functions: obj.method()
    - Properties are accessed like attributes: obj.property (no parentheses)
-   
+
 2. Fields vs Properties:
    - Fields are simple data attributes
    - Properties have @property decorator and may have logic
-   
+
 3. Functions vs Methods:
    - Functions are standalone (module-level)
    - Methods belong to classes (have self/cls parameter)
-   
+
 4. Return Types:
    - Always extract and include return type information
    - Place in <RETURN_TYPE> tag, not in signature repetition
@@ -1938,17 +1942,73 @@ No additional commentary or explanations - ONLY the JSON object.
 {html_content}
 </TEXT>"""
 
-    try:
-        logger.debug(f"Processing{chunk_label}: {len(html_content)} chars")
-        xml_output, request_cost = await call_openai_api(prompt, pricing_info)
-        xml_output = extract_xml_from_input(xml_output)
-        logger.info(
-            f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${request_cost:.6f}"
-        )
-        return xml_output, request_cost
-    except Exception as e:
-        logger.error(f"LLM processing failed{chunk_label}: {e}")
-        return None, 0.0
+    total_cost = 0.0
+    max_retries = 1  # One retry for XML validation failures
+
+    for attempt in range(max_retries + 1):
+        try:
+            # Add XML validation instructions on retry
+            if attempt > 0:
+                prompt = f"""{base_prompt}
+
+CRITICAL XML VALIDATION ERROR ON PREVIOUS ATTEMPT:
+The XML generated in the previous attempt had invalid structure.
+
+COMMON XML ERRORS TO AVOID:
+1. Tag Mismatch: Closing tags MUST match opening tags exactly
+   - Wrong: <PARAMETER>...</PARAMETERS> (singular open, plural close)
+   - Right: <PARAMETER>...</PARAMETER> (both singular)
+
+2. Nested Tags: Ensure proper nesting without orphaned closing tags
+   - Wrong: </PARAMETERS></PARAMETERS></PARAMETERS> (too many closing tags)
+   - Right: </PARAMETER></PARAMETERS> (correct nesting)
+
+3. Singular vs Plural:
+   - <PARAMETER> (singular) - for individual parameter
+   - <PARAMETERS> (plural) - for parameter container
+   - <METHOD> (singular) - for individual method
+   - <METHODS> (plural) - for methods container
+
+PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
+            else:
+                prompt = base_prompt
+
+            logger.debug(
+                f"Processing{chunk_label} (attempt {attempt + 1}/{max_retries + 1}): {len(html_content)} chars"
+            )
+            xml_output, request_cost = await call_openai_api(prompt, pricing_info)
+            total_cost += request_cost
+
+            # Validate XML
+            xml_output = extract_xml_from_input(xml_output)
+
+            # Success! XML is valid
+            logger.info(
+                f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${total_cost:.6f}"
+                + (f" (succeeded on retry)" if attempt > 0 else "")
+            )
+            return xml_output, total_cost
+
+        except ValueError as e:
+            # XML validation error
+            if attempt < max_retries:
+                logger.warning(
+                    f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. Retrying with corrective instructions..."
+                )
+                continue  # Try again with validation instructions
+            else:
+                logger.error(
+                    f"XML validation failed{chunk_label} after {max_retries + 1} attempts: {e}"
+                )
+                return None, total_cost
+
+        except Exception as e:
+            # Other errors (API failures, etc.) - don't retry
+            logger.error(f"LLM processing failed{chunk_label}: {e}")
+            return None, total_cost
+
+    # Should never reach here, but just in case
+    return None, total_cost
 
 
 # ============================
