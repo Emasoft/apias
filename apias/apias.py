@@ -137,6 +137,10 @@ import xml.etree.ElementTree as ET
 from signal import SIGINT, signal
 import json
 
+# Import TUI and mock API modules
+from .tui import RichTUIManager, ChunkState
+from .mock_api import MockAPIClient, mock_call_openai_api
+
 
 def validate_xml(xml_string: str) -> bool:
     try:
@@ -2536,16 +2540,33 @@ def main_workflow(
     num_threads: int = 5,
     resume_file: Optional[str] = None,
     scrape_only: bool = False,
+    no_tui: bool = False,
+    mock: bool = False,
 ) -> Dict[str, Union[Optional[str], float, int]]:
     global progress_tracker, total_cost
     """
     Executes the Web API Retrieval and XML Extraction workflow.
+
+    Args:
+        urls: List of URLs to process
+        mode: Processing mode ("single" or "batch")
+        whitelist: Path to whitelist file (optional)
+        blacklist: Path to blacklist file (optional)
+        num_threads: Number of concurrent threads for batch mode
+        resume_file: Path to resume file for interrupted jobs (optional)
+        scrape_only: If True, only scrape HTML without AI processing
+        no_tui: If True, disable Rich TUI (use plain text output)
+        mock: If True, use mock API for testing (no token costs)
     """
     global shutdown_flag, total_cost, progress_tracker, progress_file, temp_folder
     print(INFO_SEPARATOR)
     logger.info("Starting Web API Retrieval workflow.")
     if scrape_only:
         logger.info("Scrape-only mode enabled: AI processing will be skipped")
+    if mock:
+        logger.info("MOCK MODE enabled: Using simulated API responses (no token costs)")
+    if no_tui:
+        logger.info("TUI disabled: Using plain text output")
     print(INFO_SEPARATOR)
 
     result: Dict[str, Union[Optional[str], float, int]] = {
@@ -2871,8 +2892,8 @@ def start_resume_mode(json_file_path: str) -> None:
     display_scraping_summary(result, urls, temp_folder, error_log_file)
 
 
-def start_single_scrape(url: str, scrape_only: bool = False) -> None:
-    result = main_workflow(urls=[url], mode="single", num_threads=1, scrape_only=scrape_only)
+def start_single_scrape(url: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False) -> None:
+    result = main_workflow(urls=[url], mode="single", num_threads=1, scrape_only=scrape_only, no_tui=no_tui, mock=mock)
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
 
@@ -2906,7 +2927,7 @@ def create_summary_box(summary_data: Dict[str, str]) -> str:
     return "\n".join(box)
 
 
-def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bool = False) -> None:
+def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False) -> None:
     result = main_workflow(
         urls=[url],
         mode="batch",
@@ -2914,6 +2935,8 @@ def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bo
         blacklist=blacklist,
         num_threads=5,
         scrape_only=scrape_only,
+        no_tui=no_tui,
+        mock=mock,
     )
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
@@ -3136,6 +3159,20 @@ def main() -> None:
         required=False,
     )
     parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        default=False,
+        help="Disable Rich TUI for headless/script usage. Output will be plain text.",
+        required=False,
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help="Use mock API for testing TUI without spending tokens. For development/testing only.",
+        required=False,
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"APIAS - API AUTO SCRAPER version {VERSION}",
@@ -3155,9 +3192,9 @@ def main() -> None:
             print("Warning: When using --resume, other parameters will be ignored.")
         start_resume_mode(args.resume)
     elif args.url and args.mode == "single":
-        start_single_scrape(args.url, args.scrape_only)
+        start_single_scrape(args.url, args.scrape_only, args.no_tui, args.mock)
     elif args.url and args.mode == "batch":
-        start_batch_scrape(args.url, args.whitelist, args.blacklist, args.scrape_only)
+        start_batch_scrape(args.url, args.whitelist, args.blacklist, args.scrape_only, args.no_tui, args.mock)
     else:
         print("Error: Invalid combination of arguments. Please provide either --resume or --url argument.")
         print()
