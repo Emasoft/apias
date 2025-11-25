@@ -2379,9 +2379,14 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
                 time.sleep(0.1)
             thread.join()
     else:
-        # TUI mode - just run the thread without spinner interference
+        # TUI mode - run thread and keep updating TUI while it's alive
         thread = threading.Thread(target=process_in_background)
         thread.start()
+        while thread.is_alive():
+            # Update TUI display while background thread is working
+            if result.tui_manager and result.tui_manager.live:
+                result.tui_manager.live.update(result.tui_manager._create_dashboard())
+            time.sleep(0.1)  # Update TUI 10 times per second
         thread.join()
     logger.debug("Background processing thread completed")
 
