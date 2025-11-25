@@ -220,6 +220,26 @@ BOX_CROSS = "┼"
 logging.basicConfig(level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
+
+def configure_logging_for_tui(no_tui: bool) -> None:
+    """
+    Configure logging level based on TUI mode.
+
+    When TUI is active (no_tui=False), suppress DEBUG logs to keep terminal clean.
+    When TUI is disabled (no_tui=True), keep DEBUG level for detailed output.
+
+    Args:
+        no_tui: If True, keep DEBUG logging. If False, suppress to INFO level.
+    """
+    if not no_tui:
+        # TUI mode - suppress DEBUG logs for clean display
+        logging.getLogger().setLevel(logging.INFO)
+        logger.setLevel(logging.INFO)
+    else:
+        # No TUI mode - keep DEBUG logs for detailed output
+        logging.getLogger().setLevel(logging.DEBUG)
+        logger.setLevel(logging.DEBUG)
+
 # Create a temp folder with datetime suffix
 temp_folder = Path(f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 temp_folder.mkdir(exist_ok=True)
@@ -2685,6 +2705,10 @@ def main_workflow(
         mock: If True, use mock API for testing (no token costs)
     """
     global shutdown_flag, total_cost, progress_tracker, progress_file, temp_folder
+
+    # Configure logging level based on TUI mode
+    configure_logging_for_tui(no_tui)
+
     print(INFO_SEPARATOR)
     logger.info("Starting Web API Retrieval workflow.")
     if scrape_only:
