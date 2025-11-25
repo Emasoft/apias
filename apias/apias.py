@@ -1601,21 +1601,46 @@ async def call_llm_to_convert_html_to_xml(
     html_content: str,
     additional_content: Dict[str, List[str]],
     pricing_info: Dict[str, Dict[str, float]],
-) -> Tuple[Optional[str], float]:
+    no_tui: bool = False,
+    mock: bool = False,
+) -> Tuple[Optional[str], float, Optional[RichTUIManager]]:
     """
     Uses OpenAI's API to convert HTML content to structured XML asynchronously.
     Implements chunking for large content that exceeds safe token limits.
+
+    Args:
+        html_content: HTML content to convert
+        additional_content: Additional metadata (code examples, links, etc.)
+        pricing_info: Model pricing information
+        no_tui: If True, disable Rich TUI output
+        mock: If True, use mock API instead of real OpenAI
     """
     # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
     chunks = chunk_html_by_size(html_content, max_chars=80000)
 
+    # Create TUI manager for multi-chunk processing
+    tui_manager: Optional[RichTUIManager] = None
+    if len(chunks) > 1 and not no_tui:
+        tui_manager = RichTUIManager(total_chunks=len(chunks), no_tui=no_tui)
+
+    # Create mock client if mock mode is enabled
+    mock_client: Optional[MockAPIClient] = None
+    if mock:
+        mock_client = MockAPIClient()
+        logger.info("Using mock API client for testing")
+
     if len(chunks) == 1:
         # Single chunk - process normally
-        return await _process_single_chunk(html_content, pricing_info)
+        result = await _process_single_chunk(html_content, pricing_info, mock=mock, mock_client=mock_client)
+        return result[0], result[1], None  # No TUI manager for single chunk
 
     # Multiple chunks - process in parallel using asyncio
     logger.info(f"Processing {len(chunks)} chunks in parallel with true async concurrency...")
+
+    # Initialize TUI if provided and start live display
+    if tui_manager:
+        tui_manager.start_live_display()
 
     async def process_chunk_wrapper(
         args: Tuple[int, str],
@@ -1623,7 +1648,17 @@ async def call_llm_to_convert_html_to_xml(
         """Async wrapper function for parallel processing"""
         i, chunk = args
         logger.info(f"Processing chunk {i}/{len(chunks)}...")
-        xml_part, cost = await _process_single_chunk(chunk, pricing_info, chunk_num=i)
+
+        # Update TUI: mark as processing
+        if tui_manager:
+            tui_manager.update_chunk_status(
+                chunk_id=i,
+                state=ChunkState.PROCESSING,
+                size_in=len(chunk),
+                attempt=1
+            )
+
+        xml_part, cost = await _process_single_chunk(chunk, pricing_info, chunk_num=i, mock=mock, mock_client=mock_client)
 
         if xml_part:
             # Extract just the content, strip wrapper tags
@@ -1634,9 +1669,32 @@ async def call_llm_to_convert_html_to_xml(
             if xml_part.startswith("<XML>"):
                 xml_part = re.sub(r"^<XML>\s*", "", xml_part)
                 xml_part = re.sub(r"\s*</XML>$", "", xml_part)
+
+            # Update TUI: mark as complete
+            if tui_manager:
+                tui_manager.update_chunk_status(
+                    chunk_id=i,
+                    state=ChunkState.COMPLETE,
+                    size_in=len(chunk),
+                    size_out=len(xml_part),
+                    cost=cost,
+                    attempt=1
+                )
+
             return i, xml_part, cost
         else:
             logger.error(f"Failed to process chunk {i}/{len(chunks)}")
+
+            # Update TUI: mark as failed
+            if tui_manager:
+                tui_manager.update_chunk_status(
+                    chunk_id=i,
+                    state=ChunkState.FAILED,
+                    size_in=len(chunk),
+                    error="Processing failed",
+                    attempt=1
+                )
+
             return i, None, cost
 
     # Prepare chunks with their indices (no delays - truly parallel)
@@ -1672,13 +1730,19 @@ async def call_llm_to_convert_html_to_xml(
     # Intelligently merge duplicate CLASS elements that were split across chunks
     merged_xml = merge_duplicate_classes(merged_xml)
 
-    return merged_xml, total_cost
+    # Stop TUI live display if it was started
+    if tui_manager:
+        tui_manager.stop_live_display()
+
+    return merged_xml, total_cost, tui_manager
 
 
 async def _process_single_chunk(
     html_content: str,
     pricing_info: Dict[str, Dict[str, float]],
     chunk_num: Optional[int] = None,
+    mock: bool = False,
+    mock_client: Optional["MockAPIClient"] = None,
 ) -> Tuple[Optional[str], float]:
     """Process a single chunk of HTML content asynchronously with automatic XML validation retry."""
     chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
@@ -2002,7 +2066,13 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 prompt = base_prompt
 
             logger.debug(f"Processing{chunk_label} (attempt {attempt + 1}/{max_retries + 1}): {len(html_content)} chars")
-            xml_output, request_cost = await call_openai_api(prompt, pricing_info)
+
+            # Use mock or real API based on flag
+            if mock and mock_client:
+                xml_output, request_cost = await mock_call_openai_api(prompt, pricing_info, mock_client)
+            else:
+                xml_output, request_cost = await call_openai_api(prompt, pricing_info)
+
             total_cost += request_cost
 
             # Validate XML
@@ -2093,11 +2163,18 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
 # ============================
 
 
-def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scrape_only: bool = False) -> Optional[str]:
+def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scrape_only: bool = False, no_tui: bool = False, mock: bool = False) -> Optional[str]:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
     Note: slimdown_html is already called inside web_scraper/Scraper.scrape(),
     so we don't call it again here.
+
+    Args:
+        url: URL to process
+        pricing_info: Model pricing information
+        scrape_only: If True, only scrape without AI processing
+        no_tui: If True, disable Rich TUI output
+        mock: If True, use mock API instead of real OpenAI
     """
     logger.info("Processing single page.")
     if scrape_only:
@@ -2110,6 +2187,7 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             self.html_content: Optional[str] = None
             self.xml_content: Optional[str] = None
             self.error: Optional[str] = None
+            self.tui_manager: Optional[RichTUIManager] = None
 
     result = ProcessingResult()
 
@@ -2174,13 +2252,13 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             logger.debug(f"Step 2: Extracted metadata - Title: {page_title}, Code: {len(code_examples)}, Links: {len(links)}")
 
             logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
-            llm_result = await call_llm_to_convert_html_to_xml(slimmed_html, additional_content, pricing_info)
+            llm_result = await call_llm_to_convert_html_to_xml(slimmed_html, additional_content, pricing_info, no_tui=no_tui, mock=mock)
             if llm_result is None:
                 result.error = "Failed to convert HTML to XML."  # type: ignore[unreachable]
                 logger.debug("Step 3 FAILED: LLM conversion returned None")
                 return
 
-            xml_content, _ = llm_result
+            xml_content, _, result.tui_manager = llm_result
             logger.debug(f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)")
 
             if xml_content:
@@ -2208,12 +2286,19 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
         asyncio.run(process_in_background_async())
 
     logger.debug("Starting background processing thread...")
-    with Spinner("Processing page...") as spinner:
+    # Use Spinner only when TUI is disabled (otherwise TUI handles progress display)
+    if no_tui or scrape_only:
+        with Spinner("Processing page...") as spinner:
+            thread = threading.Thread(target=process_in_background)
+            thread.start()
+            while thread.is_alive():
+                spinner.step()
+                time.sleep(0.1)
+            thread.join()
+    else:
+        # TUI mode - just run the thread without spinner interference
         thread = threading.Thread(target=process_in_background)
         thread.start()
-        while thread.is_alive():
-            spinner.step()
-            time.sleep(0.1)
         thread.join()
     logger.debug("Background processing thread completed")
 
@@ -2235,6 +2320,15 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             f.write(merged_xml)
         logger.info(f"Merged XML saved to {merged_xml_file}")
         logger.debug(f"Step 5 SUCCESS: Merged XML file created ({len(merged_xml)} characters)")
+
+        # Show final TUI summary if TUI manager exists
+        if result.tui_manager:
+            xml_file = temp_folder / "processed_single_page.xml"
+            result.tui_manager.show_final_summary(
+                xml_files=[str(xml_file), str(merged_xml_file)],
+                output_dir=str(temp_folder)
+            )
+
         logger.debug("=== process_single_page completed successfully ===")
         return result.xml_content
 
@@ -2727,7 +2821,7 @@ def main_workflow(
         # Determine processing type
         if mode == "single":
             logger.info("Workflow Type: Single Page Processing")
-            xml_result = process_single_page(urls[0], pricing_info, scrape_only)
+            xml_result = process_single_page(urls[0], pricing_info, scrape_only, no_tui, mock)
             if xml_result:
                 is_valid = validate_xml(xml_result)
                 print(f"The XML file was successfully generated and it is {'valid' if is_valid else 'non valid'} XML")

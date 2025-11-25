@@ -9,18 +9,19 @@ Simulates realistic API behavior with:
 """
 
 import asyncio
+import json
 import random
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Any
 
 
 class MockAPIClient:
     """Mock OpenAI API client that simulates realistic behavior"""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.total_cost = 0.0
         self.call_count = 0
 
-    async def responses_create(self, **kwargs) -> "MockResponse":
+    async def responses_create(self, **kwargs: Any) -> "MockResponse":
         """
         Simulate OpenAI API call with realistic delays and occasional failures.
 
@@ -117,11 +118,19 @@ class MockAPIClient:
 class MockResponse:
     """Mock API response object"""
 
-    def __init__(self, xml_content: str, cost: float):
+    def __init__(self, xml_content: str, cost: float) -> None:
         self.xml_content = xml_content
         self.cost = cost
         # Wrap in JSON structure to match real API
-        self.content = type("Content", (), {"text": f'{{"xml_content": "{xml_content}", "document_type": "MODULE", "completeness_check": true}}'})()
+        # Properly escape XML content for JSON to handle newlines and special characters
+        escaped_xml = json.dumps(xml_content)
+        self.content = type(
+            "Content",
+            (),
+            {
+                "text": f'{{"xml_content": {escaped_xml}, "document_type": "MODULE", "completeness_check": true}}'
+            },
+        )()
 
 
 class MockAPIException(Exception):
@@ -130,7 +139,11 @@ class MockAPIException(Exception):
     pass
 
 
-async def mock_call_openai_api(prompt: str, pricing_info: dict, mock_client: MockAPIClient = None) -> Tuple[Optional[str], float]:
+async def mock_call_openai_api(
+    prompt: str,
+    pricing_info: dict[str, Any],
+    mock_client: Optional[MockAPIClient] = None,
+) -> Tuple[Optional[str], float]:
     """
     Mock version of call_openai_api that simulates realistic behavior.
 
@@ -151,8 +164,6 @@ async def mock_call_openai_api(prompt: str, pricing_info: dict, mock_client: Moc
             response_format={"type": "json_object"},
         )
 
-        import json
-
         result = json.loads(response.content.text)
         xml_content = result.get("xml_content", "")
 
@@ -160,7 +171,7 @@ async def mock_call_openai_api(prompt: str, pricing_info: dict, mock_client: Moc
 
     except MockAPIException as e:
         # Simulate retry-able failure
-        raise ValueError(f"Mock API error: {e}")
+        raise ValueError(f"Mock API error: {e}") from e
     except Exception as e:
         # Unexpected error
-        raise RuntimeError(f"Mock API unexpected error: {e}")
+        raise RuntimeError(f"Mock API unexpected error: {e}") from e
