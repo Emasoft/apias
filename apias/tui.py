@@ -18,6 +18,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from enum import Enum
+import threading
+import sys
+import tty
+import termios
+import select
 
 from rich.console import Console
 from rich.live import Live
@@ -89,6 +94,12 @@ class RichTUIManager:
         self.chunks: Dict[int, ChunkStatus] = {}
         self.live: Optional[Live] = None
 
+        # Keyboard control state
+        self.waiting_to_start = True  # Start in waiting state
+        self.should_stop = False  # Flag to stop processing
+        self.keyboard_listener_thread: Optional[threading.Thread] = None
+        self.old_terminal_settings = None  # To restore terminal settings
+
         # Initialize all chunks as queued
         for i in range(1, total_chunks + 1):
             self.chunks[i] = ChunkStatus(chunk_id=i)
@@ -106,6 +117,9 @@ class RichTUIManager:
 
     def stop_live_display(self):
         """Stop the live monitoring display"""
+        # Stop keyboard listener first
+        self.stop_keyboard_listener()
+
         if self.live:
             self.live.stop()
             self.live = None
@@ -404,3 +418,136 @@ class RichTUIManager:
             print(f"\nOutput Directory: {output_dir}")
 
         print("=" * 60 + "\n")
+
+    def _keyboard_listener(self):
+        """Listen for SPACE keypress in a separate thread"""
+        try:
+            # Check if stdin is a terminal (TTY)
+            if not sys.stdin.isatty():
+                # Not a TTY, skip keyboard listener
+                return
+
+            if self.old_terminal_settings is None:
+                self.old_terminal_settings = termios.tcgetattr(sys.stdin)
+
+            tty.setcbreak(sys.stdin.fileno())
+            while not self.should_stop:
+                if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
+                    char = sys.stdin.read(1)
+                    if char == ' ':  # SPACE key pressed
+                        if self.waiting_to_start:
+                            self.waiting_to_start = False
+                        else:
+                            self.should_stop = True
+                            break
+        except (termios.error, OSError):
+            # Terminal operations not supported, skip
+            pass
+        finally:
+            if self.old_terminal_settings is not None:
+                try:
+                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
+                except (termios.error, OSError):
+                    pass
+
+    def start_keyboard_listener(self):
+        """Start the keyboard listener thread"""
+        if not self.no_tui and self.keyboard_listener_thread is None:
+            self.keyboard_listener_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
+            self.keyboard_listener_thread.start()
+
+    def stop_keyboard_listener(self):
+        """Stop the keyboard listener thread and restore terminal"""
+        self.should_stop = True
+        if self.keyboard_listener_thread:
+            self.keyboard_listener_thread.join(timeout=1.0)
+            self.keyboard_listener_thread = None
+        if self.old_terminal_settings is not None:
+            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
+            self.old_terminal_settings = None
+
+    def wait_for_start(self):
+        """Display TUI and wait for SPACE keypress to start processing"""
+        if self.no_tui:
+            return  # Skip in no-tui mode
+
+        # Check if stdin is a TTY
+        if not sys.stdin.isatty():
+            # Not a TTY, skip waiting and start immediately
+            self.waiting_to_start = False
+            return
+
+        # Start keyboard listener
+        self.start_keyboard_listener()
+
+        # Start live display with "waiting" message
+        self.live = Live(
+            self._create_waiting_dashboard(),
+            console=self.console,
+            refresh_per_second=4,
+            screen=False,
+        )
+        self.live.start()
+
+        # Wait for user to press SPACE
+        while self.waiting_to_start and not self.should_stop:
+            time.sleep(0.1)
+            if self.live:
+                self.live.update(self._create_waiting_dashboard())
+
+        # Switch to normal dashboard
+        if self.live and not self.should_stop:
+            self.live.update(self._create_dashboard())
+
+    def _create_waiting_dashboard(self):
+        """Create the waiting state dashboard with prominent start message"""
+        # Header
+        header = Panel(
+            Text("🚀 APIAS - API Documentation Extractor", justify="center", style="bold cyan"),
+            box=box.ROUNDED,
+            padding=(0, 1),
+        )
+
+        # Waiting message (prominent)
+        waiting_msg = Panel(
+            Text.assemble(
+                ("⏸️  ", "bold yellow"),
+                ("PRESS SPACE BAR TO START SCRAPING", "bold yellow blink"),
+                ("\n\n", ""),
+                ("Press SPACE again to stop", "dim white"),
+            ),
+            box=box.DOUBLE,
+            padding=(2, 4),
+            border_style="yellow",
+            title="[bold yellow]⏸️  READY TO START[/bold yellow]",
+            title_align="center",
+        )
+
+        # Stats (initial state)
+        stats_content = Table.grid(padding=(0, 2))
+        stats_content.add_column(justify="left")
+        stats_content.add_column(justify="left")
+        stats_content.add_column(justify="left")
+
+        stats_content.add_row(
+            f"Total Chunks: {self.stats.total_chunks}",
+            f"Completed: 0/{self.stats.total_chunks}",
+            f"Failed: 0"
+        )
+
+        stats_panel = Panel(
+            stats_content,
+            title="📊 Processing Stats",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+
+        # Combine panels
+        layout = Table.grid()
+        layout.add_row(header)
+        layout.add_row("")
+        layout.add_row(waiting_msg)
+        layout.add_row("")
+        layout.add_row(stats_panel)
+
+        return layout

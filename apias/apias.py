@@ -1650,10 +1650,19 @@ async def call_llm_to_convert_html_to_xml(
         mock_client = MockAPIClient()
         logger.info("Using mock API client for testing")
 
+    # Wait for user to press SPACE to start (displays TUI with prominent message)
+    if tui_manager:
+        tui_manager.wait_for_start()
+        # Check if user pressed SPACE to stop before starting
+        if tui_manager.should_stop:
+            logger.info("Processing cancelled by user before start")
+            tui_manager.stop_live_display()
+            return None, 0.0, tui_manager
+
     if len(chunks) == 1:
         # Single chunk - process with TUI
         if tui_manager:
-            tui_manager.start_live_display()
+            # TUI already started by wait_for_start(), just update status
             # Update chunk as processing
             tui_manager.update_chunk_status(
                 chunk_id=1,
@@ -1690,9 +1699,7 @@ async def call_llm_to_convert_html_to_xml(
     # Multiple chunks - process in parallel using asyncio
     logger.info(f"Processing {len(chunks)} chunks in parallel with true async concurrency...")
 
-    # Initialize TUI if provided and start live display
-    if tui_manager:
-        tui_manager.start_live_display()
+    # TUI already started by wait_for_start(), no need to start again
 
     async def process_chunk_wrapper(
         args: Tuple[int, str],
