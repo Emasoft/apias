@@ -177,11 +177,13 @@ class RichTUIManager:
         elif state == ChunkState.RETRY:
             self.stats.retrying += 1
 
-        # Update display
-        if self.live:
-            self.live.update(self._create_dashboard())
-        elif not self.no_tui:
-            # Not in live mode, print progress
+        # NOTE: Do NOT call self.live.update() here!
+        # Rich Live is not thread-safe. The main thread handles all live display updates.
+        # This method only updates the data (chunk status and stats).
+        # The main thread's update loop will pick up these changes and refresh the display.
+        
+        # Print progress when not in live mode
+        if not self.live and not self.no_tui:
             self._print_chunk_update(chunk)
 
     def _print_chunk_update(self, chunk: ChunkStatus):
