@@ -138,7 +138,7 @@ from signal import SIGINT, signal
 import json
 
 # Import TUI and mock API modules
-from .tui import RichTUIManager, ChunkState
+from .tui import RichTUIManager, ChunkState, ChunkStatus
 from .mock_api import MockAPIClient, mock_call_openai_api
 
 
@@ -1623,6 +1623,7 @@ async def call_llm_to_convert_html_to_xml(
     pricing_info: Dict[str, Dict[str, float]],
     no_tui: bool = False,
     mock: bool = False,
+    tui_manager: Optional[RichTUIManager] = None,
 ) -> Tuple[Optional[str], float, Optional[RichTUIManager]]:
     """
     Uses OpenAI's API to convert HTML content to structured XML asynchronously.
@@ -1639,10 +1640,16 @@ async def call_llm_to_convert_html_to_xml(
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
     chunks = chunk_html_by_size(html_content, max_chars=80000)
 
-    # Create TUI manager for all processing (single or multi-chunk)
-    tui_manager: Optional[RichTUIManager] = None
-    if not no_tui:
+    # Use provided TUI manager or create new one
+    if tui_manager is None and not no_tui:
         tui_manager = RichTUIManager(total_chunks=len(chunks), no_tui=no_tui)
+    elif tui_manager is not None:
+        # Update chunk count in existing TUI manager
+        tui_manager.stats.total_chunks = len(chunks)
+        # Reinitialize chunks dict with correct count
+        tui_manager.chunks = {}
+        for i in range(1, len(chunks) + 1):
+            tui_manager.chunks[i] = ChunkStatus(chunk_id=i)
 
     # Create mock client if mock mode is enabled
     mock_client: Optional[MockAPIClient] = None
@@ -1650,14 +1657,8 @@ async def call_llm_to_convert_html_to_xml(
         mock_client = MockAPIClient()
         logger.info("Using mock API client for testing")
 
-    # Wait for user to press SPACE to start (displays TUI with prominent message)
-    if tui_manager:
-        tui_manager.wait_for_start()
-        # Check if user pressed SPACE to stop before starting
-        if tui_manager.should_stop:
-            logger.info("Processing cancelled by user before start")
-            tui_manager.stop_live_display()
-            return None, 0.0, tui_manager
+    # Note: wait_for_start() is called earlier in process_single_page() before scraping
+    # So TUI is already displayed and user has already pressed SPACE by the time we get here
 
     if len(chunks) == 1:
         # Single chunk - process with TUI
@@ -2250,6 +2251,20 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
 
     result = ProcessingResult()
 
+    # Create TUI manager FIRST (before any processing)
+    # We'll use 1 chunk as placeholder since we don't know yet how many chunks there will be
+    if not no_tui and not scrape_only:
+        result.tui_manager = RichTUIManager(total_chunks=1, no_tui=no_tui)
+
+        # Display waiting screen and wait for SPACE press
+        result.tui_manager.wait_for_start()
+
+        # Check if user cancelled before starting
+        if result.tui_manager.should_stop:
+            logger.info("Processing cancelled by user before start")
+            result.tui_manager.stop_live_display()
+            return None
+
     async def process_in_background_async() -> None:
         try:
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
@@ -2311,7 +2326,10 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             logger.debug(f"Step 2: Extracted metadata - Title: {page_title}, Code: {len(code_examples)}, Links: {len(links)}")
 
             logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
-            llm_result = await call_llm_to_convert_html_to_xml(slimmed_html, additional_content, pricing_info, no_tui=no_tui, mock=mock)
+            llm_result = await call_llm_to_convert_html_to_xml(
+                slimmed_html, additional_content, pricing_info,
+                no_tui=no_tui, mock=mock, tui_manager=result.tui_manager
+            )
             if llm_result is None:
                 result.error = "Failed to convert HTML to XML."  # type: ignore[unreachable]
                 logger.debug("Step 3 FAILED: LLM conversion returned None")
