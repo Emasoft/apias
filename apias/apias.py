@@ -1717,32 +1717,100 @@ Classify the content and wrap it in the appropriate root tag:
    - Organize with <SUB_SECTION> elements
    - Each with <TITLE> and content
 
-HTML PATTERN RECOGNITION FOR PYTHON CLASSES:
-CRITICAL: The HTML uses CSS class names that create ambiguity. To identify a Python CLASS (not a CSS class), look for ALL these patterns together:
+SEMANTIC CONTENT ANALYSIS (Website-Agnostic Classification):
+CRITICAL: Different documentation sites use different HTML structures and CSS naming.
+DO NOT rely on specific CSS class names (they vary by site: "doc-class", "py-class", "h876", etc.).
+Instead, analyze the SEMANTIC CONTENT to determine the element type.
 
-1. **Primary Pattern** - CSS class "doc-class":
-   ```html
-   <div class="doc doc-object doc-class">
-   ```
+**UNIVERSAL INDICATORS FOR PYTHON CLASSES:**
 
-2. **Confirming Pattern** - Class name span:
-   ```html
-   <span class="doc doc-object-name doc-class-name">ClassName</span>
-   ```
+1. **Inheritance Keywords** (Primary Signal):
+   - Text contains: "Bases:", "Inherits:", "Extends:", "Parent:", "Superclass:"
+   - Example: "Bases: Exception", "Inherits: BaseClass"
+   - This is THE STRONGEST indicator of a Python class
 
-3. **Additional Indicators**:
-   - Symbol class: `<code class="doc-symbol-class"></code>`
-   - Bases paragraph: `<p class="doc doc-class-bases">Bases: ...</p>`
+2. **Class Signature Patterns**:
+   - Contains: `class ClassName:`, `class ClassName(Parent):`, `class ClassName(`
+   - Python keyword "class" at start of signature
+   - CamelCase or CapitalizedName (PEP 8 convention)
 
-**Decision Rule**: If you see "doc-class" AND "doc-class-name" together, it's a Python CLASS.
+3. **Contains Methods** (Structural Signal):
+   - Has multiple child elements with `def method(self, ...)`
+   - Methods have `self` as first parameter
+   - Contains `__init__`, `__new__`, or other dunder methods
 
-**Examples**:
-- ✅ CLASS: `<div class="doc-object doc-class">` + `<span class="doc-class-name">App</span>`
-- ✅ VARIABLE: `<div class="doc-object doc-attribute">` + `<span class="doc-attribute-name">ScreenType</span>`
-- ✅ METHOD: `<div class="doc-object doc-method">` + `<span class="doc-method-name">render</span>`
-- ✅ FUNCTION: `<div class="doc-object doc-function">` + `<span class="doc-function-name">run_app</span>`
+4. **Capitalization Convention**:
+   - Name starts with uppercase letter: App, Screen, ActionError
+   - Follows PEP 8 class naming (not snake_case)
 
-DO NOT create <UNKNOWN_ELEMENT> tags when you see "doc-class" - these are Python classes!
+**DECISION LOGIC:**
+```
+IF (has inheritance keyword) OR
+   (signature contains "class ClassName") OR
+   (has methods with self parameter AND capitalized name)
+THEN → <CLASS>
+
+ELSE IF (has "def name(self, ...)" AND inside a class)
+THEN → <METHOD>
+
+ELSE IF (has "@property" OR getter/setter pattern)
+THEN → <PROPERTY>
+
+ELSE IF (has "def name(...)" WITHOUT self)
+THEN → <FUNCTION>
+
+ELSE IF (has "var = value" OR "var: Type = value")
+THEN → <VARIABLE>
+
+ELSE → Analyze context and infer from surrounding elements
+```
+
+**EXAMPLES OF SEMANTIC ANALYSIS:**
+
+✅ **CLASS** (recognized by inheritance):
+```
+Name: ActionError
+Text: "Bases: Exception. Base class for exceptions..."
+→ Contains "Bases:" → This is a CLASS
+```
+
+✅ **CLASS** (recognized by signature):
+```
+Signature: class App(Generic[ReturnType], DOMNode)
+→ Contains "class" keyword → This is a CLASS
+```
+
+✅ **METHOD** (recognized by self parameter):
+```
+Signature: def render(self) -> RenderResult
+→ Has "self" parameter → This is a METHOD
+```
+
+✅ **PROPERTY** (recognized by decorator):
+```
+Signature: @property
+def active_bindings(self) -> dict
+→ Has @property decorator → This is a PROPERTY
+```
+
+✅ **FUNCTION** (recognized by no self):
+```
+Signature: def run_app(app_class) -> int
+→ No "self" parameter → This is a FUNCTION
+```
+
+✅ **VARIABLE** (recognized by assignment):
+```
+Signature: ScreenType = TypeVar('ScreenType', bound=Screen)
+→ Has "=" assignment → This is a VARIABLE
+```
+
+**CRITICAL RULES:**
+1. DO NOT rely on CSS class names - they vary by site
+2. DO analyze text content for semantic keywords
+3. DO look for Python syntax patterns (class, def, self, @property)
+4. DO use inheritance/bases as PRIMARY class indicator
+5. DO NOT create <UNKNOWN_ELEMENT> - infer from context instead
 
 XML TAG SPECIFICATIONS:
 Use the correct XML tags based on the type of API element:
