@@ -1717,6 +1717,33 @@ Classify the content and wrap it in the appropriate root tag:
    - Organize with <SUB_SECTION> elements
    - Each with <TITLE> and content
 
+HTML PATTERN RECOGNITION FOR PYTHON CLASSES:
+CRITICAL: The HTML uses CSS class names that create ambiguity. To identify a Python CLASS (not a CSS class), look for ALL these patterns together:
+
+1. **Primary Pattern** - CSS class "doc-class":
+   ```html
+   <div class="doc doc-object doc-class">
+   ```
+
+2. **Confirming Pattern** - Class name span:
+   ```html
+   <span class="doc doc-object-name doc-class-name">ClassName</span>
+   ```
+
+3. **Additional Indicators**:
+   - Symbol class: `<code class="doc-symbol-class"></code>`
+   - Bases paragraph: `<p class="doc doc-class-bases">Bases: ...</p>`
+
+**Decision Rule**: If you see "doc-class" AND "doc-class-name" together, it's a Python CLASS.
+
+**Examples**:
+- ✅ CLASS: `<div class="doc-object doc-class">` + `<span class="doc-class-name">App</span>`
+- ✅ VARIABLE: `<div class="doc-object doc-attribute">` + `<span class="doc-attribute-name">ScreenType</span>`
+- ✅ METHOD: `<div class="doc-object doc-method">` + `<span class="doc-method-name">render</span>`
+- ✅ FUNCTION: `<div class="doc-object doc-function">` + `<span class="doc-function-name">run_app</span>`
+
+DO NOT create <UNKNOWN_ELEMENT> tags when you see "doc-class" - these are Python classes!
+
 XML TAG SPECIFICATIONS:
 Use the correct XML tags based on the type of API element:
 
