@@ -1619,9 +1619,9 @@ async def call_llm_to_convert_html_to_xml(
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
     chunks = chunk_html_by_size(html_content, max_chars=80000)
 
-    # Create TUI manager for multi-chunk processing
+    # Create TUI manager for all processing (single or multi-chunk)
     tui_manager: Optional[RichTUIManager] = None
-    if len(chunks) > 1 and not no_tui:
+    if not no_tui:
         tui_manager = RichTUIManager(total_chunks=len(chunks), no_tui=no_tui)
 
     # Create mock client if mock mode is enabled
@@ -1631,9 +1631,41 @@ async def call_llm_to_convert_html_to_xml(
         logger.info("Using mock API client for testing")
 
     if len(chunks) == 1:
-        # Single chunk - process normally
-        result = await _process_single_chunk(html_content, pricing_info, mock=mock, mock_client=mock_client)
-        return result[0], result[1], None  # No TUI manager for single chunk
+        # Single chunk - process with TUI
+        if tui_manager:
+            tui_manager.start_live_display()
+            # Update chunk as processing
+            tui_manager.update_chunk_status(
+                chunk_id=1,
+                state=ChunkState.PROCESSING,
+                size_in=len(html_content),
+                attempt=1
+            )
+
+        result = await _process_single_chunk(html_content, pricing_info, chunk_num=1, mock=mock, mock_client=mock_client)
+
+        if tui_manager:
+            # Update final status
+            if result[0]:  # XML content
+                tui_manager.update_chunk_status(
+                    chunk_id=1,
+                    state=ChunkState.COMPLETE,
+                    size_in=len(html_content),
+                    size_out=len(result[0]),
+                    cost=result[1],
+                    attempt=1
+                )
+            else:
+                tui_manager.update_chunk_status(
+                    chunk_id=1,
+                    state=ChunkState.FAILED,
+                    size_in=len(html_content),
+                    error="Processing failed",
+                    attempt=1
+                )
+            tui_manager.stop_live_display()
+
+        return result[0], result[1], tui_manager
 
     # Multiple chunks - process in parallel using asyncio
     logger.info(f"Processing {len(chunks)} chunks in parallel with true async concurrency...")
