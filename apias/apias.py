@@ -1131,17 +1131,20 @@ def slimdown_html(
     )
 
 
-def start_scraping(url: str) -> Optional[str]:
+def start_scraping(url: str, no_tui: bool = False) -> Optional[str]:
     url = url.strip()
     if not url:
-        print("Please provide a URL to scrape.")
+        if no_tui:
+            print("Please provide a URL to scrape.")
         return None
 
-    print(f"Scraping {url}...")
+    if no_tui:
+        print(f"Scraping {url}...")
 
     res = install_playwright()
     if not res:
-        print("Unable to initialize playwright.")
+        if no_tui:
+            print("Unable to initialize playwright.")
         return None
 
     scraper = Scraper(playwright_available=res, verify_ssl=False)
@@ -1150,13 +1153,16 @@ def start_scraping(url: str) -> Optional[str]:
         content, mime_type = scraper.scrape(url)
         if content:
             content = f"{url}:\n\n" + content
-            print("... done.")
+            if no_tui:
+                print("... done.")
             return content
         else:
-            print("No content retrieved.")
+            if no_tui:
+                print("No content retrieved.")
             return None
     except Exception as e:
-        print(f"Error during scraping: {str(e)}")
+        if no_tui:
+            print(f"Error during scraping: {str(e)}")
         return None
 
 
@@ -2165,12 +2171,12 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
 # ============================
 
 
-def web_scraper(url: str) -> Optional[str]:
+def web_scraper(url: str, no_tui: bool = False) -> Optional[str]:
     logger.debug("=== web_scraper invoked ===")
     logger.debug(f"Target URL: {url}")
     try:
         logger.debug("Starting scraping process...")
-        content = start_scraping(url)
+        content = start_scraping(url, no_tui=no_tui)
         if content:
             content_size = len(content) / 1024  # Convert to KB
             logger.info(f"Scraping successful for {url}. {content_size:.2f} KB scraped.")
@@ -2269,7 +2275,7 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
         try:
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
             # Run the synchronous web_scraper in a separate thread to avoid Playwright sync/async conflicts
-            result.html_content = await asyncio.to_thread(web_scraper, url)
+            result.html_content = await asyncio.to_thread(web_scraper, url, no_tui)
             if not result.html_content:
                 result.error = "Failed to retrieve HTML content for single page processing."
                 logger.debug("Step 1 FAILED: No HTML content retrieved")
@@ -2443,7 +2449,7 @@ def process_url(
         update_progress_file()
 
         logger.info(f"Scraping HTML content for URL: {url}")
-        html_content = web_scraper(url)
+        html_content = web_scraper(url, no_tui=True)
         if not html_content:
             logger.warning(f"Failed to retrieve HTML content for {url}")
             progress_tracker[url] = {
