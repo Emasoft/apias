@@ -41,6 +41,7 @@ class URLState(Enum):
     PENDING = "⏳"
     SCRAPING = "🌐"
     PROCESSING = "🔄"
+    MERGING_CHUNKS = "🔀"  # Per-URL chunk merging (reconstructs coherent API from chunks)
     COMPLETE = "✅"
     FAILED = "❌"
 
@@ -58,6 +59,9 @@ class URLTask:
     duration: float = 0.0
     start_time: Optional[float] = None
     error: str = ""
+    # Chunk tracking (for large pages split into multiple LLM requests)
+    current_chunk: int = 0  # 0 means not chunked or not started
+    total_chunks: int = 0   # 0 means not chunked
 
 
 @dataclass
@@ -294,8 +298,16 @@ class BatchTUIManager:
             size_out_kb = task.size_out / 1024 if task.size_out > 0 else 0
             duration_str = f"{task.duration:.1f}s" if task.duration > 0 else "0.0s"
 
+            # Show chunk information if page is chunked
+            chunk_info = ""
+            if task.total_chunks > 0:
+                if task.state == URLState.PROCESSING:
+                    chunk_info = f" (Chunk {task.current_chunk}/{task.total_chunks})"
+                elif task.state == URLState.MERGING_CHUNKS:
+                    chunk_info = " (Merging chunks)"
+
             stats_line = (
-                f"  {state_emoji} Status: [yellow]{task.state.name}[/yellow]  |  "
+                f"  {state_emoji} Status: [yellow]{task.state.name}{chunk_info}[/yellow]  |  "
                 f"Size: {size_in_kb:.1f}KB → {size_out_kb:.1f}KB  |  "
                 f"Cost: ${task.cost:.4f}  |  "
                 f"Duration: {duration_str}"
@@ -359,7 +371,7 @@ class BatchTUIManager:
             )
             self.live.start()
 
-    def update_task(self, task_id: int, state: URLState, progress_pct: float = 0.0, size_in: int = 0, size_out: int = 0, cost: float = 0.0, error: str = ""):
+    def update_task(self, task_id: int, state: URLState, progress_pct: float = 0.0, size_in: int = 0, size_out: int = 0, cost: float = 0.0, error: str = "", current_chunk: int = 0, total_chunks: int = 0):
         """Update status of a URL task"""
         task = self.tasks.get(task_id)
         if not task:
@@ -377,6 +389,12 @@ class BatchTUIManager:
         task.size_out = size_out or task.size_out
         task.cost = cost or task.cost
         task.error = error
+
+        # Update chunk tracking
+        if total_chunks > 0:
+            task.total_chunks = total_chunks
+        if current_chunk > 0:
+            task.current_chunk = current_chunk
 
         # Update duration
         if task.start_time and state in [URLState.COMPLETE, URLState.FAILED]:

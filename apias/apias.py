@@ -414,10 +414,14 @@ def merge_xmls(temp_folder: Path, progress_callback: Optional[Callable[[int, int
     root = ET.Element("TEXTUAL_API")
     error_log = []
 
-    # Get list of XML files
-    xml_files = list(temp_folder.glob("processed_*.xml"))
+    # Get list of XML files and sort by task ID for deterministic order
+    # Files are named: processed_1.xml, processed_2.xml, etc.
+    xml_files = sorted(
+        temp_folder.glob("processed_*.xml"),
+        key=lambda f: int(f.stem.split('_')[1])  # Extract task ID from filename
+    )
     total_files = len(xml_files)
-    
+
     for idx, xml_file in enumerate(xml_files, start=1):
         if progress_callback:
             progress_callback(idx, total_files, f"Merging {xml_file.name}")
