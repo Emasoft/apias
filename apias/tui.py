@@ -45,12 +45,41 @@ class ChunkState(Enum):
     FAILED = "❌"
 
 
+class ProcessingStep(Enum):
+    """Granular processing steps within a chunk"""
+
+    QUEUED = (0, "Queued")
+    SCRAPING = (1, "Scraping HTML")
+    CLEANING = (2, "Cleaning HTML")
+    CHUNKING = (3, "Chunking HTML")
+    SENDING = (4, "Sending to AI")
+    RECEIVING = (5, "Receiving from AI")
+    VALIDATING = (6, "Validating XML")
+    SAVING = (7, "Saving XML")
+    COMPLETE = (8, "Complete")
+
+    def __init__(self, step_num: int, description: str):
+        self.step_num = step_num
+        self.description = description
+
+    @property
+    def total_steps(self) -> int:
+        """Total number of steps in processing"""
+        return 8
+
+    @property
+    def progress_percentage(self) -> float:
+        """Calculate progress percentage for this step"""
+        return (self.step_num / self.total_steps) * 100
+
+
 @dataclass
 class ChunkStatus:
     """Status information for a single chunk"""
 
     chunk_id: int
     state: ChunkState = ChunkState.QUEUED
+    current_step: ProcessingStep = ProcessingStep.QUEUED
     size_in: int = 0
     size_out: int = 0
     cost: float = 0.0
@@ -128,6 +157,7 @@ class RichTUIManager:
         self,
         chunk_id: int,
         state: ChunkState,
+        step: Optional[ProcessingStep] = None,
         size_in: int = 0,
         size_out: int = 0,
         cost: float = 0.0,
@@ -140,6 +170,7 @@ class RichTUIManager:
         Args:
             chunk_id: Chunk number
             state: New state
+            step: Current processing step (optional, for granular progress)
             size_in: Input size in bytes
             size_out: Output size in bytes
             cost: Processing cost in dollars
@@ -153,6 +184,8 @@ class RichTUIManager:
         # Update chunk status
         old_state = chunk.state
         chunk.state = state
+        if step is not None:
+            chunk.current_step = step
         chunk.size_in = size_in or chunk.size_in
         chunk.size_out = size_out or chunk.size_out
         chunk.cost += cost  # Accumulate cost across retries
@@ -165,6 +198,9 @@ class RichTUIManager:
         elif state in [ChunkState.COMPLETE, ChunkState.FAILED]:
             if chunk.start_time:
                 chunk.duration = time.time() - chunk.start_time
+            # Set final step when complete
+            if state == ChunkState.COMPLETE:
+                chunk.current_step = ProcessingStep.COMPLETE
 
         # Update global stats
         if old_state != ChunkState.COMPLETE and state == ChunkState.COMPLETE:
@@ -241,13 +277,16 @@ class RichTUIManager:
         # Processing = total - completed - failed
         processing = self.stats.total_chunks - self.stats.completed - self.stats.failed
 
-        # Progress bar
-        progress_pct = (self.stats.completed / self.stats.total_chunks) * 100 if self.stats.total_chunks > 0 else 0
+        # Step-based progress bar (granular progress within each chunk)
+        total_steps = self.stats.total_chunks * 8  # 8 steps per chunk
+        completed_steps = sum(chunk.current_step.step_num for chunk in self.chunks.values())
+        progress_pct = (completed_steps / total_steps) * 100 if total_steps > 0 else 0
         bar_length = 30
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
 
-        table.add_row("Concurrent Requests", f"{processing}/{self.stats.total_chunks}", f"{progress_bar} {progress_pct:.0f}%")
+        table.add_row("Overall Progress", f"{completed_steps}/{total_steps} steps", f"{progress_bar} {progress_pct:.0f}%")
+        table.add_row("Processing Chunks", f"{processing}/{self.stats.total_chunks}", "")
         table.add_row("Completed Chunks", f"{self.stats.completed}/{self.stats.total_chunks}", "")
         table.add_row("Failed Chunks", f"{self.stats.failed}", "[red]" if self.stats.failed > 0 else "[green]")
         table.add_row("Retry Queue", f"{self.stats.retrying}", "")
@@ -273,8 +312,11 @@ class RichTUIManager:
         for chunk_id in visible_chunks:
             chunk = self.chunks[chunk_id]
 
-            # Format status
+            # Format status with current step
             status_text = f"{chunk.state.value} {chunk.state.name}"
+            if chunk.state == ChunkState.PROCESSING and chunk.current_step != ProcessingStep.QUEUED:
+                # Show current step when processing
+                status_text = f"{chunk.state.value} {chunk.current_step.description}"
             if chunk.attempt > 1:
                 status_text += f" ({chunk.attempt})"
 

@@ -138,7 +138,7 @@ from signal import SIGINT, signal
 import json
 
 # Import TUI and mock API modules
-from .tui import RichTUIManager, ChunkState, ChunkStatus
+from .tui import RichTUIManager, ChunkState, ChunkStatus, ProcessingStep
 from .mock_api import MockAPIClient, mock_call_openai_api
 
 
@@ -2273,6 +2273,10 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
 
     async def process_in_background_async() -> None:
         try:
+            # Update step: Scraping
+            if result.tui_manager:
+                result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.SCRAPING)
+
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
             # Run the synchronous web_scraper in a separate thread to avoid Playwright sync/async conflicts
             result.html_content = await asyncio.to_thread(web_scraper, url, no_tui)
@@ -2281,6 +2285,10 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
                 logger.debug("Step 1 FAILED: No HTML content retrieved")
                 return
             logger.debug(f"Step 1 SUCCESS: Retrieved {len(result.html_content)} characters (already slimmed)")
+
+            # Update step: Cleaning (already done by scraper, but mark as complete)
+            if result.tui_manager:
+                result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.CLEANING)
 
             # Note: slimdown_html was already called in Scraper.scrape()
             # The content is already cleaned, so we use it directly
@@ -2331,6 +2339,14 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             }
             logger.debug(f"Step 2: Extracted metadata - Title: {page_title}, Code: {len(code_examples)}, Links: {len(links)}")
 
+            # Update step: Chunking (for single page, this is trivial but marks progress)
+            if result.tui_manager:
+                result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.CHUNKING)
+
+            # Update step: Sending to AI
+            if result.tui_manager:
+                result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.SENDING)
+
             logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
             llm_result = await call_llm_to_convert_html_to_xml(
                 slimmed_html, additional_content, pricing_info,
@@ -2344,7 +2360,15 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
             xml_content, _, result.tui_manager = llm_result
             logger.debug(f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)")
 
+            # Update step: Receiving from AI
+            if result.tui_manager:
+                result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.RECEIVING)
+
             if xml_content:
+                # Update step: Validating XML
+                if result.tui_manager:
+                    result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.VALIDATING)
+
                 # Strip any XML declaration and root <XML> tag from LLM output (we'll add our own)
                 import re
 
@@ -2353,6 +2377,11 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
                 xml_content = re.sub(r"\s*</XML>\s*$", "", xml_content, count=1)  # Remove closing </XML>
                 # Wrap XML content with proper declaration and source URL
                 result.xml_content = f'<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n<SOURCE_URL>{url}</SOURCE_URL>\n{xml_content}\n</XML>'
+
+                # Update step: Saving XML
+                if result.tui_manager:
+                    result.tui_manager.update_chunk_status(chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.SAVING)
+
                 logger.debug("Step 4: Saving XML to file...")
 
                 # Save individual XML file
