@@ -402,15 +402,26 @@ def extract_xml_from_input_iter(input_data: str) -> str:
         return xml_content
 
 
-def merge_xmls(temp_folder: Path) -> str:
+def merge_xmls(temp_folder: Path, progress_callback: Optional[Callable[[int, int, str], None]] = None) -> str:
     """
     Merges multiple XML documents from the temp folder into a single XML API document.
     Includes the source URL as the first child node for each document.
+    
+    Args:
+        temp_folder: Path to folder containing XML files
+        progress_callback: Optional callback function(current, total, message) for progress updates
     """
     root = ET.Element("TEXTUAL_API")
     error_log = []
 
-    for xml_file in temp_folder.glob("processed_*.xml"):
+    # Get list of XML files
+    xml_files = list(temp_folder.glob("processed_*.xml"))
+    total_files = len(xml_files)
+    
+    for idx, xml_file in enumerate(xml_files, start=1):
+        if progress_callback:
+            progress_callback(idx, total_files, f"Merging {xml_file.name}")
+        
         try:
             try:
                 with open(xml_file, "r", encoding="utf-8") as f:
@@ -449,11 +460,20 @@ def merge_xmls(temp_folder: Path) -> str:
             logger.warning(error_message)
             error_log.append(error_message)
 
+    # Notify validation step
+    if progress_callback:
+        progress_callback(total_files, total_files, "Validating merged XML")
+
     # Write error log
     with open(temp_folder / "errors.log", "w", encoding="utf-8") as f:
         f.write("\n".join(error_log))
 
     merged_xml = ET.tostring(root, encoding="unicode", method="xml")
+    
+    # Notify completion
+    if progress_callback:
+        progress_callback(total_files, total_files, "Merge complete")
+    
     return merged_xml
 
 
@@ -2731,6 +2751,10 @@ def process_multiple_pages(
         no_tui: If True, disable Rich TUI (use simple spinner)
     """
     from .batch_tui import BatchTUIManager, URLState
+    from rich.console import Console
+    from rich.text import Text
+    from rich.panel import Panel
+    from rich import box
 
     global shutdown_flag
     logger.info(f"Processing multiple pages: {len(urls)} URLs found using {num_threads} threads.")
@@ -2823,37 +2847,101 @@ def process_multiple_pages(
             batch_tui.update_display()
             time.sleep(1.0)  # Let user see final state
             batch_tui.stop_live_display()
-            
-            # Restore console logging after TUI is stopped
-            restore_console_logging(removed_handlers)
+            # DON'T restore logging yet - keep it suppressed during merge
         else:
             spinner.end()
 
     if shutdown_flag:
         logger.info("Shutdown initiated. Saving partial results.")
+        # Restore logging before returning
+        if removed_handlers:
+            restore_console_logging(removed_handlers)
 
     # In scrape-only mode, skip XML merging
     if scrape_only:
         logger.info("Scrape-only mode: Completed successfully without XML merging")
+        # Restore logging before returning
+        if removed_handlers:
+            restore_console_logging(removed_handlers)
         return "scrape_only_completed"
 
+    # ========== Clean Merge Progress Display ==========
+    # Logging is still suppressed here - show clean merge progress
+    console = Console(force_terminal=True)
+    
+    # Clear screen and show merge header
+    console.clear()
+    console.print()
+    console.print(Panel(
+        Text.assemble(
+            ("🔄 ", "bold cyan"),
+            ("Merging XML Files", "bold cyan"),
+        ),
+        box=box.DOUBLE,
+        border_style="cyan",
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # Progress variables
+    merge_progress = {"current": 0, "total": 0, "message": ""}
+    
+    def merge_progress_callback(current: int, total: int, message: str) -> None:
+        """Callback to update merge progress"""
+        merge_progress["current"] = current
+        merge_progress["total"] = total
+        merge_progress["message"] = message
+        
+        if total > 0:
+            percentage = int((current / total) * 85)  # 0-85% for merging files
+            console.print(f"  [{current}/{total}] {message}... {percentage}%", style="cyan")
+
     logger.info("Merging XML content from all processed pages")
-    merged_xml = merge_xmls(temp_folder)
+    merged_xml = merge_xmls(temp_folder, progress_callback=merge_progress_callback)
 
     if not merged_xml or merged_xml == "<TEXTUAL_API />":
+        console.print("  ❌ No valid XML content extracted from pages.", style="bold red")
+        console.print()
+        # Restore logging before returning
+        if removed_handlers:
+            restore_console_logging(removed_handlers)
         logger.error("No valid XML content extracted from pages.")
         return None
 
+    # Show validation progress
+    console.print("  Validating merged XML... 90%", style="cyan")
+
+    # Save merged XML
     logger.info("Saving merged XML output")
     merged_xml_file = temp_folder / "merged_output.xml"
     try:
         temp_folder.mkdir(parents=True, exist_ok=True)
         with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
+        console.print("  Saving merged XML... 100%", style="bold green")
+        console.print()
+        console.print(Panel(
+            Text.assemble(
+                ("✅ ", "bold green"),
+                (f"Merge Complete! Saved to: {merged_xml_file}", "green"),
+            ),
+            box=box.ROUNDED,
+            border_style="green",
+        ))
+        console.print()
         logger.info(f"Merged XML saved successfully to {merged_xml_file}")
     except OSError as e:
+        console.print(f"  ❌ Error saving merged XML: {e}", style="bold red")
+        console.print()
+        # Restore logging before returning
+        if removed_handlers:
+            restore_console_logging(removed_handlers)
         logger.error(f"Error saving merged XML file: {e}")
         return None
+
+    # NOW restore console logging after merge is complete
+    if removed_handlers:
+        restore_console_logging(removed_handlers)
 
     return merged_xml
 
@@ -3168,7 +3256,8 @@ def main_workflow(
             xml_result = process_multiple_pages(urls, pricing_info, num_threads, scrape_only, no_tui)
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
-                print(f"Successfully generated {total_count} XML files ({valid_count} are valid XML, {total_count - valid_count} are non valid XML).")
+                # Clean output - counts will show in summary table
+                logger.info(f"Generated {total_count} XML files ({valid_count} valid, {total_count - valid_count} invalid)")
                 result.update(
                     {
                         "result": xml_result,
