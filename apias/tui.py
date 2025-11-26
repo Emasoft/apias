@@ -23,6 +23,7 @@ import sys
 import tty
 import termios
 import select
+import signal
 
 from rich.console import Console
 from rich.live import Live
@@ -117,7 +118,8 @@ class RichTUIManager:
             total_chunks: Total number of chunks to process
             no_tui: If True, disable Rich TUI (for headless/scripts)
         """
-        self.console = Console()
+        # Force terminal detection and enable full features
+        self.console = Console(force_terminal=True, legacy_windows=False)
         self.no_tui = no_tui
         self.stats = ProcessingStats(total_chunks=total_chunks)
         self.chunks: Dict[int, ChunkStatus] = {}
@@ -238,11 +240,14 @@ class RichTUIManager:
     def _create_dashboard(self) -> Layout:
         """Create the live monitoring dashboard"""
         layout = Layout()
+        
+        # Use ratios instead of fixed sizes to adapt to terminal height
+        # This makes the TUI fill the entire terminal and resize dynamically
         layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="stats", size=6),
-            Layout(name="chunks", size=12),
-            Layout(name="footer", size=2),
+            Layout(name="header", size=3),  # Header stays fixed (minimal)
+            Layout(name="stats", ratio=2),   # Stats gets 2/5 of remaining space
+            Layout(name="chunks", ratio=3),  # Chunks gets 3/5 of remaining space (most important)
+            Layout(name="footer", size=2),  # Footer stays fixed (minimal)
         )
 
         # Header
@@ -251,7 +256,7 @@ class RichTUIManager:
         # Stats table
         layout["stats"].update(self._create_stats_table())
 
-        # Chunks table
+        # Chunks table (now dynamic, will show more chunks on taller terminals)
         layout["chunks"].update(self._create_chunks_table())
 
         # Footer
@@ -295,7 +300,7 @@ class RichTUIManager:
         return Panel(table, title="📊 Processing Stats", border_style="green")
 
     def _create_chunks_table(self) -> Table:
-        """Create the chunks status table (scrollable)"""
+        """Create the chunks status table (dynamically sized based on terminal height)"""
         table = Table(show_header=True, box=box.SIMPLE, expand=True)
         table.add_column("#", style="cyan", width=4)
         table.add_column("Status", width=10)
@@ -305,9 +310,14 @@ class RichTUIManager:
         table.add_column("Time", width=6)
         table.add_column("Details", style="dim")
 
-        # Show only last 10 chunks to fit screen
+        # Dynamically calculate how many chunks to show based on terminal height
+        # Terminal height - (header=3 + stats≈8 + footer=2 + borders≈4) = available for chunks
+        terminal_height = self.console.size.height
+        available_rows = max(10, terminal_height - 17)  # At least 10, or more if terminal is tall
+
         chunk_ids = sorted(self.chunks.keys())
-        visible_chunks = chunk_ids[-10:]
+        # Show most recent chunks that fit in available space
+        visible_chunks = chunk_ids[-available_rows:] if len(chunk_ids) > available_rows else chunk_ids
 
         for chunk_id in visible_chunks:
             chunk = self.chunks[chunk_id]
