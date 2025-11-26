@@ -2552,7 +2552,7 @@ def process_url(
             update_progress_file()
             return None
 
-        xml_content, request_cost = result
+        xml_content, request_cost, _ = result  # Unpack all 3 values (tui_manager not used in batch mode)
 
         with cost_lock:
             progress_tracker[url] = {
