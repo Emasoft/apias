@@ -2778,6 +2778,7 @@ def main_workflow(
     scrape_only: bool = False,
     no_tui: bool = False,
     mock: bool = False,
+    limit: Optional[int] = None,
 ) -> Dict[str, Union[Optional[str], float, int]]:
     global progress_tracker, total_cost
     """
@@ -2793,6 +2794,7 @@ def main_workflow(
         scrape_only: If True, only scrape HTML without AI processing
         no_tui: If True, disable Rich TUI (use plain text output)
         mock: If True, use mock API for testing (no token costs)
+        limit: Maximum number of pages to scrape (only applies in batch mode)
     """
     global shutdown_flag, total_cost, progress_tracker, progress_file, temp_folder
 
@@ -2944,6 +2946,13 @@ def main_workflow(
             if extracted_urls:
                 result["total_urls"] = len(extracted_urls)
                 urls = extracted_urls
+
+                # Apply limit if specified
+                if limit is not None and limit > 0:
+                    original_count = len(urls)
+                    urls = urls[:limit]
+                    logger.info(f"Applied limit: {original_count} URLs → {len(urls)} URLs (limit={limit})")
+
                 result["filtered_urls"] = len(urls)
                 logger.info(f"Extracted {len(urls)} URLs from sitemap")
             else:
@@ -3167,7 +3176,7 @@ def create_summary_box(summary_data: Dict[str, str]) -> str:
     return "\n".join(box)
 
 
-def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False) -> None:
+def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False, limit: Optional[int] = None) -> None:
     result = main_workflow(
         urls=[url],
         mode="batch",
@@ -3177,6 +3186,7 @@ def start_batch_scrape(url: str, whitelist: str, blacklist: str, scrape_only: bo
         scrape_only=scrape_only,
         no_tui=no_tui,
         mock=mock,
+        limit=limit,
     )
     display_scraping_summary(result, [url], temp_folder, error_log_file)
 
@@ -3413,6 +3423,13 @@ def main() -> None:
         required=False,
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit the maximum number of pages to scrape (useful for testing with large websites). Only applies in batch mode.",
+        required=False,
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"APIAS - API AUTO SCRAPER version {VERSION}",
@@ -3434,7 +3451,7 @@ def main() -> None:
     elif args.url and args.mode == "single":
         start_single_scrape(args.url, args.scrape_only, args.no_tui, args.mock)
     elif args.url and args.mode == "batch":
-        start_batch_scrape(args.url, args.whitelist, args.blacklist, args.scrape_only, args.no_tui, args.mock)
+        start_batch_scrape(args.url, args.whitelist, args.blacklist, args.scrape_only, args.no_tui, args.mock, args.limit)
     else:
         print("Error: Invalid combination of arguments. Please provide either --resume or --url argument.")
         print()
