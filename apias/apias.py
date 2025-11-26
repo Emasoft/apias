@@ -2485,7 +2485,10 @@ def process_url(
     total: int,
     pricing_info: Dict[str, Dict[str, float]],
     scrape_only: bool = False,
+    batch_tui: Optional['BatchTUIManager'] = None,
 ) -> Optional[str]:
+    from .batch_tui import URLState
+    
     global progress_tracker
     """
     Process a single URL: scrape, convert to XML, and save temp files.
@@ -2507,6 +2510,10 @@ def process_url(
 
         update_progress_file()
 
+        # Update TUI: Starting scraping
+        if batch_tui:
+            batch_tui.update_task(idx, URLState.SCRAPING, progress_pct=10.0)
+
         logger.info(f"Scraping HTML content for URL: {url}")
         html_content = web_scraper(url, no_tui=True)
         if not html_content:
@@ -2517,6 +2524,8 @@ def process_url(
             }
             with cost_lock:
                 update_progress_file()
+            if batch_tui:
+                batch_tui.update_task(idx, URLState.FAILED, progress_pct=0.0, error="Failed to retrieve HTML")
             return None
 
         logger.info(f"Saving HTML content for URL: {url}")
@@ -2532,6 +2541,8 @@ def process_url(
                 "cost": 0.0,
             }
             update_progress_file()
+            if batch_tui:
+                batch_tui.update_task(idx, URLState.COMPLETE, progress_pct=100.0, size_in=len(html_content))
             return "scrape_only_completed"
 
         if shutdown_flag:
@@ -2539,6 +2550,10 @@ def process_url(
             progress_tracker[url]["status"] = "pending"
             update_progress_file()
             return None
+
+        # Update TUI: Starting LLM processing
+        if batch_tui:
+            batch_tui.update_task(idx, URLState.PROCESSING, progress_pct=30.0, size_in=len(html_content))
 
         logger.info(f"Converting HTML to XML for URL: {url}")
         additional_content: Dict[str, List[str]] = {}
@@ -2550,6 +2565,8 @@ def process_url(
                 "cost": progress_tracker[url].get("cost", 0.0),
             }
             update_progress_file()
+            if batch_tui:
+                batch_tui.update_task(idx, URLState.FAILED, progress_pct=0.0, error="Failed to convert to XML")
             return None
 
         xml_content, request_cost, _ = result  # Unpack all 3 values (tui_manager not used in batch mode)
@@ -2577,6 +2594,8 @@ def process_url(
                 "cost": progress_tracker[url].get("cost", 0.0),
             }
             update_progress_file()
+            if batch_tui:
+                batch_tui.update_task(idx, URLState.FAILED, progress_pct=0.0, error="No XML content generated")
             return None
 
         if xml_content:
@@ -2595,6 +2614,18 @@ def process_url(
             "valid_xml": is_valid_xml,
         }
         update_progress_file()
+        
+        # Update TUI: Processing complete (final state update in process_multiple_pages)
+        if batch_tui:
+            batch_tui.update_task(
+                idx, 
+                URLState.COMPLETE, 
+                progress_pct=100.0, 
+                size_in=len(html_content),
+                size_out=len(xml_content),
+                cost=progress_tracker[url].get("cost", 0.0)
+            )
+        
         return xml_content
     except RequestException as e:
         error_message = f"Request error processing URL {url}: {str(e)}"
@@ -2606,6 +2637,8 @@ def process_url(
             "cost": progress_tracker[url].get("cost", 0.0),
         }
         update_progress_file()
+        if batch_tui:
+            batch_tui.update_task(idx, URLState.FAILED, progress_pct=0.0, error=f"Request error: {str(e)}")
         return None
     except Exception as e:
         error_message = f"Error processing URL {url}: {str(e)}"
@@ -2617,6 +2650,8 @@ def process_url(
             "cost": progress_tracker[url].get("cost", 0.0),
         }
         update_progress_file()
+        if batch_tui:
+            batch_tui.update_task(idx, URLState.FAILED, progress_pct=0.0, error=str(e))
         return None
 
 
@@ -2651,38 +2686,106 @@ def process_multiple_pages(
     pricing_info: Dict[str, Dict[str, float]],
     num_threads: int = 5,
     scrape_only: bool = False,
+    no_tui: bool = False,
 ) -> Optional[str]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
+
+    Args:
+        urls: List of URLs to process
+        pricing_info: Model pricing information
+        num_threads: Number of concurrent threads
+        scrape_only: If True, skip AI processing
+        no_tui: If True, disable Rich TUI (use simple spinner)
     """
+    from .batch_tui import BatchTUIManager, URLState
+
     global shutdown_flag
     logger.info(f"Processing multiple pages: {len(urls)} URLs found using {num_threads} threads.")
     if scrape_only:
         logger.info("Scrape-only mode: AI processing and XML merging will be skipped")
     xml_list = []
 
-    spinner = Spinner("Processing URLs")
-    spinner.start()
+    # Use Rich TUI for batch mode or fallback to simple spinner
+    batch_tui = BatchTUIManager(urls, no_tui=no_tui) if not no_tui else None
+
+    if batch_tui:
+        # Show waiting screen and wait for SPACE
+        batch_tui.wait_for_start()
+
+        # Check if user cancelled during waiting
+        if batch_tui.should_stop:
+            logger.info("Processing cancelled by user before start")
+            return None
+
+        # Start live display
+        batch_tui.start_live_display()
+    else:
+        # Fallback to simple spinner
+        spinner = Spinner("Processing URLs")
+        spinner.start()
+
+    # Map URLs to task IDs
+    url_to_task_id = {url: idx + 1 for idx, url in enumerate(urls)}
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
-            future_to_url = {executor.submit(process_url, url, idx + 1, len(urls), pricing_info, scrape_only): url for idx, url in enumerate(urls)}
-            for future in concurrent.futures.as_completed(future_to_url):
-                if shutdown_flag:
+            future_to_url = {executor.submit(process_url, url, idx + 1, len(urls), pricing_info, scrape_only, batch_tui): url for idx, url in enumerate(urls)}
+
+            # Update TUI while processing
+            while True:
+                done, pending = concurrent.futures.wait(
+                    future_to_url.keys(),
+                    timeout=0.1,
+                    return_when=concurrent.futures.FIRST_COMPLETED
+                )
+
+                # Update TUI display
+                if batch_tui:
+                    batch_tui.update_display()
+
+                # Check for shutdown
+                if shutdown_flag or (batch_tui and batch_tui.should_stop):
                     logger.info("Shutdown requested. Cancelling remaining tasks.")
                     executor.shutdown(wait=False)
                     break
 
-                url = future_to_url[future]
-                try:
-                    xml_content = future.result()
-                    if xml_content:
-                        xml_list.append(xml_content)
-                    spinner.update_text(f"Processed {len(xml_list)}/{len(urls)} URLs")
-                except Exception as e:
-                    logger.error(f"Unhandled exception for URL {url}: {str(e)}")
+                # Process completed futures
+                for future in done:
+                    url = future_to_url[future]
+                    task_id = url_to_task_id[url]
+
+                    try:
+                        xml_content = future.result()
+                        if xml_content:
+                            xml_list.append(xml_content)
+                            if batch_tui:
+                                batch_tui.update_task(task_id, URLState.COMPLETE, progress_pct=100.0)
+                            else:
+                                spinner.update_text(f"Processed {len(xml_list)}/{len(urls)} URLs")
+                        else:
+                            if batch_tui:
+                                batch_tui.update_task(task_id, URLState.FAILED, progress_pct=0.0, error="Processing failed")
+                    except Exception as e:
+                        logger.error(f"Unhandled exception for URL {url}: {str(e)}")
+                        if batch_tui:
+                            batch_tui.update_task(task_id, URLState.FAILED, progress_pct=0.0, error=str(e))
+
+                    # Remove from map
+                    del future_to_url[future]
+
+                # If all done, break
+                if not future_to_url:
+                    break
+
     finally:
-        spinner.end()
+        if batch_tui:
+            # Final update before stopping
+            batch_tui.update_display()
+            time.sleep(1.0)  # Let user see final state
+            batch_tui.stop_live_display()
+        else:
+            spinner.end()
 
     if shutdown_flag:
         logger.info("Shutdown initiated. Saving partial results.")
@@ -3020,7 +3123,7 @@ def main_workflow(
                 )
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
-            xml_result = process_multiple_pages(urls, pricing_info, num_threads, scrape_only)
+            xml_result = process_multiple_pages(urls, pricing_info, num_threads, scrape_only, no_tui)
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
                 print(f"Successfully generated {total_count} XML files ({valid_count} are valid XML, {total_count - valid_count} are non valid XML).")
