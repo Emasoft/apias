@@ -133,7 +133,8 @@ import shlex
 from types import FrameType
 import subprocess
 import threading
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as DefusedET  # Use defusedxml to prevent XXE attacks
+import xml.etree.ElementTree as ET  # For Element class and tree manipulation
 from signal import SIGINT, signal
 import json
 
@@ -145,7 +146,7 @@ from .batch_tui import BatchTUIManager, URLState
 
 def validate_xml(xml_string: str) -> bool:
     try:
-        ET.fromstring(xml_string)
+        DefusedET.fromstring(xml_string)
         return True
     except (ET.ParseError, ValueError):
         return False
@@ -426,7 +427,7 @@ def extract_xml_from_input(input_data: str) -> str:
     # Validate the XML content
     logger.debug(f"Extracted XML Content:\n{xml_content}")
     try:
-        ET.fromstring(xml_content)  # Validates XML
+        DefusedET.fromstring(xml_content)  # Validates XML
     except ET.ParseError as e:
         logger.error(f"Extracted XML is not valid: {e}")
         raise ValueError("Invalid XML content.") from e
@@ -462,7 +463,7 @@ def extract_xml_from_input_iter(input_data: str) -> str:
     # Validate the XML content
     logger.debug(f"Extracted Iteration XML Content:\n{input_data}")
     try:
-        ET.fromstring(xml_content)  # Validates XML
+        DefusedET.fromstring(xml_content)  # Validates XML
     except ET.ParseError:
         logger.error("ERROR - Extracted XML is not valid")
     finally:
@@ -508,7 +509,7 @@ def merge_xmls(
                     xml_content = f.read()
 
             # Parse the XML content
-            doc = ET.fromstring(xml_content)
+            doc = DefusedET.fromstring(xml_content)
 
             # Create a new element for this document
             doc_element = ET.SubElement(root, "DOCUMENT")
@@ -1351,7 +1352,7 @@ def extract_urls_from_sitemap(
     if sitemap_content:
         logger.info("Parsing sitemap content from provided string.")
         try:
-            root = ET.fromstring(sitemap_content)
+            root = DefusedET.fromstring(sitemap_content)
         except ET.ParseError as e:
             logger.error(f"Error parsing sitemap content: {e}")
             return []
@@ -1361,7 +1362,7 @@ def extract_urls_from_sitemap(
             logger.error(f"Sitemap file '{sitemap_file}' does not exist.")
             return []
         try:
-            tree = ET.parse(sitemap_file)
+            tree = DefusedET.parse(sitemap_file)
             root = tree.getroot()
         except ET.ParseError as e:
             logger.error(f"Error parsing sitemap file '{sitemap_file}': {e}")

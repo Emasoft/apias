@@ -252,10 +252,11 @@ async def test_process_single_chunk_success(
 async def test_process_single_chunk_failure(
     mock_pricing_info: Dict[str, Dict[str, float]],
 ) -> None:
-    """Test single chunk processing failure"""
+    """Test single chunk processing failure with retry logic"""
     with patch("apias.apias.call_openai_api") as mock_api:
         with patch("apias.apias.extract_xml_from_input") as mock_extract:
             # Setup mocks - call_openai_api returns None for xml_output
+            # The function retries once on failure, so cost is 2x
             mock_api.return_value = (None, 0.001)
             mock_extract.return_value = None
 
@@ -266,9 +267,9 @@ async def test_process_single_chunk_failure(
                 chunk_num=1,
             )
 
-            # Verify
+            # Verify - cost is 0.002 because function retries once on failure
             assert xml_output is None
-            assert cost == 0.001
+            assert cost == 0.002
 
 
 # Tests for asyncio.gather parallelism

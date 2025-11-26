@@ -16,7 +16,7 @@ Usage:
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from enum import Enum
 import threading
 import sys
@@ -113,7 +113,7 @@ class RichTUIManager:
     Handles live monitoring and final statistics display.
     """
 
-    def __init__(self, total_chunks: int, no_tui: bool = False):
+    def __init__(self, total_chunks: int, no_tui: bool = False) -> None:
         """
         Initialize TUI manager.
 
@@ -132,13 +132,14 @@ class RichTUIManager:
         self.waiting_to_start = True  # Start in waiting state
         self.should_stop = False  # Flag to stop processing
         self.keyboard_listener_thread: Optional[threading.Thread] = None
-        self.old_terminal_settings = None  # To restore terminal settings
+        # Terminal settings for restoring after keyboard listener - termios returns list[Any]
+        self.old_terminal_settings: Optional[list[Any]] = None
 
         # Initialize all chunks as queued
         for i in range(1, total_chunks + 1):
             self.chunks[i] = ChunkStatus(chunk_id=i)
 
-    def start_live_display(self):
+    def start_live_display(self) -> None:
         """Start the live monitoring display"""
         if not self.no_tui:
             self.live = Live(
@@ -149,7 +150,7 @@ class RichTUIManager:
             )
             self.live.start()
 
-    def stop_live_display(self):
+    def stop_live_display(self) -> None:
         """Stop the live monitoring display"""
         # Stop keyboard listener first
         self.stop_keyboard_listener()
@@ -168,7 +169,7 @@ class RichTUIManager:
         cost: float = 0.0,
         error: str = "",
         attempt: int = 1,
-    ):
+    ) -> None:
         """
         Update status of a chunk.
 
@@ -222,14 +223,16 @@ class RichTUIManager:
         # Rich Live is not thread-safe. The main thread handles all live display updates.
         # This method only updates the data (chunk status and stats).
         # The main thread's update loop will pick up these changes and refresh the display.
-        
+
         # Print progress when not in live mode
         if not self.live and not self.no_tui:
             self._print_chunk_update(chunk)
 
-    def _print_chunk_update(self, chunk: ChunkStatus):
+    def _print_chunk_update(self, chunk: ChunkStatus) -> None:
         """Print a single chunk update (when not in live mode)"""
-        status_text = f"{chunk.state.value} Chunk #{chunk.chunk_id:02d}: {chunk.state.name}"
+        status_text = (
+            f"{chunk.state.value} Chunk #{chunk.chunk_id:02d}: {chunk.state.name}"
+        )
         if chunk.state == ChunkState.COMPLETE:
             status_text += f" ({chunk.size_in // 1024}KB → {chunk.size_out // 1024}KB, ${chunk.cost:.4f}, {chunk.duration:.1f}s)"
         elif chunk.state == ChunkState.PROCESSING:
@@ -251,18 +254,27 @@ class RichTUIManager:
         # Reserve space for stats (8 rows minimum)
         stats_size = min(10, max(8, term_height // 5))
         # Give everything else to chunks table
-        chunks_size = max(10, term_height - header_size - stats_size - footer_size - 2)  # -2 for borders
+        chunks_size = max(
+            10, term_height - header_size - stats_size - footer_size - 2
+        )  # -2 for borders
 
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=header_size),
             Layout(name="stats", size=stats_size),
-            Layout(name="chunks", size=chunks_size),  # Largest section, fills remaining space
+            Layout(
+                name="chunks", size=chunks_size
+            ),  # Largest section, fills remaining space
             Layout(name="footer", size=footer_size),
         )
 
         # Header
-        layout["header"].update(Panel(f"🚀 [bold cyan]APIAS[/] - API Documentation Extractor", border_style="cyan"))
+        layout["header"].update(
+            Panel(
+                "🚀 [bold cyan]APIAS[/] - API Documentation Extractor",
+                border_style="cyan",
+            )
+        )
 
         # Stats table
         layout["stats"].update(self._create_stats_table())
@@ -295,19 +307,37 @@ class RichTUIManager:
 
         # Step-based progress bar (granular progress within each chunk)
         total_steps = self.stats.total_chunks * 8  # 8 steps per chunk
-        completed_steps = sum(chunk.current_step.step_num for chunk in self.chunks.values())
+        completed_steps = sum(
+            chunk.current_step.step_num for chunk in self.chunks.values()
+        )
         progress_pct = (completed_steps / total_steps) * 100 if total_steps > 0 else 0
 
         bar_length = 30
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
 
-        table.add_row("Overall Progress", f"{completed_steps}/{total_steps} steps", f"{progress_bar} {progress_pct:.0f}%")
-        table.add_row("Processing Chunks", f"{processing}/{self.stats.total_chunks}", "")
-        table.add_row("Completed Chunks", f"{self.stats.completed}/{self.stats.total_chunks}", "")
-        table.add_row("Failed Chunks", f"{self.stats.failed}", "[red]" if self.stats.failed > 0 else "[green]")
+        table.add_row(
+            "Overall Progress",
+            f"{completed_steps}/{total_steps} steps",
+            f"{progress_bar} {progress_pct:.0f}%",
+        )
+        table.add_row(
+            "Processing Chunks", f"{processing}/{self.stats.total_chunks}", ""
+        )
+        table.add_row(
+            "Completed Chunks", f"{self.stats.completed}/{self.stats.total_chunks}", ""
+        )
+        table.add_row(
+            "Failed Chunks",
+            f"{self.stats.failed}",
+            "[red]" if self.stats.failed > 0 else "[green]",
+        )
         table.add_row("Retry Queue", f"{self.stats.retrying}", "")
-        table.add_row("Total Cost", f"${self.stats.total_cost:.4f}", f"~{self.stats.total_cost * 100:.1f}¢")
+        table.add_row(
+            "Total Cost",
+            f"${self.stats.total_cost:.4f}",
+            f"~{self.stats.total_cost * 100:.1f}¢",
+        )
 
         return Panel(table, title="📊 Processing Stats", border_style="green")
 
@@ -325,21 +355,32 @@ class RichTUIManager:
         # Dynamically calculate how many chunks to show based on terminal height
         # Terminal height - (header=3 + stats≈8 + footer=2 + borders≈4) = available for chunks
         terminal_height = self.console.size.height
-        available_rows = max(10, terminal_height - 17)  # At least 10, or more if terminal is tall
+        available_rows = max(
+            10, terminal_height - 17
+        )  # At least 10, or more if terminal is tall
 
         chunk_ids = sorted(self.chunks.keys())
         # Show most recent chunks that fit in available space
-        visible_chunks = chunk_ids[-available_rows:] if len(chunk_ids) > available_rows else chunk_ids
+        visible_chunks = (
+            chunk_ids[-available_rows:]
+            if len(chunk_ids) > available_rows
+            else chunk_ids
+        )
 
         for chunk_id in visible_chunks:
             chunk = self.chunks[chunk_id]
 
             # Format status with current step and spinner for active processing
             status_text = f"{chunk.state.value} {chunk.state.name}"
-            if chunk.state == ChunkState.PROCESSING and chunk.current_step != ProcessingStep.QUEUED:
+            if (
+                chunk.state == ChunkState.PROCESSING
+                and chunk.current_step != ProcessingStep.QUEUED
+            ):
                 # Show current step when processing with animated spinner
                 spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-                spinner_idx = int(time.time() * 10) % len(spinner_frames)  # Animate based on time
+                spinner_idx = int(time.time() * 10) % len(
+                    spinner_frames
+                )  # Animate based on time
                 spinner = spinner_frames[spinner_idx]
                 status_text = f"{spinner} {chunk.current_step.description}"
             if chunk.attempt > 1:
@@ -379,11 +420,26 @@ class RichTUIManager:
             elif chunk.state == ChunkState.PROCESSING:
                 style = "yellow"
 
-            table.add_row(f"#{chunk_id:02d}", status_text, size_in_str, size_out_str, cost_str, time_str, details, style=style)
+            table.add_row(
+                f"#{chunk_id:02d}",
+                status_text,
+                size_in_str,
+                size_out_str,
+                cost_str,
+                time_str,
+                details,
+                style=style,
+            )
 
-        return Panel(table, title=f"🔄 Chunk Status (showing last 10 of {len(self.chunks)})", border_style="blue")
+        return Panel(
+            table,
+            title=f"🔄 Chunk Status (showing last 10 of {len(self.chunks)})",
+            border_style="blue",
+        )
 
-    def show_final_summary(self, xml_files: List[str] = None, output_dir: str = ""):
+    def show_final_summary(
+        self, xml_files: Optional[List[str]] = None, output_dir: str = ""
+    ) -> None:
         """
         Show beautiful final statistics summary.
 
@@ -403,7 +459,13 @@ class RichTUIManager:
         self.console.print()
 
         # Title
-        self.console.print(Panel("✨ [bold green]EXTRACTION COMPLETE[/] ✨", border_style="green", expand=False))
+        self.console.print(
+            Panel(
+                "✨ [bold green]EXTRACTION COMPLETE[/] ✨",
+                border_style="green",
+                expand=False,
+            )
+        )
         self.console.print()
 
         # Main statistics table
@@ -413,44 +475,74 @@ class RichTUIManager:
         stats_table.add_column("Details", style="yellow", width=35)
 
         # Calculate success rate
-        success_rate = (self.stats.completed / self.stats.total_chunks * 100) if self.stats.total_chunks > 0 else 0
+        success_rate = (
+            (self.stats.completed / self.stats.total_chunks * 100)
+            if self.stats.total_chunks > 0
+            else 0
+        )
 
         # Time elapsed
         elapsed = datetime.now() - self.stats.start_time
         time_str = f"{elapsed.seconds // 60}m {elapsed.seconds % 60}s"
 
         # Average cost per chunk
-        avg_cost = self.stats.total_cost / self.stats.completed if self.stats.completed > 0 else 0
+        avg_cost = (
+            self.stats.total_cost / self.stats.completed
+            if self.stats.completed > 0
+            else 0
+        )
 
         # Average time per chunk
         total_duration = sum(c.duration for c in self.chunks.values() if c.duration > 0)
-        avg_time = total_duration / self.stats.completed if self.stats.completed > 0 else 0
+        avg_time = (
+            total_duration / self.stats.completed if self.stats.completed > 0 else 0
+        )
 
         # Count retries
         retry_count = sum(1 for c in self.chunks.values() if c.attempt > 1)
 
-        stats_table.add_row("Success Rate", f"{success_rate:.1f}%", f"{self.stats.completed}/{self.stats.total_chunks} chunks")
-        stats_table.add_row("Total Cost", f"${self.stats.total_cost:.5f}", f"~{self.stats.total_cost * 100:.1f}¢")
+        stats_table.add_row(
+            "Success Rate",
+            f"{success_rate:.1f}%",
+            f"{self.stats.completed}/{self.stats.total_chunks} chunks",
+        )
+        stats_table.add_row(
+            "Total Cost",
+            f"${self.stats.total_cost:.5f}",
+            f"~{self.stats.total_cost * 100:.1f}¢",
+        )
         stats_table.add_row("Avg Cost/Chunk", f"${avg_cost:.5f}", "<1¢ per chunk")
         stats_table.add_row("Processing Time", time_str, f"~{avg_time:.1f}s per chunk")
 
         if retry_count > 0:
-            retry_success = sum(1 for c in self.chunks.values() if c.attempt > 1 and c.state == ChunkState.COMPLETE)
-            stats_table.add_row("Retry Success", f"{retry_success}/{retry_count}", "100% retry success" if retry_success == retry_count else "")
+            retry_success = sum(
+                1
+                for c in self.chunks.values()
+                if c.attempt > 1 and c.state == ChunkState.COMPLETE
+            )
+            stats_table.add_row(
+                "Retry Success",
+                f"{retry_success}/{retry_count}",
+                "100% retry success" if retry_success == retry_count else "",
+            )
 
         # XML output size
         if xml_files:
             import os
 
             total_size = sum(os.path.getsize(f) for f in xml_files if os.path.exists(f))
-            stats_table.add_row("XML Output Size", f"{total_size // 1024} KB", "Well-formed ✓")
+            stats_table.add_row(
+                "XML Output Size", f"{total_size // 1024} KB", "Well-formed ✓"
+            )
 
         self.console.print(stats_table)
         self.console.print()
 
         # Output files panel
         if output_dir:
-            files_table = Table(show_header=True, box=box.SIMPLE, expand=False, width=80)
+            files_table = Table(
+                show_header=True, box=box.SIMPLE, expand=False, width=80
+            )
             files_table.add_column("Type", style="cyan", width=20)
             files_table.add_column("Location", style="blue", width=55)
 
@@ -459,7 +551,14 @@ class RichTUIManager:
             files_table.add_row("📋 Error Log", f"{output_dir}/error_log.txt")
             files_table.add_row("🌐 Scraped HTML", f"{output_dir}/*.html")
 
-            self.console.print(Panel(files_table, title="📁 Output Files", border_style="blue", expand=False))
+            self.console.print(
+                Panel(
+                    files_table,
+                    title="📁 Output Files",
+                    border_style="blue",
+                    expand=False,
+                )
+            )
             self.console.print()
 
         # Final status
@@ -474,12 +573,16 @@ class RichTUIManager:
 
         self.console.print()
 
-    def _print_simple_summary(self, xml_files: List[str] = None, output_dir: str = ""):
+    def _print_simple_summary(
+        self, xml_files: Optional[List[str]] = None, output_dir: str = ""
+    ) -> None:
         """Print simple text summary (for --no-tui mode)"""
         print("\n" + "=" * 60)
         print("EXTRACTION COMPLETE")
         print("=" * 60)
-        print(f"Success Rate: {self.stats.completed}/{self.stats.total_chunks} ({self.stats.completed / self.stats.total_chunks * 100:.1f}%)")
+        print(
+            f"Success Rate: {self.stats.completed}/{self.stats.total_chunks} ({self.stats.completed / self.stats.total_chunks * 100:.1f}%)"
+        )
         print(f"Total Cost: ${self.stats.total_cost:.5f}")
         print(f"Failed: {self.stats.failed}")
 
@@ -488,7 +591,7 @@ class RichTUIManager:
 
         print("=" * 60 + "\n")
 
-    def _keyboard_listener(self):
+    def _keyboard_listener(self) -> None:
         """Listen for SPACE keypress in a separate thread"""
         try:
             # Check if stdin is a terminal (TTY)
@@ -503,7 +606,7 @@ class RichTUIManager:
             while not self.should_stop:
                 if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
                     char = sys.stdin.read(1)
-                    if char == ' ':  # SPACE key pressed
+                    if char == " ":  # SPACE key pressed
                         if self.waiting_to_start:
                             self.waiting_to_start = False
                         else:
@@ -515,17 +618,21 @@ class RichTUIManager:
         finally:
             if self.old_terminal_settings is not None:
                 try:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
+                    termios.tcsetattr(
+                        sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
+                    )
                 except (termios.error, OSError):
                     pass
 
-    def start_keyboard_listener(self):
+    def start_keyboard_listener(self) -> None:
         """Start the keyboard listener thread"""
         if not self.no_tui and self.keyboard_listener_thread is None:
-            self.keyboard_listener_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
+            self.keyboard_listener_thread = threading.Thread(
+                target=self._keyboard_listener, daemon=True
+            )
             self.keyboard_listener_thread.start()
 
-    def stop_keyboard_listener(self):
+    def stop_keyboard_listener(self) -> None:
         """Stop the keyboard listener thread and restore terminal"""
         self.should_stop = True
         if self.keyboard_listener_thread:
@@ -535,7 +642,7 @@ class RichTUIManager:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
             self.old_terminal_settings = None
 
-    def wait_for_start(self):
+    def wait_for_start(self) -> None:
         """Display TUI and wait for SPACE keypress to start processing"""
         if self.no_tui:
             return  # Skip in no-tui mode
@@ -573,11 +680,15 @@ class RichTUIManager:
         if self.live and not self.should_stop:
             self.live.update(self._create_dashboard())
 
-    def _create_waiting_dashboard(self):
+    def _create_waiting_dashboard(self) -> Table:
         """Create the waiting state dashboard with prominent start message"""
         # Header
         header = Panel(
-            Text("🚀 APIAS - API Documentation Extractor", justify="center", style="bold cyan"),
+            Text(
+                "🚀 APIAS - API Documentation Extractor",
+                justify="center",
+                style="bold cyan",
+            ),
             box=box.ROUNDED,
             padding=(0, 1),
         )
@@ -606,7 +717,7 @@ class RichTUIManager:
         stats_content.add_row(
             f"Total Chunks: {self.stats.total_chunks}",
             f"Completed: 0/{self.stats.total_chunks}",
-            f"Failed: 0"
+            "Failed: 0",
         )
 
         stats_panel = Panel(

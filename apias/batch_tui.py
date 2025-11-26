@@ -20,14 +20,14 @@ import termios
 import select
 import time
 
-from rich.console import Console  # type: ignore[import-not-found]
-from rich.live import Live  # type: ignore[import-not-found]
-from rich.table import Table  # type: ignore[import-not-found]
-from rich.panel import Panel  # type: ignore[import-not-found]
-from rich.layout import Layout  # type: ignore[import-not-found]
-from rich.progress import Progress, BarColumn, TextColumn  # type: ignore[import-not-found]
-from rich.text import Text  # type: ignore[import-not-found]
-from rich import box  # type: ignore[import-not-found]
+from rich.console import Console
+from rich.live import Live
+from rich.table import Table
+from rich.panel import Panel
+from rich.layout import Layout
+from rich.progress import BarColumn, Progress, TextColumn
+from rich.text import Text
+from rich import box
 
 # Import version
 try:
