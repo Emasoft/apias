@@ -298,18 +298,17 @@ class RichTUIManager:
         completed_steps = sum(chunk.current_step.step_num for chunk in self.chunks.values())
         progress_pct = (completed_steps / total_steps) * 100 if total_steps > 0 else 0
 
-        # DEBUG: Log progress calculation details (every second to avoid spam)
-        if not hasattr(self, '_last_progress_log') or (time.time() - self._last_progress_log) >= 1.0:
-            self._last_progress_log = time.time()
-            logger.debug(f"Progress Calc - Total steps: {total_steps}, Completed steps: {completed_steps}, Progress: {progress_pct:.1f}%")
-            for chunk_id, chunk in self.chunks.items():
-                logger.debug(f"  Chunk #{chunk_id}: state={chunk.state.name}, step={chunk.current_step.name} (step_num={chunk.current_step.step_num})")
-
         bar_length = 30
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
 
         table.add_row("Overall Progress", f"{completed_steps}/{total_steps} steps", f"{progress_bar} {progress_pct:.0f}%")
+
+        # DEBUG: Show first chunk's current step for debugging
+        if self.chunks:
+            first_chunk = list(self.chunks.values())[0]
+            table.add_row("DEBUG: Chunk 1 Step", f"{first_chunk.current_step.name}", f"step_num={first_chunk.current_step.step_num}")
+
         table.add_row("Processing Chunks", f"{processing}/{self.stats.total_chunks}", "")
         table.add_row("Completed Chunks", f"{self.stats.completed}/{self.stats.total_chunks}", "")
         table.add_row("Failed Chunks", f"{self.stats.failed}", "[red]" if self.stats.failed > 0 else "[green]")
