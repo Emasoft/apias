@@ -11,7 +11,7 @@ Provides a scrollable dashboard that shows:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from enum import Enum
 import threading
 import sys
@@ -20,14 +20,14 @@ import termios
 import select
 import time
 
-from rich.console import Console
-from rich.live import Live
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.progress import Progress, BarColumn, TextColumn
-from rich.text import Text
-from rich import box
+from rich.console import Console  # type: ignore[import-not-found]
+from rich.live import Live  # type: ignore[import-not-found]
+from rich.table import Table  # type: ignore[import-not-found]
+from rich.panel import Panel  # type: ignore[import-not-found]
+from rich.layout import Layout  # type: ignore[import-not-found]
+from rich.progress import Progress, BarColumn, TextColumn  # type: ignore[import-not-found]
+from rich.text import Text  # type: ignore[import-not-found]
+from rich import box  # type: ignore[import-not-found]
 
 # Import version
 try:
@@ -38,10 +38,13 @@ except ImportError:
 
 class URLState(Enum):
     """States for URL processing"""
+
     PENDING = "⏳"
     SCRAPING = "🌐"
     PROCESSING = "🔄"
-    MERGING_CHUNKS = "🔀"  # Per-URL chunk merging (reconstructs coherent API from chunks)
+    MERGING_CHUNKS = (
+        "🔀"  # Per-URL chunk merging (reconstructs coherent API from chunks)
+    )
     COMPLETE = "✅"
     FAILED = "❌"
 
@@ -49,6 +52,7 @@ class URLState(Enum):
 @dataclass
 class URLTask:
     """Status of a URL being processed"""
+
     task_id: int
     url: str
     state: URLState = URLState.PENDING
@@ -61,12 +65,15 @@ class URLTask:
     error: str = ""
     # Chunk tracking (for large pages split into multiple LLM requests)
     current_chunk: int = 0  # 0 means not chunked or not started
-    total_chunks: int = 0   # 0 means not chunked
+    total_chunks: int = 0  # 0 means not chunked
+    # Status message for errors, retries, warnings (displayed above progress bar)
+    status_message: str = ""  # e.g., "⚠️ LLM timeout. Retrying in 3s..."
 
 
 @dataclass
 class BatchStats:
     """Overall batch processing statistics"""
+
     total_urls: int = 0
     pending: int = 0
     scraping: int = 0
@@ -99,11 +106,14 @@ class BatchTUIManager:
         self.tasks: Dict[int, URLTask] = {}
         self.live: Optional[Live] = None
 
+        # Thread safety lock for task/stats updates
+        self._lock = threading.Lock()
+
         # Keyboard control state
         self.waiting_to_start = True
         self.should_stop = False
         self.keyboard_listener_thread: Optional[threading.Thread] = None
-        self.old_terminal_settings = None
+        self.old_terminal_settings: Optional[List[Any]] = None
 
         # Scrolling state
         self.scroll_offset = 0
@@ -112,41 +122,41 @@ class BatchTUIManager:
         for idx, url in enumerate(urls, start=1):
             self.tasks[idx] = URLTask(task_id=idx, url=url)
 
-    def start_keyboard_listener(self):
+    def start_keyboard_listener(self) -> None:
         """Start listening for keyboard input (SPACE and arrow keys)"""
         if not self.no_tui and sys.stdin.isatty():
             self.keyboard_listener_thread = threading.Thread(
-                target=self._keyboard_listener,
-                daemon=True
+                target=self._keyboard_listener, daemon=True
             )
             self.keyboard_listener_thread.start()
 
-    def _keyboard_listener(self):
+    def _keyboard_listener(self) -> None:
         """Listen for SPACE (start/stop) and arrow keys (scroll)"""
         try:
             if not sys.stdin.isatty():
                 return
 
-            if self.old_terminal_settings is None:
-                self.old_terminal_settings = termios.tcgetattr(sys.stdin)
+            self.old_terminal_settings = termios.tcgetattr(sys.stdin)
 
             tty.setcbreak(sys.stdin.fileno())
             while not self.should_stop:
                 if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
                     char = sys.stdin.read(1)
-                    if char == ' ':  # SPACE key
+                    if char == " ":  # SPACE key
                         if self.waiting_to_start:
                             self.waiting_to_start = False
                         else:
                             self.should_stop = True
                             break
-                    elif char == '\x1b':  # Escape sequence (arrow keys)
+                    elif char == "\x1b":  # Escape sequence (arrow keys)
                         # Read next two characters for arrow keys
                         next_chars = sys.stdin.read(2)
-                        if next_chars == '[A':  # Up arrow
+                        if next_chars == "[A":  # Up arrow
                             self.scroll_offset = max(0, self.scroll_offset - 1)
-                        elif next_chars == '[B':  # Down arrow
-                            max_scroll = max(0, len(self.tasks) - 10)  # Adjust based on visible tasks
+                        elif next_chars == "[B":  # Down arrow
+                            max_scroll = max(
+                                0, len(self.tasks) - 10
+                            )  # Adjust based on visible tasks
                             self.scroll_offset = min(max_scroll, self.scroll_offset + 1)
         except (termios.error, OSError):
             pass
@@ -154,11 +164,13 @@ class BatchTUIManager:
             # Restore terminal settings
             if self.old_terminal_settings is not None:
                 try:
-                    termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
+                    termios.tcsetattr(
+                        sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
+                    )
                 except (termios.error, OSError):
                     pass
 
-    def wait_for_start(self):
+    def wait_for_start(self) -> None:
         """Display waiting screen until user presses SPACE"""
         if self.no_tui or not sys.stdin.isatty():
             self.waiting_to_start = False
@@ -224,7 +236,11 @@ class BatchTUIManager:
         # Header
         layout["header"].update(
             Panel(
-                Text(f"🚀 APIAS v{__version__} - Batch Processing Dashboard", justify="center", style="bold cyan"),
+                Text(
+                    f"🚀 APIAS v{__version__} - Batch Processing Dashboard",
+                    justify="center",
+                    style="bold cyan",
+                ),
                 box=box.ROUNDED,
             )
         )
@@ -255,7 +271,11 @@ class BatchTUIManager:
         table.add_column("Value", style="bold green", justify="center")
 
         # Calculate progress (center-aligned with fixed width)
-        progress_pct = (self.stats.completed + self.stats.failed) / self.stats.total_urls * 100 if self.stats.total_urls > 0 else 0
+        progress_pct = (
+            (self.stats.completed + self.stats.failed) / self.stats.total_urls * 100
+            if self.stats.total_urls > 0
+            else 0
+        )
         bar_length = 40
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
@@ -266,16 +286,28 @@ class BatchTUIManager:
         table.add_row("Scraping", f"{self.stats.scraping}")
         table.add_row("Processing", f"{self.stats.processing}")
         table.add_row("Completed", f"[green]{self.stats.completed}[/green]")
-        table.add_row("Failed", f"[red]{self.stats.failed}[/red]" if self.stats.failed > 0 else f"{self.stats.failed}")
-        table.add_row("Total Cost", f"${self.stats.total_cost:.4f} (~{self.stats.total_cost * 100:.1f}¢)")
+        table.add_row(
+            "Failed",
+            f"[red]{self.stats.failed}[/red]"
+            if self.stats.failed > 0
+            else f"{self.stats.failed}",
+        )
+        table.add_row(
+            "Total Cost",
+            f"${self.stats.total_cost:.4f} (~{self.stats.total_cost * 100:.1f}¢)",
+        )
 
-        return Panel(table, title="[bold cyan]📊 Statistics[/bold cyan]", box=box.ROUNDED)
+        return Panel(
+            table, title="[bold cyan]📊 Statistics[/bold cyan]", box=box.ROUNDED
+        )
 
     def _create_urls_panel(self, available_height: int) -> Panel:
         """Create scrollable URLs panel with 3 lines per URL"""
         # Calculate how many complete tasks (3 lines each) fit in available height
         lines_per_task = 3
-        visible_tasks = max(1, (available_height - 4) // lines_per_task)  # -4 for panel borders/title
+        visible_tasks = max(
+            1, (available_height - 4) // lines_per_task
+        )  # -4 for panel borders/title
 
         # Get tasks to display (scrolled window)
         task_ids = sorted(self.tasks.keys())
@@ -334,14 +366,42 @@ class BatchTUIManager:
             completion_marker = " ✅" if task.state == URLState.COMPLETE else ""
 
             # Calculate bar length to fill available width
-            reserved_space = len(prefix) + len(suffix) + len(eta_str) + len(completion_marker)
+            reserved_space = (
+                len(prefix) + len(suffix) + len(eta_str) + len(completion_marker)
+            )
             bar_length = max(20, term_width - panel_padding - reserved_space)
 
             filled = int((task.progress_pct / 100) * bar_length)
             progress_bar = "█" * filled + "░" * (bar_length - filled)
 
-            progress_line = f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
+            progress_line = (
+                f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
+            )
             lines.append(progress_line)
+
+            # Line 4: Status message (if present)
+            if task.status_message:
+                # Determine color based on emoji/content
+                if (
+                    "⚠️" in task.status_message
+                    or "Retry" in task.status_message
+                    or "timeout" in task.status_message.lower()
+                ):
+                    msg_style = "yellow"
+                elif (
+                    "❌" in task.status_message
+                    or "Abort" in task.status_message
+                    or "Failed" in task.status_message
+                ):
+                    msg_style = "red"
+                elif (
+                    "🌐" in task.status_message
+                    or "proxy" in task.status_message.lower()
+                ):
+                    msg_style = "blue"
+                else:
+                    msg_style = "cyan"
+                lines.append(f"  [{msg_style}]{task.status_message}[/{msg_style}]")
 
             # Add spacing between tasks (except last one)
             if task_id != visible_task_ids[-1]:
@@ -350,7 +410,7 @@ class BatchTUIManager:
         # Scroll indicator
         scroll_info = ""
         if len(task_ids) > visible_tasks:
-            scroll_info = f" (showing {start_idx+1}-{end_idx} of {len(task_ids)})"
+            scroll_info = f" (showing {start_idx + 1}-{end_idx} of {len(task_ids)})"
 
         content = Text.from_markup("\n".join(lines))
         return Panel(
@@ -360,7 +420,7 @@ class BatchTUIManager:
             height=available_height,
         )
 
-    def start_live_display(self):
+    def start_live_display(self) -> None:
         """Start the live dashboard (after wait_for_start)"""
         if not self.no_tui and not self.live:
             self.live = Live(
@@ -371,39 +431,75 @@ class BatchTUIManager:
             )
             self.live.start()
 
-    def update_task(self, task_id: int, state: URLState, progress_pct: float = 0.0, size_in: int = 0, size_out: int = 0, cost: float = 0.0, error: str = "", current_chunk: int = 0, total_chunks: int = 0):
-        """Update status of a URL task"""
-        task = self.tasks.get(task_id)
-        if not task:
-            return
+    def update_task(
+        self,
+        task_id: int,
+        state: URLState,
+        progress_pct: float = 0.0,
+        size_in: int = 0,
+        size_out: int = 0,
+        cost: float = 0.0,
+        error: str = "",
+        current_chunk: int = 0,
+        total_chunks: int = 0,
+        status_message: str = "",
+    ) -> None:
+        """Update status of a URL task (thread-safe)
 
-        # Track start time
-        old_state = task.state
-        if old_state == URLState.PENDING and state in [URLState.SCRAPING, URLState.PROCESSING]:
-            task.start_time = time.time()
+        Args:
+            task_id: Task identifier
+            state: Current state of the task
+            progress_pct: Progress percentage (0-100)
+            size_in: Input size in bytes
+            size_out: Output size in bytes
+            cost: Processing cost in USD
+            error: Error message (for FAILED state)
+            current_chunk: Current chunk being processed (0 if not chunked)
+            total_chunks: Total number of chunks (0 if not chunked)
+            status_message: Status/error/retry message to display above progress bar
+                          Examples:
+                          - "⚠️ LLM server timeout. Retrying in 3s..."
+                          - "❌ Source page not found. Aborting task."
+                          - "🔄 LLM returned invalid XML. Retrying..."
+        """
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                return
 
-        # Update task
-        task.state = state
-        task.progress_pct = progress_pct
-        task.size_in = size_in or task.size_in
-        task.size_out = size_out or task.size_out
-        task.cost = cost or task.cost
-        task.error = error
+            # Track start time
+            old_state = task.state
+            if old_state == URLState.PENDING and state in [
+                URLState.SCRAPING,
+                URLState.PROCESSING,
+            ]:
+                task.start_time = time.time()
 
-        # Update chunk tracking
-        if total_chunks > 0:
-            task.total_chunks = total_chunks
-        if current_chunk > 0:
-            task.current_chunk = current_chunk
+            # Update task
+            task.state = state
+            task.progress_pct = progress_pct
+            task.size_in = size_in or task.size_in
+            task.size_out = size_out or task.size_out
+            task.cost = cost or task.cost
+            task.error = error
+            task.status_message = status_message  # Update status message
 
-        # Update duration
-        if task.start_time and state in [URLState.COMPLETE, URLState.FAILED]:
-            task.duration = time.time() - task.start_time
+            # Update chunk tracking
+            if total_chunks > 0:
+                task.total_chunks = total_chunks
+            if current_chunk > 0:
+                task.current_chunk = current_chunk
 
-        # Update global stats
-        self._update_stats(old_state, state, cost)
+            # Update duration
+            if task.start_time and state in [URLState.COMPLETE, URLState.FAILED]:
+                task.duration = time.time() - task.start_time
 
-    def _update_stats(self, old_state: URLState, new_state: URLState, cost: float):
+            # Update global stats
+            self._update_stats(old_state, state, cost)
+
+    def _update_stats(
+        self, old_state: URLState, new_state: URLState, cost: float
+    ) -> None:
         """Update global statistics when task state changes"""
         # Decrement old state count
         if old_state == URLState.PENDING:
@@ -424,12 +520,12 @@ class BatchTUIManager:
         elif new_state == URLState.FAILED:
             self.stats.failed += 1
 
-    def update_display(self):
+    def update_display(self) -> None:
         """Refresh the live display (called from main thread)"""
         if self.live:
             self.live.update(self._create_dashboard())
 
-    def stop_live_display(self):
+    def stop_live_display(self) -> None:
         """Stop the live display"""
         if self.live:
             self.live.stop()
@@ -438,6 +534,8 @@ class BatchTUIManager:
         # Restore terminal settings
         if self.old_terminal_settings is not None:
             try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
+                termios.tcsetattr(
+                    sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
+                )
             except (termios.error, OSError):
                 pass
