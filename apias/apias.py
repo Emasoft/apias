@@ -240,6 +240,38 @@ def configure_logging_for_tui(no_tui: bool) -> None:
         logging.getLogger().setLevel(logging.DEBUG)
         logger.setLevel(logging.DEBUG)
 
+
+def suppress_console_logging():
+    """
+    Suppress all console logging by removing StreamHandlers.
+    Returns the removed handlers so they can be restored later.
+    
+    This is used when Rich TUI is active to prevent log messages
+    from interfering with the TUI display.
+    """
+    root_logger = logging.getLogger()
+    removed_handlers = []
+    
+    for handler in root_logger.handlers[:]:  # Copy list to avoid modification during iteration
+        if isinstance(handler, logging.StreamHandler) and handler.stream in (sys.stderr, sys.stdout):
+            root_logger.removeHandler(handler)
+            removed_handlers.append(handler)
+    
+    return removed_handlers
+
+
+def restore_console_logging(handlers):
+    """
+    Restore console logging handlers that were previously removed.
+    
+    Args:
+        handlers: List of handlers to restore (returned by suppress_console_logging)
+    """
+    if handlers:
+        root_logger = logging.getLogger()
+        for handler in handlers:
+            root_logger.addHandler(handler)
+
 # Create a temp folder with datetime suffix
 temp_folder = Path(f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
 temp_folder.mkdir(exist_ok=True)
@@ -2708,6 +2740,11 @@ def process_multiple_pages(
 
     # Use Rich TUI for batch mode or fallback to simple spinner
     batch_tui = BatchTUIManager(urls, no_tui=no_tui) if not no_tui else None
+    
+    # Suppress console logging when batch TUI is active to prevent screen jumping
+    removed_handlers = []
+    if batch_tui:
+        removed_handlers = suppress_console_logging()
 
     if batch_tui:
         # Show waiting screen and wait for SPACE
@@ -2715,6 +2752,8 @@ def process_multiple_pages(
 
         # Check if user cancelled during waiting
         if batch_tui.should_stop:
+            # Restore logging before returning
+            restore_console_logging(removed_handlers)
             logger.info("Processing cancelled by user before start")
             return None
 
@@ -2784,6 +2823,9 @@ def process_multiple_pages(
             batch_tui.update_display()
             time.sleep(1.0)  # Let user see final state
             batch_tui.stop_live_display()
+            
+            # Restore console logging after TUI is stopped
+            restore_console_logging(removed_handlers)
         else:
             spinner.end()
 
