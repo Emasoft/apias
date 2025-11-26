@@ -135,8 +135,10 @@ class RichTUIManager:
         self.old_terminal_settings = None  # To restore terminal settings
 
         # Initialize all chunks as queued
+        logger.info(f"[INIT] Creating TUI manager with {total_chunks} chunks, id={id(self)}")
         for i in range(1, total_chunks + 1):
             self.chunks[i] = ChunkStatus(chunk_id=i)
+            logger.info(f"[INIT] Created chunk #{i}, step={self.chunks[i].current_step.name}, chunk_obj_id={id(self.chunks[i])}")
 
     def start_live_display(self):
         """Start the live monitoring display"""
@@ -184,13 +186,18 @@ class RichTUIManager:
         """
         chunk = self.chunks.get(chunk_id)
         if not chunk:
+            logger.warning(f"[UPDATE] Chunk #{chunk_id} not found in chunks dict!")
             return
 
-        # Update chunk status
+        # DEBUG: Track updates
+        old_step = chunk.current_step
         old_state = chunk.state
+
+        # Update chunk status
         chunk.state = state
         if step is not None:
             chunk.current_step = step
+            logger.info(f"[UPDATE] Chunk #{chunk_id}: {old_step.name}(#{old_step.step_num}) → {step.name}(#{step.step_num}), state={state.name}")
         chunk.size_in = size_in or chunk.size_in
         chunk.size_out = size_out or chunk.size_out
         chunk.cost += cost  # Accumulate cost across retries
@@ -298,6 +305,15 @@ class RichTUIManager:
         completed_steps = sum(chunk.current_step.step_num for chunk in self.chunks.values())
         progress_pct = (completed_steps / total_steps) * 100 if total_steps > 0 else 0
 
+        # DEBUG: Track chunk object changes
+        if not hasattr(self, '_last_chunk_ids'):
+            self._last_chunk_ids = {}
+        for chunk_id, chunk in self.chunks.items():
+            current_id = id(chunk)
+            if chunk_id in self._last_chunk_ids and self._last_chunk_ids[chunk_id] != current_id:
+                logger.warning(f"[PROGRESS] Chunk #{chunk_id} OBJECT REPLACED! old_id={self._last_chunk_ids[chunk_id]}, new_id={current_id}")
+            self._last_chunk_ids[chunk_id] = current_id
+
         bar_length = 30
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
@@ -308,6 +324,7 @@ class RichTUIManager:
         if self.chunks:
             first_chunk = list(self.chunks.values())[0]
             table.add_row("DEBUG: Chunk 1 Step", f"{first_chunk.current_step.name}", f"step_num={first_chunk.current_step.step_num}")
+            table.add_row("DEBUG: Chunk obj ID", f"{id(first_chunk)}", f"dict_id={id(self.chunks)}")
 
         table.add_row("Processing Chunks", f"{processing}/{self.stats.total_chunks}", "")
         table.add_row("Completed Chunks", f"{self.stats.completed}/{self.stats.total_chunks}", "")

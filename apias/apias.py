@@ -1650,12 +1650,19 @@ async def call_llm_to_convert_html_to_xml(
     if tui_manager is None and not no_tui:
         tui_manager = RichTUIManager(total_chunks=len(chunks), no_tui=no_tui)
     elif tui_manager is not None:
-        # Update chunk count in existing TUI manager
-        tui_manager.stats.total_chunks = len(chunks)
-        # Reinitialize chunks dict with correct count
-        tui_manager.chunks = {}
-        for i in range(1, len(chunks) + 1):
-            tui_manager.chunks[i] = ChunkStatus(chunk_id=i)
+        # CRITICAL: Do NOT reset chunks if they already exist!
+        # Resetting would lose all progress tracking (steps go back to QUEUED)
+        # Only add new chunks if the chunk count increased
+        current_chunk_count = len(tui_manager.chunks)
+        new_chunk_count = len(chunks)
+
+        if new_chunk_count > current_chunk_count:
+            # Add new chunks for increased count (preserve existing chunks)
+            logger.info(f"[TUI] Adding {new_chunk_count - current_chunk_count} new chunks to TUI manager")
+            for i in range(current_chunk_count + 1, new_chunk_count + 1):
+                tui_manager.chunks[i] = ChunkStatus(chunk_id=i)
+            tui_manager.stats.total_chunks = new_chunk_count
+        # If count is same or decreased, keep existing chunks (preserve progress)
 
     # Create mock client if mock mode is enabled
     mock_client: Optional[MockAPIClient] = None
