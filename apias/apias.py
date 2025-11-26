@@ -2357,7 +2357,8 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
                 logger.debug("Step 3 FAILED: LLM conversion returned None")
                 return
 
-            xml_content, _, result.tui_manager = llm_result
+            # Don't replace tui_manager - keep using the same one the main thread references
+            xml_content, _, _ = llm_result
             logger.debug(f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)")
 
             # Update step: Receiving from AI

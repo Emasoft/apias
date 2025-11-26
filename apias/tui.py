@@ -238,16 +238,24 @@ class RichTUIManager:
         self.console.print(status_text)
 
     def _create_dashboard(self) -> Layout:
-        """Create the live monitoring dashboard"""
+        """Create the live monitoring dashboard - fills entire terminal"""
+        # Get terminal dimensions
+        term_height = self.console.size.height
+
+        # Calculate dynamic sizes to fill entire screen
+        header_size = 3
+        footer_size = 2
+        # Reserve space for stats (8 rows minimum)
+        stats_size = min(10, max(8, term_height // 5))
+        # Give everything else to chunks table
+        chunks_size = max(10, term_height - header_size - stats_size - footer_size - 2)  # -2 for borders
+
         layout = Layout()
-        
-        # Use ratios instead of fixed sizes to adapt to terminal height
-        # This makes the TUI fill the entire terminal and resize dynamically
         layout.split_column(
-            Layout(name="header", size=3),  # Header stays fixed (minimal)
-            Layout(name="stats", ratio=2),   # Stats gets 2/5 of remaining space
-            Layout(name="chunks", ratio=3),  # Chunks gets 3/5 of remaining space (most important)
-            Layout(name="footer", size=2),  # Footer stays fixed (minimal)
+            Layout(name="header", size=header_size),
+            Layout(name="stats", size=stats_size),
+            Layout(name="chunks", size=chunks_size),  # Largest section, fills remaining space
+            Layout(name="footer", size=footer_size),
         )
 
         # Header
@@ -322,11 +330,14 @@ class RichTUIManager:
         for chunk_id in visible_chunks:
             chunk = self.chunks[chunk_id]
 
-            # Format status with current step
+            # Format status with current step and spinner for active processing
             status_text = f"{chunk.state.value} {chunk.state.name}"
             if chunk.state == ChunkState.PROCESSING and chunk.current_step != ProcessingStep.QUEUED:
-                # Show current step when processing
-                status_text = f"{chunk.state.value} {chunk.current_step.description}"
+                # Show current step when processing with animated spinner
+                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                spinner_idx = int(time.time() * 10) % len(spinner_frames)  # Animate based on time
+                spinner = spinner_frames[spinner_idx]
+                status_text = f"{spinner} {chunk.current_step.description}"
             if chunk.attempt > 1:
                 status_text += f" ({chunk.attempt})"
 
@@ -534,12 +545,17 @@ class RichTUIManager:
         # Start keyboard listener
         self.start_keyboard_listener()
 
+        # Clear screen and move to top for clean full-screen effect
+        self.console.clear()
+
         # Start live display with "waiting" message
+        # Use screen=True to take over terminal and prevent scrolling
         self.live = Live(
             self._create_waiting_dashboard(),
             console=self.console,
-            refresh_per_second=4,
-            screen=True,  # Take over full screen to prevent scrolling
+            refresh_per_second=10,  # Faster refresh for smooth spinner animations
+            screen=True,  # Use alternate screen buffer for full control
+            vertical_overflow="visible",  # Allow content to fill screen
         )
         self.live.start()
 
