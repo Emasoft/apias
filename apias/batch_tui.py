@@ -29,6 +29,12 @@ from rich.progress import Progress, BarColumn, TextColumn
 from rich.text import Text
 from rich import box
 
+# Import version
+try:
+    from apias import __version__
+except ImportError:
+    __version__ = "0.1.4"  # Fallback if import fails
+
 
 class URLState(Enum):
     """States for URL processing"""
@@ -160,7 +166,7 @@ class BatchTUIManager:
         self.live = Live(
             self._create_waiting_dashboard(),
             console=self.console,
-            refresh_per_second=10,
+            refresh_per_second=20,  # Increased to 20 FPS for more fluid updates
             screen=True,
         )
         self.live.start()
@@ -214,7 +220,7 @@ class BatchTUIManager:
         # Header
         layout["header"].update(
             Panel(
-                Text("🚀 APIAS - Batch Processing Dashboard", justify="center", style="bold cyan"),
+                Text(f"🚀 APIAS v{__version__} - Batch Processing Dashboard", justify="center", style="bold cyan"),
                 box=box.ROUNDED,
             )
         )
@@ -242,11 +248,11 @@ class BatchTUIManager:
         """Create overall statistics panel"""
         table = Table(show_header=False, box=None, expand=True)
         table.add_column("Metric", style="cyan", width=20)
-        table.add_column("Value", style="bold green")
+        table.add_column("Value", style="bold green", justify="center")
 
-        # Calculate progress
+        # Calculate progress (center-aligned with fixed width)
         progress_pct = (self.stats.completed + self.stats.failed) / self.stats.total_urls * 100 if self.stats.total_urls > 0 else 0
-        bar_length = 30
+        bar_length = 40
         filled = int((progress_pct / 100) * bar_length)
         progress_bar = "█" * filled + "░" * (bar_length - filled)
 
@@ -296,24 +302,33 @@ class BatchTUIManager:
             )
             lines.append(stats_line)
 
-            # Line 3: Progress bar
-            bar_length = 40
-            filled = int((task.progress_pct / 100) * bar_length)
-            progress_bar = "█" * filled + "░" * (bar_length - filled)
+            # Line 3: Progress bar (adaptive width)
+            # Calculate available width for progress bar
+            term_width = self.console.size.width
+            panel_padding = 6  # Panel borders and padding
+            prefix = "  ["  # Progress bar prefix
+            suffix = "]"  # Progress bar suffix
 
             # Estimated time remaining
             if task.progress_pct > 0 and task.progress_pct < 100 and task.start_time:
                 elapsed = time.time() - task.start_time
                 estimated_total = (elapsed / task.progress_pct) * 100
                 remaining = estimated_total - elapsed
-                eta_str = f"Est: {remaining:.0f}s remaining"
+                eta_str = f" {task.progress_pct:.0f}% Est: {remaining:.0f}s"
             else:
-                eta_str = ""
+                eta_str = f" {task.progress_pct:.0f}%"
 
             # Add checkmark when complete
             completion_marker = " ✅" if task.state == URLState.COMPLETE else ""
 
-            progress_line = f"  [{progress_bar}] {task.progress_pct:.0f}% {eta_str}{completion_marker}"
+            # Calculate bar length to fill available width
+            reserved_space = len(prefix) + len(suffix) + len(eta_str) + len(completion_marker)
+            bar_length = max(20, term_width - panel_padding - reserved_space)
+
+            filled = int((task.progress_pct / 100) * bar_length)
+            progress_bar = "█" * filled + "░" * (bar_length - filled)
+
+            progress_line = f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
             lines.append(progress_line)
 
             # Add spacing between tasks (except last one)
@@ -339,7 +354,7 @@ class BatchTUIManager:
             self.live = Live(
                 self._create_dashboard(),
                 console=self.console,
-                refresh_per_second=10,
+                refresh_per_second=20,  # Increased to 20 FPS for more fluid updates
                 screen=True,
             )
             self.live.start()

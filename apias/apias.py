@@ -2775,7 +2775,7 @@ def process_multiple_pages(
             while True:
                 done, pending = concurrent.futures.wait(
                     future_to_url.keys(),
-                    timeout=0.1,
+                    timeout=0.05,  # Reduced to 50ms for more fluid TUI updates
                     return_when=concurrent.futures.FIRST_COMPLETED
                 )
 
