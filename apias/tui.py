@@ -487,7 +487,7 @@ class RichTUIManager:
             self._create_waiting_dashboard(),
             console=self.console,
             refresh_per_second=4,
-            screen=False,
+            screen=True,  # Take over full screen to prevent scrolling
         )
         self.live.start()
 

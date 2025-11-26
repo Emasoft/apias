@@ -2382,12 +2382,29 @@ def process_single_page(url: str, pricing_info: Dict[str, Dict[str, float]], scr
         # TUI mode - run thread and keep updating TUI while it's alive
         thread = threading.Thread(target=process_in_background)
         thread.start()
+
+        logger.debug(f"TUI update loop starting. TUI manager exists: {result.tui_manager is not None}, Live widget exists: {result.tui_manager.live is not None if result.tui_manager else False}")
+
+        update_count = 0
         while thread.is_alive():
             # Update TUI display while background thread is working
             if result.tui_manager and result.tui_manager.live:
                 result.tui_manager.live.update(result.tui_manager._create_dashboard())
+                update_count += 1
+                if update_count % 50 == 0:  # Log every 5 seconds
+                    logger.debug(f"TUI updated {update_count} times")
             time.sleep(0.1)  # Update TUI 10 times per second
         thread.join()
+
+        logger.debug(f"Thread finished. Total TUI updates: {update_count}")
+
+        # Final update to show completed state
+        if result.tui_manager and result.tui_manager.live:
+            logger.debug("Performing final TUI update")
+            result.tui_manager.live.update(result.tui_manager._create_dashboard())
+            time.sleep(0.5)  # Brief pause to let user see final state
+        else:
+            logger.debug(f"No final TUI update - TUI manager exists: {result.tui_manager is not None}, Live exists: {result.tui_manager.live is not None if result.tui_manager else False}")
     logger.debug("Background processing thread completed")
 
     if result.error:
