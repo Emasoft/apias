@@ -3401,9 +3401,11 @@ def process_multiple_pages(
                             trigger_reason, str(temp_folder)
                         )
 
-                        # Only restore logging AFTER dialog is shown
-                        # (worker threads have had time to finish)
-                        restore_console_logging(handlers_and_level)
+                        # NOTE: Do NOT restore logging here! Worker threads are still running
+                        # from the non-blocking shutdown above. Restoring logging would allow
+                        # them to flood the console with errors after the clean dialog.
+                        # Since we're returning immediately, logging will remain suppressed
+                        # and the program will exit cleanly without any thread output.
 
                     # Return early - do NOT continue to merge phase
                     return None, error_tracker
