@@ -320,10 +320,10 @@ def configure_logging_for_tui(no_tui: bool) -> None:
         logger.setLevel(logging.DEBUG)
 
 
-def suppress_console_logging() -> list[logging.Handler]:
+def suppress_console_logging() -> tuple[list[logging.Handler], int]:
     """
-    Suppress console logging by removing StreamHandlers.
-    Returns the removed handlers so they can be restored later.
+    Suppress console logging by removing StreamHandlers AND raising log level.
+    Returns the removed handlers and original level so they can be restored later.
 
     This prevents logger.info/warning/error from corrupting the Rich TUI.
     Rich's Live display uses its own Console which bypasses Python logging.
@@ -334,6 +334,7 @@ def suppress_console_logging() -> list[logging.Handler]:
     """
     root_logger = logging.getLogger()
     removed_handlers: list[logging.Handler] = []
+    original_level = root_logger.level
 
     # Remove all console logging handlers
     for handler in root_logger.handlers[
@@ -346,18 +347,30 @@ def suppress_console_logging() -> list[logging.Handler]:
             root_logger.removeHandler(handler)
             removed_handlers.append(handler)
 
-    return removed_handlers
+    # Also raise logging level to CRITICAL to suppress all normal logging
+    # This ensures that even if a handler wasn't removed, it won't log
+    root_logger.setLevel(logging.CRITICAL + 1)  # Higher than CRITICAL = nothing logs
+
+    return removed_handlers, original_level
 
 
-def restore_console_logging(handlers: list[logging.Handler]) -> None:
+def restore_console_logging(
+    handlers_and_level: tuple[list[logging.Handler], int],
+) -> None:
     """
-    Restore console logging handlers.
+    Restore console logging handlers and original log level.
 
     Args:
-        handlers: List of handlers to restore (returned by suppress_console_logging)
+        handlers_and_level: Tuple of (handlers, level) returned by suppress_console_logging
     """
+    handlers, original_level = handlers_and_level
+    root_logger = logging.getLogger()
+
+    # Restore original log level
+    root_logger.setLevel(original_level)
+
+    # Restore handlers
     if handlers:
-        root_logger = logging.getLogger()
         for handler in handlers:
             root_logger.addHandler(handler)
 
@@ -961,8 +974,16 @@ def run_install(cmd: List[str]) -> Tuple[bool, str]:
 class Spinner:
     spinner_chars = itertools.cycle(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"])
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, quiet: bool = False) -> None:
+        """
+        Initialize spinner.
+
+        Args:
+            text: The text to display next to the spinner
+            quiet: If True, suppress all output (for use when TUI is active)
+        """
         self.text = text
+        self.quiet = quiet
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self.spinner_thread = threading.Thread(target=self._spin)
@@ -981,7 +1002,8 @@ class Spinner:
         self.stop()
 
     def start(self) -> None:
-        print("Press CTRL-C to stop the processing.")
+        if not self.quiet:
+            print("Press CTRL-C to stop the processing.")
         self.spinner_thread.start()
 
     def stop(self) -> None:
@@ -1000,7 +1022,7 @@ class Spinner:
 
     def _spin(self) -> None:
         while not self.stop_event.is_set():
-            if not self.pause_event.is_set():
+            if not self.pause_event.is_set() and not self.quiet:
                 self._clear_line()
                 print(f"\r{self.text} {next(self.spinner_chars)}", end="", flush=True)
             # Use centralized spinner animation interval - DO NOT hardcode timing values
@@ -1008,22 +1030,29 @@ class Spinner:
 
     def update_text(self, new_text: str) -> None:
         self.pause()
-        self._clear_line()
-        print(f"\r{new_text}")
+        if not self.quiet:
+            self._clear_line()
+            print(f"\r{new_text}")
         self.text = new_text
         self.resume()
 
     def step(self) -> None:
         self.pause()
-        self._clear_line()
-        print(f"\r{self.text} {next(self.spinner_chars)}", end="", flush=True)
+        if not self.quiet:
+            self._clear_line()
+            print(f"\r{self.text} {next(self.spinner_chars)}", end="", flush=True)
         self.resume()
 
     def end(self) -> None:
         self.stop()
 
     def _clear_line(self) -> None:
-        print("\r" + " " * (shutil.get_terminal_size().columns - 1), end="", flush=True)
+        if not self.quiet:
+            print(
+                "\r" + " " * (shutil.get_terminal_size().columns - 1),
+                end="",
+                flush=True,
+            )
 
 
 def spinner_context(text: str) -> Spinner:
@@ -1097,14 +1126,17 @@ class Scraper:
         playwright_available: Optional[bool] = None,
         verify_ssl: bool = True,
         timeout: int = 30,
+        quiet: bool = False,
     ):
         """
         `print_error` - a function to call to print error/debug info.
         `verify_ssl` - if False, disable SSL certificate verification when scraping.
         `timeout` - timeout in seconds for the scraping operation.
+        `quiet` - if True, suppress all spinner and print output (for TUI mode).
         """
 
         self.print_error: Callable[[str], None] = print
+        self.quiet = quiet
 
         self.playwright_available = (
             playwright_available
@@ -1202,7 +1234,7 @@ class Scraper:
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
         from playwright.sync_api import sync_playwright
 
-        with Spinner(f"Scraping {url}") as spinner:
+        with Spinner(f"Scraping {url}", quiet=self.quiet) as spinner:
             try:
                 with sync_playwright() as p:
                     try:
@@ -1384,23 +1416,33 @@ def slimdown_html(
     )
 
 
-def start_scraping(url: str, no_tui: bool = False) -> Optional[str]:
+def start_scraping(
+    url: str, no_tui: bool = False, quiet: bool = False
+) -> Optional[str]:
+    """
+    Start scraping a URL.
+
+    Args:
+        url: The URL to scrape
+        no_tui: If True, don't use TUI (legacy parameter)
+        quiet: If True, suppress ALL output including spinners (for batch TUI mode)
+    """
     url = url.strip()
     if not url:
-        if no_tui:
+        if no_tui and not quiet:
             print("Please provide a URL to scrape.")
         return None
 
-    if no_tui:
+    if no_tui and not quiet:
         print(f"Scraping {url}...")
 
     res = install_playwright()
     if not res:
-        if no_tui:
+        if no_tui and not quiet:
             print("Unable to initialize playwright.")
         return None
 
-    scraper = Scraper(playwright_available=res, verify_ssl=False)
+    scraper = Scraper(playwright_available=res, verify_ssl=False, quiet=quiet)
 
     try:
         content, mime_type = scraper.scrape(url)
@@ -2573,12 +2615,20 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
 # ============================
 
 
-def web_scraper(url: str, no_tui: bool = False) -> Optional[str]:
+def web_scraper(url: str, no_tui: bool = False, quiet: bool = False) -> Optional[str]:
+    """
+    Web scraper with optional output suppression.
+
+    Args:
+        url: URL to scrape
+        no_tui: If True, disable TUI (legacy)
+        quiet: If True, suppress all output including spinners (for batch TUI)
+    """
     logger.debug("=== web_scraper invoked ===")
     logger.debug(f"Target URL: {url}")
     try:
         logger.debug("Starting scraping process...")
-        content = start_scraping(url, no_tui=no_tui)
+        content = start_scraping(url, no_tui=no_tui, quiet=quiet)
         if content:
             content_size = len(content) / 1024  # Convert to KB
             logger.info(
@@ -2978,7 +3028,8 @@ def process_url(
             batch_tui.update_task(idx, URLState.SCRAPING, progress_pct=10.0)
 
         logger.info(f"Scraping HTML content for URL: {url}")
-        html_content = web_scraper(url, no_tui=True)
+        # Suppress spinner output when batch TUI is active
+        html_content = web_scraper(url, no_tui=True, quiet=bool(batch_tui))
         if not html_content:
             logger.warning(f"Failed to retrieve HTML content for {url}")
             progress_tracker[url] = {
@@ -3263,9 +3314,9 @@ def process_multiple_pages(
     )
 
     # Suppress console logging when batch TUI is active to prevent screen jumping
-    removed_handlers = []
+    handlers_and_level = ([], logging.INFO)  # Default values if not suppressed
     if batch_tui:
-        removed_handlers = suppress_console_logging()
+        handlers_and_level = suppress_console_logging()
 
     if batch_tui:
         # Show waiting screen and wait for SPACE
@@ -3274,7 +3325,7 @@ def process_multiple_pages(
         # Check if user cancelled during waiting
         if batch_tui.should_stop:
             # Restore logging before returning
-            restore_console_logging(removed_handlers)
+            restore_console_logging(handlers_and_level)
             logger.info("Processing cancelled by user before start")
             return None, error_tracker
 
@@ -3394,15 +3445,15 @@ def process_multiple_pages(
     if shutdown_flag:
         logger.info("Shutdown initiated. Saving partial results.")
         # Restore logging before returning
-        if removed_handlers:
-            restore_console_logging(removed_handlers)
+        if batch_tui:
+            restore_console_logging(handlers_and_level)
 
     # In scrape-only mode, skip XML merging
     if scrape_only:
         logger.info("Scrape-only mode: Completed successfully without XML merging")
         # Restore logging before returning
-        if removed_handlers:
-            restore_console_logging(removed_handlers)
+        if batch_tui:
+            restore_console_logging(handlers_and_level)
         return "scrape_only_completed", error_tracker
 
     # ========== Clean Merge Progress Display ==========
@@ -3449,8 +3500,8 @@ def process_multiple_pages(
         )
         console.print()
         # Restore logging before returning
-        if removed_handlers:
-            restore_console_logging(removed_handlers)
+        if batch_tui:
+            restore_console_logging(handlers_and_level)
         logger.error("No valid XML content extracted from pages.")
         return None, error_tracker
 
@@ -3482,14 +3533,14 @@ def process_multiple_pages(
         console.print(f"  ❌ Error saving merged XML: {e}", style="bold red")
         console.print()
         # Restore logging before returning
-        if removed_handlers:
-            restore_console_logging(removed_handlers)
+        if batch_tui:
+            restore_console_logging(handlers_and_level)
         logger.error(f"Error saving merged XML file: {e}")
         return None, error_tracker
 
     # NOW restore console logging after merge is complete
-    if removed_handlers:
-        restore_console_logging(removed_handlers)
+    if batch_tui:
+        restore_console_logging(handlers_and_level)
 
     return merged_xml, error_tracker
 
