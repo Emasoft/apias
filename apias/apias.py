@@ -3385,12 +3385,18 @@ def process_multiple_pages(
                     )
                     # Cancel remaining futures gracefully
                     executor.shutdown(wait=False, cancel_futures=True)
-                    # Show graceful error dialog to user
+
+                    # Stop live display and restore logging BEFORE showing dialog
                     if batch_tui:
+                        batch_tui.stop_live_display()
+                        restore_console_logging(handlers_and_level)
+                        # Show graceful error dialog to user
                         batch_tui.show_circuit_breaker_dialog(
                             trigger_reason, str(temp_folder)
                         )
-                    break
+
+                    # Return early - do NOT continue to merge phase
+                    return None, error_tracker
 
                 # Process completed futures
                 for future in done:
