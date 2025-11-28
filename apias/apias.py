@@ -3137,8 +3137,9 @@ def process_url(
         update_progress_file()
 
         # Update TUI: Starting scraping
-        if batch_tui:
-            batch_tui.update_task(idx, URLState.SCRAPING, progress_pct=10.0)
+        update_batch_status(
+            status_pipeline, idx, URLState.SCRAPING, "🌐 Scraping HTML content", progress_pct=10.0
+        )
 
         logger.info(f"Scraping HTML content for URL: {url}")
         # Suppress spinner output when batch TUI is active

@@ -757,7 +757,7 @@ class ErrorCollector:
             category_name = category.name.replace("_", " ").lower()
             return f"{stats.count} tasks failed due to {category_name}"
 
-    def get_error_summary(self) -> Dict[NewErrorCategory, int]:
+    def get_error_summary(self) -> Dict[ErrorCategory, int]:
         """
         Get count of errors by category.
 
