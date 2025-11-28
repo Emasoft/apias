@@ -96,9 +96,11 @@ ERROR_DESCRIPTIONS: Final[Dict[ErrorCategory, str]] = {
 }
 
 # Categories that are recoverable (can be retried)
+# IMPORTANT: RATE_LIMIT is NOT recoverable - it means we're hitting API limits
+# and should stop immediately to avoid wasting time and potentially being banned.
+# Only transient errors (timeout, connection, server error) are recoverable.
 RECOVERABLE_CATEGORIES: Final[frozenset[ErrorCategory]] = frozenset(
     {
-        ErrorCategory.RATE_LIMIT,
         ErrorCategory.API_TIMEOUT,
         ErrorCategory.CONNECTION_ERROR,
         ErrorCategory.SERVER_ERROR,
@@ -158,6 +160,7 @@ class CircuitBreaker:
         self,
         consecutive_threshold: int = DEFAULT_CONSECUTIVE_THRESHOLD,
         quota_immediate_stop: bool = DEFAULT_QUOTA_IMMEDIATE_STOP,
+        rate_limit_immediate_stop: bool = True,
     ) -> None:
         """
         Initialize circuit breaker.
@@ -167,10 +170,13 @@ class CircuitBreaker:
                                    Uses DEFAULT_CONSECUTIVE_THRESHOLD if not specified.
             quota_immediate_stop: If True, trip immediately on quota exceeded.
                                   This prevents wasting API calls when out of credits.
+            rate_limit_immediate_stop: If True, trip immediately on rate limit (429).
+                                       Rate limits mean we should back off, not retry.
         """
         # Store configuration - these never change after init
         self.consecutive_threshold = consecutive_threshold
         self.quota_immediate_stop = quota_immediate_stop
+        self.rate_limit_immediate_stop = rate_limit_immediate_stop
 
         # Internal state - always access with lock held
         self._consecutive_errors = 0
@@ -184,7 +190,8 @@ class CircuitBreaker:
 
         logger.debug(
             f"CircuitBreaker initialized: threshold={consecutive_threshold}, "
-            f"quota_immediate_stop={quota_immediate_stop}"
+            f"quota_immediate_stop={quota_immediate_stop}, "
+            f"rate_limit_immediate_stop={rate_limit_immediate_stop}"
         )
 
     def record_success(self) -> None:
@@ -219,8 +226,15 @@ class CircuitBreaker:
             # Immediate stop for quota exceeded - no point wasting more calls
             if category == ErrorCategory.QUOTA_EXCEEDED and self.quota_immediate_stop:
                 self._triggered = True
+                self._trigger_reason = "API quota exceeded - add credits to continue"
+                logger.warning(f"CircuitBreaker TRIPPED: {self._trigger_reason}")
+                return True
+
+            # Immediate stop for rate limit (429) - we must back off, not retry
+            if category == ErrorCategory.RATE_LIMIT and self.rate_limit_immediate_stop:
+                self._triggered = True
                 self._trigger_reason = (
-                    "API quota exceeded - no further requests possible"
+                    "Rate limit exceeded (429) - please wait before retrying"
                 )
                 logger.warning(f"CircuitBreaker TRIPPED: {self._trigger_reason}")
                 return True
@@ -309,6 +323,7 @@ class SessionErrorTracker:
         self,
         consecutive_threshold: int = DEFAULT_CONSECUTIVE_THRESHOLD,
         quota_immediate_stop: bool = DEFAULT_QUOTA_IMMEDIATE_STOP,
+        rate_limit_immediate_stop: bool = True,
         max_errors: int = DEFAULT_MAX_ERRORS,
     ) -> None:
         """
@@ -317,6 +332,7 @@ class SessionErrorTracker:
         Args:
             consecutive_threshold: Circuit breaker threshold
             quota_immediate_stop: Stop immediately on quota exceeded
+            rate_limit_immediate_stop: Stop immediately on rate limit (429)
             max_errors: Maximum number of errors to store (prevents memory bloat)
         """
         self._max_errors = max_errors
@@ -330,12 +346,13 @@ class SessionErrorTracker:
         self.circuit_breaker = CircuitBreaker(
             consecutive_threshold=consecutive_threshold,
             quota_immediate_stop=quota_immediate_stop,
+            rate_limit_immediate_stop=rate_limit_immediate_stop,
         )
         self._lock = threading.Lock()
 
         logger.debug(
             f"SessionErrorTracker initialized: max_errors={max_errors}, "
-            f"threshold={consecutive_threshold}"
+            f"threshold={consecutive_threshold}, rate_limit_stop={rate_limit_immediate_stop}"
         )
 
     def record(self, event: ErrorEvent) -> bool:

@@ -54,7 +54,10 @@ SUBPROCESS_TIMEOUT: Final[int] = 5  # Timeout for subprocess calls (ps, etc.)
 
 # --- API Configuration ---
 DEFAULT_MODEL: Final[str] = "gpt-4o-mini"  # Default OpenAI model
-OPENAI_MAX_RETRIES: Final[int] = 2  # OpenAI library internal retries
+# CRITICAL: Set to 0 to disable OpenAI library's internal retry mechanism
+# We handle retries ourselves with circuit breaker for proper user feedback
+# Internal retries cause "retry storms" that flood the terminal with errors
+OPENAI_MAX_RETRIES: Final[int] = 0  # NO internal retries - circuit breaker handles this
 XML_VALIDATION_MAX_RETRIES: Final[int] = 1  # Retries for XML validation failures
 
 # --- Batch Processing ---

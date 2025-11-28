@@ -753,6 +753,94 @@ class BatchTUIManager(BaseTUIManager):
 
         self.console.print()
 
+    def show_circuit_breaker_dialog(
+        self, trigger_reason: str, output_dir: str = ""
+    ) -> None:
+        """
+        Show a graceful dialog when circuit breaker stops processing.
+
+        This provides clear, user-friendly information about what happened
+        and what actions the user can take.
+
+        Args:
+            trigger_reason: The reason the circuit breaker tripped
+            output_dir: Output directory for progress file info
+        """
+        if self.no_tui:
+            self._print_simple_circuit_breaker(trigger_reason, output_dir)
+            return
+
+        # Stop live display if active
+        self.stop_live_display()
+
+        # Clear screen for clean dialog
+        self.console.clear()
+        self.console.print()
+
+        # Error header
+        stop_sym = Symbols.get(Symbols.STOP)
+        self.console.print(
+            Panel(
+                f"{stop_sym} [bold red]PROCESSING STOPPED[/bold red] {stop_sym}",
+                border_style="red",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+        # Reason panel
+        warning = Symbols.get(Symbols.WARNING)
+        self.console.print(
+            Panel(
+                f"[bold yellow]{warning} {trigger_reason}[/bold yellow]",
+                title="[bold red]Reason[/bold red]",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+        # Progress saved info
+        check = Symbols.get(Symbols.CHECK)
+        self.console.print(f"[green]{check}[/green] Your progress has been saved.")
+        self.console.print(
+            f"[green]{check}[/green] Completed URLs: {self.stats.completed}/{self.stats.total_urls}"
+        )
+        if output_dir:
+            self.console.print(f"[green]{check}[/green] Output directory: {output_dir}")
+        self.console.print()
+
+        # Actions panel
+        actions = [
+            "[cyan]1.[/cyan] Check your OpenAI account for credits/rate limits",
+            "[cyan]2.[/cyan] Wait a few minutes if rate limited",
+            "[cyan]3.[/cyan] Resume with: [bold]apias --resume <progress.json>[/bold]",
+        ]
+        info = Symbols.get(Symbols.INFO)
+        self.console.print(
+            Panel(
+                "\n".join(actions),
+                title=f"[bold cyan]{info} Recommended Actions[/bold cyan]",
+                border_style="cyan",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+    def _print_simple_circuit_breaker(
+        self, trigger_reason: str, output_dir: str = ""
+    ) -> None:
+        """Print simple circuit breaker message (for --no-tui mode)"""
+        print("\n" + "=" * 60)
+        print("PROCESSING STOPPED")
+        print("=" * 60)
+        print(f"Reason: {trigger_reason}")
+        print(f"\nProgress saved: {self.stats.completed}/{self.stats.total_urls} URLs")
+        if output_dir:
+            print(f"Output directory: {output_dir}")
+        print("\nTo resume: apias --resume <progress.json>")
+        print("=" * 60 + "\n")
+
     def _print_simple_summary(self, output_dir: str = "") -> None:
         """Print simple text summary (for --no-tui mode)"""
         print("\n" + "=" * 60)

@@ -320,17 +320,39 @@ def configure_logging_for_tui(no_tui: bool) -> None:
         logger.setLevel(logging.DEBUG)
 
 
+# Store original stdout/stderr for restoration
+_original_stdout: Optional[Any] = None
+_original_stderr: Optional[Any] = None
+
+
+class NullWriter:
+    """A writer that discards all output - used to suppress print() during TUI."""
+
+    def write(self, _: str) -> int:
+        return 0
+
+    def flush(self) -> None:
+        pass
+
+
 def suppress_console_logging() -> list[logging.Handler]:
     """
-    Suppress all console logging by removing StreamHandlers.
+    Suppress ALL console output including logging and print() statements.
     Returns the removed handlers so they can be restored later.
 
-    This is used when Rich TUI is active to prevent log messages
-    from interfering with the TUI display.
+    This is CRITICAL for Rich TUI to work properly:
+    - Removes all logging StreamHandlers
+    - Redirects stdout/stderr to null to suppress print() calls
+    - Prevents any text from corrupting the alternate screen buffer
+
+    DO NOT remove any part of this - the TUI will become a chaos of errors.
     """
+    global _original_stdout, _original_stderr
+
     root_logger = logging.getLogger()
     removed_handlers: list[logging.Handler] = []
 
+    # Remove all console logging handlers
     for handler in root_logger.handlers[
         :
     ]:  # Copy list to avoid modification during iteration
@@ -341,16 +363,34 @@ def suppress_console_logging() -> list[logging.Handler]:
             root_logger.removeHandler(handler)
             removed_handlers.append(handler)
 
+    # Also suppress stdout/stderr to catch print() calls
+    # This prevents ANY text from leaking into the TUI display
+    _original_stdout = sys.stdout
+    _original_stderr = sys.stderr
+    sys.stdout = NullWriter()
+    sys.stderr = NullWriter()
+
     return removed_handlers
 
 
 def restore_console_logging(handlers: list[logging.Handler]) -> None:
     """
-    Restore console logging handlers that were previously removed.
+    Restore console logging handlers and stdout/stderr.
 
     Args:
         handlers: List of handlers to restore (returned by suppress_console_logging)
     """
+    global _original_stdout, _original_stderr
+
+    # Restore stdout/stderr first
+    if _original_stdout is not None:
+        sys.stdout = _original_stdout
+        _original_stdout = None
+    if _original_stderr is not None:
+        sys.stderr = _original_stderr
+        _original_stderr = None
+
+    # Then restore logging handlers
     if handlers:
         root_logger = logging.getLogger()
         for handler in handlers:
@@ -3318,13 +3358,22 @@ def process_multiple_pages(
                     executor.shutdown(wait=False)
                     break
 
-                # Check circuit breaker for fatal errors (quota exceeded, consecutive failures)
+                # Check circuit breaker for fatal errors (quota exceeded, rate limit, etc.)
                 if error_tracker.circuit_breaker.is_triggered:
+                    trigger_reason = (
+                        error_tracker.circuit_breaker.trigger_reason or "Unknown error"
+                    )
                     logger.warning(
-                        f"Circuit breaker triggered: {error_tracker.circuit_breaker.trigger_reason}. "
+                        f"Circuit breaker triggered: {trigger_reason}. "
                         f"Stopping batch processing to avoid wasting resources."
                     )
-                    executor.shutdown(wait=False)
+                    # Cancel remaining futures gracefully
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    # Show graceful error dialog to user
+                    if batch_tui:
+                        batch_tui.show_circuit_breaker_dialog(
+                            trigger_reason, str(temp_folder)
+                        )
                     break
 
                 # Process completed futures

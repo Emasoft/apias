@@ -134,6 +134,10 @@ class Symbols:
     STOP = ("⏹️", "[X]")
     PAUSED_INDICATOR = ("⏸", "||")  # Simpler pause for inline use
 
+    # Informational indicators
+    WARNING = ("⚠️", "[!]")  # Warning symbol for alerts
+    INFO = ("ℹ️", "[i]")  # Info symbol for informational messages
+
     # Status animations (for paused state pulsing)
     PULSE_FRAMES_UNICODE = ["◉", "◎", "○", "◎"]
     PULSE_FRAMES_ASCII = ["*", "o", ".", "o"]
