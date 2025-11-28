@@ -3409,7 +3409,54 @@ def process_multiple_pages(
     # Use Rich TUI for batch mode or fallback to simple spinner
     batch_tui = BatchTUIManager(urls, no_tui=no_tui) if not no_tui else None
 
-    # Create error tracker for session-wide error aggregation and circuit breaker
+    # ===== NEW EVENT SYSTEM INITIALIZATION (Week 2 Integration) =====
+    # WHY: Replace SessionErrorTracker with event-driven architecture
+    # - EventBus: Pub/sub for decoupled communication
+    # - ErrorCollector: Unified error tracking with per-category circuit breaker
+    # - StatusPipeline: Hybrid polling with atomic snapshots
+    # - DialogManager: Priority-based post-TUI dialogs
+    # - LoggerInterceptor: Bulletproof console output suppression
+
+    # Create event bus for decoupled communication
+    event_bus = EventBus(max_queue_size=10000)
+
+    # Load error configuration from YAML (with fallback to defaults)
+    error_config = load_error_config()
+
+    # Create error collector with per-category circuit breaker
+    error_collector = ErrorCollector(event_bus, error_config)
+
+    # Create status pipeline for hybrid polling (50ms baseline + instant wake-up)
+    status_pipeline = StatusPipeline(event_bus)
+    status_pipeline.initialize_tasks(urls)
+
+    # Create dialog manager for post-TUI user dialogs
+    from rich.console import Console as RichConsole
+    console = RichConsole()
+    dialog_manager = DialogManager(event_bus, console)
+
+    # Install logger interceptor for bulletproof console suppression
+    # WHY: Prevents third-party libraries from adding StreamHandlers after initial suppression
+    logger_interceptor = None
+    if not no_tui and session_log_path:
+        # Get session log handler from root logger (already added by main_workflow)
+        root_logger = logging.getLogger()
+        session_file_handler = None
+        for handler in root_logger.handlers:
+            if isinstance(handler, logging.FileHandler) and str(session_log_path) in str(handler.baseFilename):
+                session_file_handler = handler
+                break
+
+        if session_file_handler:
+            logger_interceptor = LoggerInterceptor(session_file_handler)
+            logger_interceptor.install()
+            logger.debug("LoggerInterceptor installed for bulletproof console suppression")
+        else:
+            logger.warning("Session log FileHandler not found - LoggerInterceptor not installed")
+
+    # Create OLD error tracker for backward compatibility during migration
+    # WHY: Some code paths still check error_tracker (will be removed in later steps)
+    # TODO: Remove this after full integration is complete
     error_tracker = SessionErrorTracker(
         consecutive_threshold=3, quota_immediate_stop=True
     )
