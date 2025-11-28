@@ -3096,8 +3096,8 @@ def process_url(
     total: int,
     pricing_info: Dict[str, Dict[str, float]],
     scrape_only: bool = False,
-    batch_tui: Optional[BatchTUIManager] = None,
-    error_tracker: Optional[SessionErrorTracker] = None,
+    status_pipeline: Optional[StatusPipeline] = None,
+    error_collector: Optional[ErrorCollector] = None,
 ) -> Optional[str]:
     global progress_tracker
     """
@@ -3135,8 +3135,16 @@ def process_url(
             }
             with cost_lock:
                 update_progress_file()
+            # NEW SYSTEM: Record error in error_collector for circuit breaker
+            if error_collector:
+                error_collector.record_error(
+                    category=NewErrorCategory.SOURCE_NOT_FOUND,
+                    message=f"404 Not Found: {url}",
+                    task_id=idx,
+                    url=url,
+                )
             update_batch_status(
-                batch_tui,
+                status_pipeline,
                 idx,
                 URLState.FAILED,
                 "❌ Source page not found. Aborting task.",
@@ -3160,10 +3168,12 @@ def process_url(
                 "cost": 0.0,
             }
             update_progress_file()
-            if batch_tui:
-                batch_tui.update_task(
-                    idx,
-                    URLState.COMPLETE,
+            # NEW SYSTEM: Update status via status_pipeline
+            if status_pipeline:
+                status_pipeline.update_status(
+                    task_id=idx,
+                    state=URLState.COMPLETE,
+                    message="Scrape complete",
                     progress_pct=100.0,
                     size_in=len(html_content),
                 )
@@ -3176,9 +3186,14 @@ def process_url(
             return None
 
         # Update TUI: Starting LLM processing
-        if batch_tui:
-            batch_tui.update_task(
-                idx, URLState.PROCESSING, progress_pct=30.0, size_in=len(html_content)
+        # NEW SYSTEM: Update status via status_pipeline
+        if status_pipeline:
+            status_pipeline.update_status(
+                task_id=idx,
+                state=URLState.PROCESSING,
+                message="Starting LLM processing",
+                progress_pct=30.0,
+                size_in=len(html_content),
             )
 
         logger.info(f"Converting HTML to XML for URL: {url}")
@@ -3188,9 +3203,9 @@ def process_url(
                 html_content,
                 additional_content,
                 pricing_info,
-                batch_tui=batch_tui,
+                status_pipeline=status_pipeline,
                 task_id=idx,
-                error_tracker=error_tracker,
+                error_collector=error_collector,
                 url=url,
             )
         )
@@ -3201,8 +3216,10 @@ def process_url(
                 "cost": progress_tracker[url].get("cost", 0.0),
             }
             update_progress_file()
+            # NEW SYSTEM: Error already recorded by call_llm_to_convert_html_to_xml()
+            # via error_collector.record_error() for specific API errors
             update_batch_status(
-                batch_tui,
+                status_pipeline,
                 idx,
                 URLState.FAILED,
                 "❌ LLM processing failed. Aborting task.",
@@ -3238,8 +3255,16 @@ def process_url(
                 "cost": progress_tracker[url].get("cost", 0.0),
             }
             update_progress_file()
+            # NEW SYSTEM: Record invalid response error
+            if error_collector:
+                error_collector.record_error(
+                    category=NewErrorCategory.INVALID_RESPONSE,
+                    message=f"LLM returned empty XML content for {url}",
+                    task_id=idx,
+                    url=url,
+                )
             update_batch_status(
-                batch_tui,
+                status_pipeline,
                 idx,
                 URLState.FAILED,
                 "❌ LLM returned empty response. Aborting task.",
@@ -3266,10 +3291,12 @@ def process_url(
         update_progress_file()
 
         # Update TUI: Processing complete (final state update in process_multiple_pages)
-        if batch_tui:
-            batch_tui.update_task(
-                idx,
-                URLState.COMPLETE,
+        # NEW SYSTEM: Update status via status_pipeline
+        if status_pipeline:
+            status_pipeline.update_status(
+                task_id=idx,
+                state=URLState.COMPLETE,
+                message="Processing complete",
                 progress_pct=100.0,
                 size_in=len(html_content),
                 size_out=len(xml_content),
@@ -3287,8 +3314,17 @@ def process_url(
             "cost": progress_tracker[url].get("cost", 0.0),
         }
         update_progress_file()
+        # NEW SYSTEM: Record connection error for circuit breaker
+        if error_collector:
+            error_collector.record_error(
+                category=NewErrorCategory.CONNECTION_ERROR,
+                message=f"Network error: {str(e)}",
+                task_id=idx,
+                url=url,
+                exception=e,
+            )
         update_batch_status(
-            batch_tui,
+            status_pipeline,
             idx,
             URLState.FAILED,
             "❌ Connection error. Aborting task.",
@@ -3306,8 +3342,17 @@ def process_url(
             "cost": progress_tracker[url].get("cost", 0.0),
         }
         update_progress_file()
+        # NEW SYSTEM: Record unknown error for circuit breaker
+        if error_collector:
+            error_collector.record_error(
+                category=NewErrorCategory.UNKNOWN,
+                message=f"Unexpected error: {str(e)}",
+                task_id=idx,
+                url=url,
+                exception=e,
+            )
         update_batch_status(
-            batch_tui,
+            status_pipeline,
             idx,
             URLState.FAILED,
             "❌ Processing error. Aborting task.",
@@ -3487,6 +3532,8 @@ def process_multiple_pages(
 
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+            # NEW SYSTEM: Pass status_pipeline and error_collector to process_url()
+            # WHY: Enables event-driven status updates and comprehensive error tracking
             future_to_url = {
                 executor.submit(
                     process_url,
@@ -3495,8 +3542,8 @@ def process_multiple_pages(
                     len(urls),
                     pricing_info,
                     scrape_only,
-                    batch_tui,
-                    error_tracker,
+                    status_pipeline,
+                    error_collector,
                 ): url
                 for idx, url in enumerate(urls)
             }
