@@ -713,6 +713,63 @@ class ErrorCollector:
                 "trigger_reason": self._circuit_breaker.trigger_reason,
             }
 
+    @property
+    def total_errors(self) -> int:
+        """
+        Get total number of errors recorded.
+
+        Returns:
+            Total error count (including dropped errors)
+
+        Thread Safety: Uses _lock for atomic read.
+        """
+        with self._lock:
+            return self._storage._total_recorded
+
+    def get_primary_failure_reason(self) -> Optional[str]:
+        """
+        Get the most significant reason for failures.
+
+        Priority:
+        1. Circuit breaker trigger reason (most severe)
+        2. Most frequent error category
+        3. None if no errors
+
+        Returns:
+            Primary failure reason string, or None if no errors
+
+        Thread Safety: Uses _lock for atomic read.
+        """
+        # Check circuit breaker first - it has the most critical info
+        if self.is_tripped:
+            return self.trigger_reason
+
+        with self._lock:
+            # Get category statistics
+            category_stats = self._storage.get_stats()
+            if not category_stats:
+                return None
+
+            # Find category with highest count
+            most_common = max(category_stats.items(), key=lambda x: x[1].count)
+            category, stats = most_common
+
+            category_name = category.name.replace("_", " ").lower()
+            return f"{stats.count} tasks failed due to {category_name}"
+
+    def get_error_summary(self) -> Dict[NewErrorCategory, int]:
+        """
+        Get count of errors by category.
+
+        Returns:
+            Dict mapping ErrorCategory to error count
+
+        Thread Safety: Uses _lock for atomic read.
+        """
+        with self._lock:
+            category_stats = self._storage.get_stats()
+            return {category: stats.count for category, stats in category_stats.items()}
+
 
 # ============================================================================
 # Configuration Loading

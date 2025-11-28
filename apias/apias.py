@@ -145,7 +145,6 @@ from .batch_tui import BatchTUIManager, URLState
 from .error_handler import (
     ErrorCategory,
     ErrorEvent,
-    SessionErrorTracker,
     classify_openai_error,
     get_error_description,
     is_recoverable_error,  # Use centralized check instead of hardcoding categories
@@ -3516,13 +3515,6 @@ def process_multiple_pages(
         else:
             logger.warning("Session log FileHandler not found - LoggerInterceptor not installed")
 
-    # Create OLD error tracker for backward compatibility during migration
-    # WHY: Some code paths still check error_tracker (will be removed in later steps)
-    # TODO: Remove this after full integration is complete
-    error_tracker = SessionErrorTracker(
-        consecutive_threshold=3, quota_immediate_stop=True
-    )
-
     # NOTE: Logging is already suppressed in main_workflow before this function is called
     # Do NOT suppress again here or it will create conflicts with handler restoration
 
@@ -3877,7 +3869,7 @@ def display_scraping_summary(
     urls: List[str],
     temp_folder: Path,
     error_log_file: Path,
-    error_tracker: Optional[SessionErrorTracker] = None,
+    error_collector: Optional[ErrorCollector] = None,
 ) -> None:
     summary_data = {
         "Base URL": urls[0] if urls else "N/A",
@@ -3904,19 +3896,19 @@ def display_scraping_summary(
 
     # Build root cause analysis section if there were errors
     root_cause_section = ""
-    if error_tracker and error_tracker.total_errors > 0:
+    if error_collector and error_collector.total_errors > 0:
         root_cause_section = "\n"
         root_cause_section += "=" * 60 + "\n"
         root_cause_section += "🔍 ROOT CAUSE ANALYSIS\n"
         root_cause_section += "=" * 60 + "\n"
 
         # Primary failure reason
-        primary_reason = error_tracker.get_primary_failure_reason()
+        primary_reason = error_collector.get_primary_failure_reason()
         if primary_reason:
             root_cause_section += f"\n⚠️  Primary failure: {primary_reason}\n"
 
         # Error breakdown by category
-        error_summary = error_tracker.get_error_summary()
+        error_summary = error_collector.get_error_summary()
         if error_summary:
             root_cause_section += "\n📊 Error breakdown:\n"
             for category, count in sorted(
@@ -3926,8 +3918,8 @@ def display_scraping_summary(
                 root_cause_section += f"   • {desc}: {count} occurrence(s)\n"
 
         # Circuit breaker status
-        if error_tracker.circuit_breaker.is_triggered:
-            root_cause_section += f"\n🛑 Processing stopped: {error_tracker.circuit_breaker.trigger_reason}\n"
+        if error_collector.is_tripped:
+            root_cause_section += f"\n🛑 Processing stopped: {error_collector.trigger_reason}\n"
 
         root_cause_section += "=" * 60 + "\n"
 
@@ -3953,7 +3945,7 @@ def display_scraping_summary(
         print(SUCCESS_SEPARATOR)
         print("✅ XML Extraction Successful.")
         print(summary_box)
-        if error_tracker and error_tracker.total_errors > 0:
+        if error_collector and error_collector.total_errors > 0:
             # Show any warnings/errors that occurred during successful run
             print(root_cause_section)
         print(data_safety_section)
@@ -3979,7 +3971,7 @@ def main_workflow(
     no_tui: bool = False,
     mock: bool = False,
     limit: Optional[int] = None,
-) -> Dict[str, Union[Optional[str], float, int, Optional[SessionErrorTracker]]]:
+) -> Dict[str, Union[Optional[str], float, int, Optional[ErrorCollector]]]:
     global progress_tracker, total_cost
     """
     Executes the Web API Retrieval and XML Extraction workflow.
@@ -4035,7 +4027,7 @@ def main_workflow(
         print(INFO_SEPARATOR)
 
     result: Dict[
-        str, Union[Optional[str], float, int, Optional[SessionErrorTracker]]
+        str, Union[Optional[str], float, int, Optional[ErrorCollector]]
     ] = {
         "result": None,
         "total_cost": 0.0,
@@ -4278,7 +4270,7 @@ def main_workflow(
                 )
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
-            xml_result, batch_error_tracker = process_multiple_pages(
+            xml_result, batch_error_collector = process_multiple_pages(
                 urls,
                 pricing_info,
                 num_threads,
@@ -4287,8 +4279,8 @@ def main_workflow(
                 handlers_and_level,
                 str(session_log_path),
             )
-            # Store error tracker in result for summary display
-            result["error_tracker"] = batch_error_tracker
+            # NEW SYSTEM: Store error_collector in result for summary display
+            result["error_collector"] = batch_error_collector
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
                 # Clean output - counts will show in summary table
@@ -4424,7 +4416,7 @@ def start_resume_mode(json_file_path: str) -> None:
         urls,
         temp_folder,
         error_log_file,
-        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+        cast(Optional[ErrorCollector], result.get("error_collector")),
     )
 
 
@@ -4594,7 +4586,7 @@ def start_single_scrape(
         [url],
         temp_folder,
         error_log_file,
-        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+        cast(Optional[ErrorCollector], result.get("error_collector")),
     )
 
 
@@ -4663,7 +4655,7 @@ def start_batch_scrape(
         [url],
         temp_folder,
         error_log_file,
-        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+        cast(Optional[ErrorCollector], result.get("error_collector")),
     )
 
 
