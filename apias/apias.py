@@ -320,35 +320,18 @@ def configure_logging_for_tui(no_tui: bool) -> None:
         logger.setLevel(logging.DEBUG)
 
 
-# Store original stdout/stderr for restoration
-_original_stdout: Optional[Any] = None
-_original_stderr: Optional[Any] = None
-
-
-class NullWriter:
-    """A writer that discards all output - used to suppress print() during TUI."""
-
-    def write(self, _: str) -> int:
-        return 0
-
-    def flush(self) -> None:
-        pass
-
-
 def suppress_console_logging() -> list[logging.Handler]:
     """
-    Suppress ALL console output including logging and print() statements.
+    Suppress console logging by removing StreamHandlers.
     Returns the removed handlers so they can be restored later.
 
-    This is CRITICAL for Rich TUI to work properly:
-    - Removes all logging StreamHandlers
-    - Redirects stdout/stderr to null to suppress print() calls
-    - Prevents any text from corrupting the alternate screen buffer
+    This prevents logger.info/warning/error from corrupting the Rich TUI.
+    Rich's Live display uses its own Console which bypasses Python logging.
 
-    DO NOT remove any part of this - the TUI will become a chaos of errors.
+    NOTE: We do NOT redirect stdout/stderr because Rich needs them to render.
+    The TUI uses screen=True which enables alternate screen buffer mode,
+    keeping all Rich output separate from normal terminal output.
     """
-    global _original_stdout, _original_stderr
-
     root_logger = logging.getLogger()
     removed_handlers: list[logging.Handler] = []
 
@@ -363,34 +346,16 @@ def suppress_console_logging() -> list[logging.Handler]:
             root_logger.removeHandler(handler)
             removed_handlers.append(handler)
 
-    # Also suppress stdout/stderr to catch print() calls
-    # This prevents ANY text from leaking into the TUI display
-    _original_stdout = sys.stdout
-    _original_stderr = sys.stderr
-    sys.stdout = NullWriter()
-    sys.stderr = NullWriter()
-
     return removed_handlers
 
 
 def restore_console_logging(handlers: list[logging.Handler]) -> None:
     """
-    Restore console logging handlers and stdout/stderr.
+    Restore console logging handlers.
 
     Args:
         handlers: List of handlers to restore (returned by suppress_console_logging)
     """
-    global _original_stdout, _original_stderr
-
-    # Restore stdout/stderr first
-    if _original_stdout is not None:
-        sys.stdout = _original_stdout
-        _original_stdout = None
-    if _original_stderr is not None:
-        sys.stderr = _original_stderr
-        _original_stderr = None
-
-    # Then restore logging handlers
     if handlers:
         root_logger = logging.getLogger()
         for handler in handlers:

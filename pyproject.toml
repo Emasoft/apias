@@ -4,23 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apias"
-version = "0.1.4"
+version = "0.1.14"
 description = "AI powered API documentation scraper and converter"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Emanuele Sabetta", email = "713559+Emasoft@users.noreply.github.com"},
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
     "requests>=2.31.0",
@@ -32,6 +32,7 @@ dependencies = [
     "openai[aiohttp]>=2.8.1",
     "rich>=14.2.0",
     "defusedxml>=0.7.1",
+    "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
@@ -103,10 +104,32 @@ ignore_missing_imports = true
 module = ["requests", "requests.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["openai", "openai.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["rich", "rich.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["defusedxml", "defusedxml.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pytest", "pytest.*", "_pytest", "_pytest.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = "-ra -q --cov=apias --cov-report=term-missing"
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (skip with: -m 'not slow')",
+    "mock_api: tests using mock API - no costs (run with: -m mock_api)",
+    "real_api: tests using real OpenAI API - requires OPENAI_API_KEY (run with: -m real_api)",
+]
+asyncio_mode = "strict"
 
 [tool.coverage.run]
 branch = true
@@ -182,3 +205,19 @@ skip-magic-trailing-comma = false
 line-ending = "auto"
 docstring-code-format = true
 docstring-code-line-length = "dynamic"
+
+[dependency-groups]
+dev = [
+    "types-pyyaml>=6.0.12.20250915",
+]
+
+# uv configuration
+[tool.uv]
+# Publishing configuration
+publish-url = "https://upload.pypi.org/legacy/"
+
+# Index configuration for publishing
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/legacy/"
+publish-url = "https://test.pypi.org/legacy/"

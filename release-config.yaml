@@ -1,0 +1,234 @@
+# =============================================================================
+# Release Pipeline Configuration - APIAS Project
+# =============================================================================
+# This config is tailored for APIAS: a single-branch (main) Python project.
+# Only the 'stable' channel is enabled since we have no develop/test/staging.
+#
+# For multi-branch workflows, enable additional channels and define pipeline.
+# =============================================================================
+schema_version: "2.1"
+
+# =============================================================================
+# Project Workflow Mode
+# =============================================================================
+# Defines how this project handles releases:
+#   - "single-branch": All releases from one branch (e.g., main)
+#   - "multi-branch": Promotion pipeline (dev -> test -> staging -> release)
+workflow:
+  mode: "single-branch"
+  primary_branch: "main"
+
+# =============================================================================
+# Branch Pipeline (only used if mode: "multi-branch")
+# =============================================================================
+# For APIAS, we only have 'main', so only the release stage is defined.
+# Uncomment other stages if you create develop/test/staging branches.
+pipeline:
+  # release is the only active stage for this project
+  release:
+    branch: "main"
+    channel: "stable"
+    promotes_to: null
+    protected: true
+
+  # DISABLED - These branches don't exist in APIAS
+  # Uncomment and enable if you create these branches:
+  #
+  # dev:
+  #   branch: "develop"
+  #   channel: "alpha"
+  #   promotes_to: "test"
+  #   enabled: false
+  #
+  # test:
+  #   branch: "test"
+  #   channel: "beta"
+  #   promotes_to: "staging"
+  #   enabled: false
+  #
+  # staging:
+  #   branch: "staging"
+  #   channel: "rc"
+  #   promotes_to: "release"
+  #   enabled: false
+
+# =============================================================================
+# Hotfix Configuration
+# =============================================================================
+# Hotfixes are DISABLED for single-branch workflow.
+# Enable if you want to support hotfix/* branches.
+hotfix:
+  enabled: false
+  branch_pattern: "hotfix/*"
+  target: "main"
+  channel: "stable"
+  tag_prefix: "hotfix-v"
+  # No backport targets since we only have main
+  backport_to: []
+
+# =============================================================================
+# Release Channels
+# =============================================================================
+# IMPORTANT: Only 'stable' is enabled for this single-branch project.
+# The script will REJECT any channel that is not enabled.
+channels:
+  # ENABLED - The only channel for this project
+  stable:
+    enabled: true                 # <-- This channel IS available
+    suffix: ""
+    tag_format: "v{version}"
+    prerelease: false
+    build:
+      wheel: true
+      sdist: true
+      dev: false
+    publish:
+      pypi: true
+      github: true
+      npm: false
+    github_release:
+      prerelease: false
+      draft: false
+      generate_notes: true
+
+  # DISABLED - Enable these if you create develop/test/staging branches
+  alpha:
+    enabled: false                # <-- This channel is NOT available
+    suffix: "a"
+    tag_format: "v{version}"
+    prerelease: true
+    build:
+      wheel: true
+      sdist: true
+      dev: false
+    publish:
+      pypi: false
+      github: true
+      npm: false
+    github_release:
+      prerelease: true
+      draft: false
+      generate_notes: true
+
+  beta:
+    enabled: false                # <-- This channel is NOT available
+    suffix: "b"
+    tag_format: "v{version}"
+    prerelease: true
+    build:
+      wheel: true
+      sdist: true
+      dev: false
+    publish:
+      pypi: false
+      github: true
+      npm: false
+    github_release:
+      prerelease: true
+      draft: false
+      generate_notes: true
+
+  rc:
+    enabled: false                # <-- This channel is NOT available
+    suffix: "rc"
+    tag_format: "v{version}"
+    prerelease: true
+    build:
+      wheel: true
+      sdist: true
+      dev: false
+    publish:
+      pypi: false
+      github: true
+      npm: false
+    github_release:
+      prerelease: true
+      draft: false
+      generate_notes: true
+
+# =============================================================================
+# Build Configuration
+# =============================================================================
+build:
+  command: "uv build"
+  artifacts:
+    wheel:
+      enabled: true
+      args: []
+    sdist:
+      enabled: true
+      args: []
+    dev:
+      enabled: false
+      command: "uv build --dev"
+  clean_before: true
+  verify:
+    enabled: true
+    command: "uv run python -m twine check dist/* 2>/dev/null || true"
+
+# =============================================================================
+# Version Sync
+# =============================================================================
+version_sync:
+  primary: "pyproject.toml"
+  files:
+    - path: "apias/__init__.py"
+      pattern: '^__version__ = ".*"'
+      template: '__version__ = "{version}"'
+
+# =============================================================================
+# Changelog
+# =============================================================================
+changelog:
+  generator: "git-cliff"
+  config: "cliff.toml"
+  output: "CHANGELOG.md"
+  release_notes:
+    enabled: true
+    template: ".release-notes-{version}.md"
+    cleanup_after: true
+
+# =============================================================================
+# Safety & Validation
+# =============================================================================
+safety:
+  require_clean: true
+  require_synced: true
+  block_prerelease_pypi: true
+  confirm_before_pypi: true
+  protected_branches:
+    - "main"
+  blocked_branches:
+    - "wip/*"
+    - "experiment/*"
+
+# =============================================================================
+# Publishing
+# =============================================================================
+publishing:
+  pypi:
+    enabled: true
+    token_env: "UV_PUBLISH_TOKEN"
+    test_pypi:
+      enabled: true
+      token_env: "UV_TEST_PUBLISH_TOKEN"
+      url: "https://test.pypi.org/legacy/"
+  github:
+    enabled: true
+    upload_artifacts: true
+    artifact_pattern: "dist/*"
+  npm:
+    enabled: false
+
+# =============================================================================
+# Hooks
+# =============================================================================
+hooks:
+  pre_release: []
+  post_bump: []
+  post_build: []
+  post_release: []
+  on_failure: []
+  hotfix:
+    pre_release: []
+    post_release: []

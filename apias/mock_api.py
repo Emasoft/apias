@@ -17,17 +17,24 @@ from typing import Tuple, Optional, Any
 class MockAPIClient:
     """Mock OpenAI API client that simulates realistic behavior"""
 
-    def __init__(self) -> None:
+    def __init__(self, deterministic: bool = False) -> None:
+        """
+        Initialize mock client.
+
+        Args:
+            deterministic: If True, disables random failures and jitter for predictable testing
+        """
         self.total_cost = 0.0
         self.call_count = 0
+        self.deterministic = deterministic
 
     async def responses_create(self, **kwargs: Any) -> "MockResponse":
         """
         Simulate OpenAI API call with realistic delays and occasional failures.
 
         Simulates:
-        - Variable latency (300ms - 2500ms)
-        - ~10% failure rate on first attempt
+        - Variable latency (300ms - 2500ms) unless deterministic mode
+        - ~10% failure rate on first attempt unless deterministic mode
         - Realistic cost calculation
         """
         self.call_count += 1
@@ -40,13 +47,19 @@ class MockAPIClient:
         # Simulate realistic API latency based on prompt size
         base_delay = 0.3  # 300ms minimum
         size_factor = prompt_size / 100000  # Longer prompts take longer
-        random_jitter = random.uniform(0, 0.5)
-        delay = min(base_delay + size_factor + random_jitter, 2.5)
+
+        if self.deterministic:
+            # Predictable delay for testing
+            delay = min(base_delay + size_factor, 2.5)
+        else:
+            # Random jitter for realistic simulation
+            random_jitter = random.uniform(0, 0.5)
+            delay = min(base_delay + size_factor + random_jitter, 2.5)
 
         await asyncio.sleep(delay)
 
-        # Simulate occasional failures (~10% on first attempt)
-        if random.random() < 0.1:
+        # Simulate occasional failures (~10% on first attempt) unless deterministic
+        if not self.deterministic and random.random() < 0.1:
             raise MockAPIException("Simulated API failure - will retry")
 
         # Calculate realistic cost (based on GPT-4 pricing approximation)
@@ -143,6 +156,7 @@ async def mock_call_openai_api(
     prompt: str,
     pricing_info: dict[str, Any],
     mock_client: Optional[MockAPIClient] = None,
+    deterministic: bool = False,
 ) -> Tuple[Optional[str], float]:
     """
     Mock version of call_openai_api that simulates realistic behavior.
@@ -151,12 +165,13 @@ async def mock_call_openai_api(
         prompt: The prompt to send (used for size calculations)
         pricing_info: Pricing information (ignored in mock)
         mock_client: Optional shared mock client for cost tracking
+        deterministic: If True, disables random failures for predictable testing
 
     Returns:
         Tuple of (xml_content, cost)
     """
     if mock_client is None:
-        mock_client = MockAPIClient()
+        mock_client = MockAPIClient(deterministic=deterministic)
 
     try:
         response = await mock_client.responses_create(

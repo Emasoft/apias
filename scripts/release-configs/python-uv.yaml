@@ -1,0 +1,82 @@
+# =============================================================================
+# Release Configuration: Python Project (uv managed)
+# =============================================================================
+# Standard configuration for Python projects using uv package manager.
+# Single-branch workflow with stable releases to PyPI.
+#
+# Usage: Copy to your project root as release-config.yaml
+# =============================================================================
+schema_version: "1.0"
+
+project:
+  name: "your-project-name"
+  version_files:
+    - path: "src/your_project/__init__.py"
+      search: '^__version__ = ".*"'
+      replace: '__version__ = "{version}"'
+  package_manager: "uv"
+  build_command: "uv build"
+  publish_command: "uv publish"
+
+git:
+  primary_branch: "main"
+  tag_format: "v{version}"
+  commit_messages:
+    release: "chore(release): release {channel} {version}"
+
+channels:
+  alpha:
+    enabled: true
+    default_branch: "main"
+    allowed_branches: ["main", "develop"]
+    prerelease: true
+    publish_pypi: false
+    github_release: true
+
+  beta:
+    enabled: true
+    default_branch: "main"
+    allowed_branches: ["main", "develop"]
+    prerelease: true
+    publish_pypi: false
+    github_release: true
+
+  rc:
+    enabled: true
+    default_branch: "main"
+    allowed_branches: ["main"]
+    prerelease: true
+    publish_pypi: false
+    github_release: true
+
+  stable:
+    enabled: true
+    default_branch: "main"
+    allowed_branches: ["main"]
+    prerelease: false
+    publish_pypi: true
+    github_release: true
+
+changelog:
+  generator: "git-cliff"
+  file: "CHANGELOG.md"
+  config: "cliff.toml"
+  release_notes:
+    enabled: true
+    cleanup: true
+
+publishing:
+  pypi:
+    enabled: true
+    token_env: "UV_PUBLISH_TOKEN"
+
+safety:
+  require_clean: true
+  require_synced: true
+  block_prerelease_pypi: true
+
+hooks:
+  pre_release:
+    - "uv run pytest tests/ -q"
+  post_build:
+    - "uv run python -m twine check dist/* 2>/dev/null || true"

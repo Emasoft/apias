@@ -197,3 +197,22 @@ CLAUDE.md
 
 # UV package manager
 uv.lock
+
+# Logs directory (contents ignored, folder tracked)
+logs/
+
+# Development folders (not tracked)
+scripts_dev/
+docs_dev/
+libs_dev/
+examples_dev/
+
+# Scraping output folders
+output_*/
+scraped_*/
+
+# Release notes generated during release
+.release-notes-*.md
+
+# Ruby LSP (VS Code extension)
+.ruby-lsp/

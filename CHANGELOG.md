@@ -1,36 +1,100 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-### Added
-- Initial project setup
-- Basic API documentation scraping functionality
-- Support for multiple documentation formats
-- Command-line interface
+### Bug Fixes
+- Remove double slimdown_html call and double-escaping bug
+- Critical fixes for singleton detection, timeouts, and retry limits
+- Correct GPT-5 Nano model identifier
+- Revert model name to correct format without openai/ prefix
+- Remove sequential delays from parallel chunk processing
+- Remove all remaining @retry decorator references
+- Fix Spinner thread RuntimeError in Playwright installation
+- Dramatically increase API timeout to account for retries
+- Resolve critical XML quality issues for production readiness
+- Resolve Python class detection ambiguity in HTML parsing
+- Suppress DEBUG logs when TUI is active for clean display
+- Move TUI creation before scraping to show waiting screen first
+- Suppress scraper print statements when TUI is active
+- Enable real-time TUI updates during background processing
+- Remove thread-unsafe live.update() call from background thread
+- Add final TUI update and enable full-screen mode
+- Make TUI use full terminal height and adapt to window resize
+- Fix progress regression, add spinners, improve screen filling
+- Stop resetting chunks dictionary in call_llm_to_convert_html_to_xml
+- Correct return value unpacking in batch mode processing
+- Prevent TUI jumping by suppressing console logging during batch mode
+- Comprehensive project audit fixes
 
-### Changed
-- None
+### Features
+- Optimize GPT-5 Nano chunking and add singleton protection
+- Implement parallel chunk processing with ThreadPoolExecutor
+- Migrate to OpenAI Python library for better error handling
+- Convert to AsyncOpenAI for true parallel processing and remove tenacity
+- Enhance XML quality with improved LLM prompt and smart class merging
+- Add --scrape-only mode to scrape websites without AI processing
+- Implement XML validation retry for 100% success rate
+- Add Rich TUI infrastructure with mock API support
+- Integrate Rich TUI with real-time chunk monitoring and final summary
+- Display TUI for single chunks too
+- Add keyboard controls to TUI - Press SPACE to start/stop
+- Implement step-based progress tracking for granular TUI updates
+- Add --limit option to control maximum pages scraped
+- Implement complete batch TUI for multi-URL processing
+- Improve batch TUI with version display, adaptive bars, and fluid updates
+- Add clean merge progress animation and remove messy output
+- Add chunk tracking infrastructure for large page processing
 
-### Deprecated
-- None
+### Miscellaneous Tasks
+- Remove debug logging and display from TUI
 
-### Removed
-- None
+### Refactoring
+- Simplify OpenAI client to use built-in retry and timeout
+- Replace CSS-based classification with semantic content analysis
+- Comprehensive code quality improvements for batch TUI status messages
+## [0.1.4] - 2024-10-26
 
-### Fixed
-- None
+### Bug Fixes
+- Syntax and indentation in process_single_page by @Emasoft
+- Fix syntax errors in apias.py by @Emasoft
+- Remove duplicated code block and fix retry decorator syntax by @Emasoft
 
-### Security
-- None
+### CI/CD
+- Add github token for workflow push access by @Emasoft
+- Add write permissions to workflow by @Emasoft
+- Improve git handling in workflow by @Emasoft
+- Update black to format files by @Emasoft
 
-## [0.1.0] - 2024-01-25
-### Added
-- Initial release
-- Basic functionality for API documentation scraping
-- Support for web-based API documentation
-- Command-line interface for basic operations
+### Features
+- Enhance OpenAI API connection handling by @Emasoft
+
+### Miscellaneous Tasks
+- Clean up MANIFEST.in and add temp dirs to gitignore by @Emasoft
+- Update ruff configuration to ignore specific errors by @Emasoft
+- Extend linter ignore list and remove unused pyi file by @Emasoft
+- Update linter configuration and workflow by @Emasoft
+- Update linter configuration and add unsafe fixes by @Emasoft
+- Update ruff configuration to new format and add more ignores by @Emasoft
+- Add type stubs for dependencies by @Emasoft
+- Add missing type annotations by @Emasoft
+
+### Styling
+- Apply automatic fixes by @actions-user
+- Apply black formatting by @actions-user
+- Apply black formatting by @actions-user
+## [0.1.2] - 2024-10-26
+
+### Bug Fixes
+- Update setuptools_scm configuration for clean version numbers by @Emasoft
+
+### Miscellaneous Tasks
+- Add mailmap for email privacy by @Emasoft
+- Cleanup temp files by @Emasoft
+- Update version to 0.1.2 with consistent version handling by @Emasoft
+---
+*Generated by [git-cliff](https://github.com/orhun/git-cliff)*

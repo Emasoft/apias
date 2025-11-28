@@ -1,0 +1,77 @@
+# =============================================================================
+# Release Configuration: JavaScript/TypeScript (npm or pnpm)
+# =============================================================================
+# Template for Node.js projects. Supports npm and pnpm.
+# Copy to your project root as release-config.yaml
+# =============================================================================
+schema_version: "1.0"
+
+project:
+  name: "your-package-name"
+
+  # Version files to sync
+  version_files:
+    - path: "package.json"
+      search: '"version": "[^"]*"'
+      replace: '"version": "{version}"'
+
+  # Package manager: "npm" or "pnpm"
+  package_manager: "npm"  # Change to "pnpm" if using pnpm
+
+  # Build and publish commands
+  build_command: "npm run build"      # or: pnpm run build
+  publish_command: "npm publish"       # or: pnpm publish
+
+git:
+  primary_branch: "main"
+  tag_format: "v{version}"
+  commit_messages:
+    release: "chore(release): {version}"
+
+channels:
+  alpha:
+    enabled: true
+    default_branch: "main"
+    prerelease: true
+    publish_pypi: false  # Not applicable for JS
+    github_release: true
+
+  beta:
+    enabled: true
+    default_branch: "main"
+    prerelease: true
+    publish_pypi: false
+    github_release: true
+
+  rc:
+    enabled: true
+    default_branch: "main"
+    prerelease: true
+    publish_pypi: false
+    github_release: true
+
+  stable:
+    enabled: true
+    default_branch: "main"
+    prerelease: false
+    publish_pypi: false  # Uses npm instead
+    github_release: true
+
+changelog:
+  generator: "git-cliff"
+  file: "CHANGELOG.md"
+  config: "cliff.toml"
+
+# npm publishing
+publishing:
+  npm:
+    enabled: true
+    token_env: "NPM_TOKEN"
+
+safety:
+  require_clean: true
+  require_synced: true
+
+hooks:
+  pre_release:
+    - "npm test"
