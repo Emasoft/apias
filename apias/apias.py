@@ -229,18 +229,16 @@ def update_batch_status(
         # But allow our own timestamp brackets through
         escaped_msg = escaped_msg.replace(f"\\[{timestamp}\\]", f"[{timestamp}]")
 
-        # CRITICAL: Do NOT log when batch TUI is active - all output goes through TUI
-        # Logging would break the TUI display with raw text appearing on screen
-        # Only log in no_tui mode (when batch_tui.no_tui is True)
-        if batch_tui.no_tui:
-            logger.info(f"Task #{task_id}: {message}")
+        # Log all status updates to session.log for debugging
+        # Console output is suppressed in batch TUI mode (StreamHandlers removed)
+        # but file logging (session.log) continues normally via FileHandlers
+        logger.info(f"Task #{task_id}: {message}")
 
         # Update the batch TUI
         batch_tui.update_task(task_id, state, status_message=escaped_msg, **kwargs)
     except Exception as e:
-        # Fail gracefully if status update fails - only log in no_tui mode
-        if batch_tui and batch_tui.no_tui:
-            logger.warning(f"Failed to update batch TUI status: {e}")
+        # Fail gracefully if status update fails - log the error to session.log
+        logger.warning(f"Failed to update batch TUI status: {e}")
 
 
 # Global variables for cost tracking
@@ -324,9 +322,53 @@ def configure_logging_for_tui(no_tui: bool) -> None:
         logger.setLevel(logging.DEBUG)
 
 
+def setup_session_log_file(session_log_path: Path) -> logging.FileHandler:
+    """
+    Set up a file handler for logging ALL errors/warnings to a session log file.
+
+    This log file captures all errors that occur during processing, providing:
+    - Complete error details for debugging
+    - Traceback information for exceptions
+    - Timeline of what went wrong
+    - Reference for user when resuming after errors
+
+    Args:
+        session_log_path: Path to the session log file
+
+    Returns:
+        The FileHandler that was added to the root logger
+    """
+    root_logger = logging.getLogger()
+
+    # Create file handler with detailed formatting
+    file_handler = logging.FileHandler(session_log_path, mode="a", encoding="utf-8")
+    file_handler.setLevel(logging.DEBUG)  # Capture everything
+
+    # Detailed format for file logging - includes timestamp, level, module, and message
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    file_handler.setFormatter(formatter)
+
+    root_logger.addHandler(file_handler)
+
+    return file_handler
+
+
 def suppress_console_logging() -> tuple[list[logging.Handler], int]:
     """
-    Suppress console logging by removing StreamHandlers AND raising log level.
+    Suppress ONLY console logging while preserving file logging.
+
+    CRITICAL DESIGN DECISION: This function removes StreamHandlers (console) but
+    preserves FileHandlers (session.log). This ensures:
+    - TUI stays clean with no console output corruption
+    - All errors/warnings are logged to session.log for debugging
+    - Users can review detailed errors later without TUI breaking
+
+    WHY: Setting level to CRITICAL+1 (old approach) would suppress ALL logging,
+    including file logging. That's wrong - we want errors logged to file!
+
     Returns the removed handlers and original level so they can be restored later.
 
     This prevents logger.info/warning/error from corrupting the Rich TUI.
@@ -340,7 +382,8 @@ def suppress_console_logging() -> tuple[list[logging.Handler], int]:
     removed_handlers: list[logging.Handler] = []
     original_level = root_logger.level
 
-    # Remove all console logging handlers
+    # Remove ONLY console logging handlers (StreamHandlers to stdout/stderr)
+    # CRITICAL: PRESERVE FileHandlers so errors still go to session.log!
     for handler in root_logger.handlers[
         :
     ]:  # Copy list to avoid modification during iteration
@@ -351,9 +394,10 @@ def suppress_console_logging() -> tuple[list[logging.Handler], int]:
             root_logger.removeHandler(handler)
             removed_handlers.append(handler)
 
-    # Also raise logging level to CRITICAL to suppress all normal logging
-    # This ensures that even if a handler wasn't removed, it won't log
-    root_logger.setLevel(logging.CRITICAL + 1)  # Higher than CRITICAL = nothing logs
+    # CRITICAL: DO NOT raise logging level to CRITICAL+1!
+    # Keep level at INFO/DEBUG so errors still flow to FileHandlers (session.log)
+    # Only console output is suppressed (by removing StreamHandlers above)
+    # File logging continues normally for debugging
 
     return removed_handlers, original_level
 
@@ -3291,6 +3335,7 @@ def process_multiple_pages(
     scrape_only: bool = False,
     no_tui: bool = False,
     handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
+    session_log_path: Optional[str] = None,
 ) -> Tuple[Optional[str], Optional[SessionErrorTracker]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
@@ -3302,6 +3347,7 @@ def process_multiple_pages(
         scrape_only: If True, skip AI processing
         no_tui: If True, disable Rich TUI (use simple spinner)
         handlers_and_level: Tuple of (handlers, level) from suppress_console_logging() for restoration
+        session_log_path: Optional path to session.log file for summary display
     """
     from rich.console import Console
     from rich.text import Text
@@ -3460,6 +3506,13 @@ def process_multiple_pages(
             # Use centralized pause duration - DO NOT hardcode timing values
             time.sleep(BATCH_FINAL_STATE_PAUSE)
             batch_tui.stop_live_display()
+
+            # Show session summary with log location
+            # Calculate error count from error_tracker
+            error_count = len(error_tracker.errors) if error_tracker else 0
+            if session_log_path:
+                batch_tui.show_session_summary(str(session_log_path), error_count)
+
             # DON'T restore logging yet - keep it suppressed during merge
         else:
             spinner.end()
@@ -3725,14 +3778,25 @@ def main_workflow(
     # Configure logging level based on TUI mode
     configure_logging_for_tui(no_tui)
 
+    # Set up session log file to capture ALL errors/warnings for debugging
+    # This happens BEFORE suppressing console, so all errors go to file even if not shown in TUI
+    # The session log provides complete error details for troubleshooting and resume operations
+    session_log_path = temp_folder / "session.log"
+    session_file_handler = setup_session_log_file(session_log_path)
+    logger.info(f"Session log file: {session_log_path}")
+
     # Suppress console logging IMMEDIATELY in batch mode with TUI
     # This prevents ANY logger output before TUI starts
+    # CRITICAL: File logging (session.log) continues even when console is suppressed!
     handlers_and_level: tuple[list[logging.Handler], int] = (
         [],
         logging.INFO,
     )  # Default if not batch mode with TUI
     if mode == "batch" and not no_tui:
         handlers_and_level = suppress_console_logging()
+        logger.info(
+            "Console logging suppressed - all output will go to TUI and session.log"
+        )
     else:
         # Only show initial messages if NOT in batch TUI mode
         print(INFO_SEPARATOR)
@@ -3992,7 +4056,13 @@ def main_workflow(
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
             xml_result, batch_error_tracker = process_multiple_pages(
-                urls, pricing_info, num_threads, scrape_only, no_tui, handlers_and_level
+                urls,
+                pricing_info,
+                num_threads,
+                scrape_only,
+                no_tui,
+                handlers_and_level,
+                str(session_log_path),
             )
             # Store error tracker in result for summary display
             result["error_tracker"] = batch_error_tracker

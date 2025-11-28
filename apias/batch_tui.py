@@ -759,8 +759,13 @@ class BatchTUIManager(BaseTUIManager):
         """
         Show a graceful dialog when circuit breaker stops processing.
 
-        This provides clear, user-friendly information about what happened
-        and what actions the user can take.
+        Provides clear, user-friendly information including:
+        - What happened (error reason)
+        - Progress status (X/Y URLs completed)
+        - Data safety reassurance (nothing lost)
+        - Exact file locations (progress.json, session.log, output)
+        - Exact resume command (copy-paste ready)
+        - Next steps (what to do)
 
         Args:
             trigger_reason: The reason the circuit breaker tripped
@@ -781,7 +786,7 @@ class BatchTUIManager(BaseTUIManager):
         stop_sym = Symbols.get(Symbols.STOP)
         self.console.print(
             Panel(
-                f"{stop_sym} [bold red]PROCESSING STOPPED[/bold red] {stop_sym}",
+                f"{stop_sym} [bold red]PROCESSING PAUSED[/bold red] {stop_sym}",
                 border_style="red",
                 expand=False,
             )
@@ -793,35 +798,172 @@ class BatchTUIManager(BaseTUIManager):
         self.console.print(
             Panel(
                 f"[bold yellow]{warning} {trigger_reason}[/bold yellow]",
-                title="[bold red]Reason[/bold red]",
+                title="[bold red]What Happened[/bold red]",
                 border_style="yellow",
                 expand=False,
             )
         )
         self.console.print()
 
-        # Progress saved info
+        # Data safety reassurance panel
         check = Symbols.get(Symbols.CHECK)
-        self.console.print(f"[green]{check}[/green] Your progress has been saved.")
-        self.console.print(
-            f"[green]{check}[/green] Completed URLs: {self.stats.completed}/{self.stats.total_urls}"
-        )
-        if output_dir:
-            self.console.print(f"[green]{check}[/green] Output directory: {output_dir}")
-        self.console.print()
-
-        # Actions panel
-        actions = [
-            "[cyan]1.[/cyan] Check your OpenAI account for credits/rate limits",
-            "[cyan]2.[/cyan] Wait a few minutes if rate limited",
-            "[cyan]3.[/cyan] Resume with: [bold]apias --resume <progress.json>[/bold]",
+        info_sym = Symbols.get(Symbols.INFO)  # Use INFO symbol for reassurance
+        safety_info = [
+            f"[green]{info_sym}[/green] [bold green]Your data is completely safe![/bold green]",
+            "",
+            f"[green]{check}[/green] Progress: {self.stats.completed}/{self.stats.total_urls} URLs completed successfully",
+            f"[green]{check}[/green] All processed data has been saved",
+            f"[green]{check}[/green] You can resume exactly where you left off",
+            f"[green]{check}[/green] No credits wasted - completed work is preserved",
         ]
-        info = Symbols.get(Symbols.INFO)
+
         self.console.print(
             Panel(
-                "\n".join(actions),
-                title=f"[bold cyan]{info} Recommended Actions[/bold cyan]",
+                "\n".join(safety_info),
+                title=f"[bold green]{info_sym} Data Safety[/bold green]",
+                border_style="green",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+        # File locations panel
+        file_sym = Symbols.get(Symbols.FILE)
+        folder_sym = Symbols.get(Symbols.FOLDER)
+
+        # Build file paths
+        from pathlib import Path
+
+        progress_file = Path(output_dir) / "progress.json" if output_dir else None
+        session_log = Path(output_dir) / "session.log" if output_dir else None
+
+        file_info = []
+        if progress_file:
+            file_info.append(
+                f"[cyan]{file_sym}[/cyan] Progress file: [bold]{progress_file}[/bold]"
+            )
+        if session_log:
+            file_info.append(
+                f"[cyan]{file_sym}[/cyan] Error log: [bold]{session_log}[/bold]"
+            )
+        if output_dir:
+            file_info.append(
+                f"[cyan]{folder_sym}[/cyan] Output directory: [bold]{output_dir}[/bold]"
+            )
+
+        if file_info:
+            self.console.print(
+                Panel(
+                    "\n".join(file_info),
+                    title="[bold cyan]File Locations[/bold cyan]",
+                    border_style="cyan",
+                    expand=False,
+                )
+            )
+            self.console.print()
+
+        # Resume command panel
+        if progress_file:
+            resume_cmd = f'apias --resume "{progress_file}"'
+            info = Symbols.get(Symbols.INFO)
+            self.console.print(
+                Panel(
+                    f"[bold white]{resume_cmd}[/bold white]",
+                    title=f"[bold yellow]{info} Resume Command (copy this)[/bold yellow]",
+                    border_style="yellow",
+                    expand=False,
+                )
+            )
+            self.console.print()
+
+        # Next steps panel
+        steps_info = [
+            "[cyan]1.[/cyan] [bold]Add credits[/bold] to your OpenAI account (if quota exceeded)",
+            "[cyan]2.[/cyan] [bold]Wait a few minutes[/bold] if rate limited (usually 1-5 minutes)",
+            "[cyan]3.[/cyan] [bold]Check session.log[/bold] for detailed error information",
+            "[cyan]4.[/cyan] [bold]Resume when ready[/bold] using the command above",
+        ]
+
+        self.console.print(
+            Panel(
+                "\n".join(steps_info),
+                title="[bold cyan]Next Steps[/bold cyan]",
                 border_style="cyan",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+        # Closing reassurance
+        self.console.print("[dim]Press Enter to exit...[/dim]")
+        input()  # Wait for user acknowledgment
+
+    def show_session_summary(self, session_log_path: str, error_count: int = 0) -> None:
+        """
+        Show a summary panel at the end of processing with session log location.
+
+        This provides users with:
+        - Location of the session.log file for debugging
+        - Error count (if any errors occurred)
+        - Reassurance that all errors are logged for review
+        - Final completion status
+
+        Args:
+            session_log_path: Path to the session.log file
+            error_count: Number of errors that occurred (optional)
+        """
+        if self.no_tui:
+            # In no_tui mode, just print the session log location
+            print(f"\n📋 Session log: {session_log_path}")
+            if error_count > 0:
+                print(
+                    f"⚠️  {error_count} errors occurred - check session.log for details"
+                )
+            return
+
+        # Show summary panel with session log location
+        self.console.print()
+        file_sym = Symbols.get(Symbols.FILE)
+        info_sym = Symbols.get(Symbols.INFO)
+        check = Symbols.get(Symbols.CHECK)
+        warning = Symbols.get(Symbols.WARNING)
+
+        summary_lines = []
+
+        # Completion status
+        if error_count == 0:
+            summary_lines.append(
+                f"[green]{check}[/green] [bold green]Processing completed successfully![/bold green]"
+            )
+        else:
+            summary_lines.append(
+                f"[yellow]{warning}[/yellow] [bold yellow]Processing completed with {error_count} errors[/bold yellow]"
+            )
+
+        summary_lines.append("")
+
+        # Session log location
+        summary_lines.append(
+            f"[cyan]{file_sym}[/cyan] Session log: [bold]{session_log_path}[/bold]"
+        )
+
+        # Additional info
+        if error_count > 0:
+            summary_lines.append("")
+            summary_lines.append(
+                f"[dim]{info_sym} Check session.log for detailed error information[/dim]"
+            )
+        else:
+            summary_lines.append("")
+            summary_lines.append(
+                f"[dim]{info_sym} All operations logged to session.log for your records[/dim]"
+            )
+
+        self.console.print(
+            Panel(
+                "\n".join(summary_lines),
+                title=f"[bold cyan]{info_sym} Session Summary[/bold cyan]",
+                border_style="cyan" if error_count == 0 else "yellow",
                 expand=False,
             )
         )
