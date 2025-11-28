@@ -135,13 +135,41 @@ import subprocess
 import threading
 import defusedxml.ElementTree as DefusedET  # Use defusedxml to prevent XXE attacks
 import xml.etree.ElementTree as ET  # For Element class and tree manipulation
-from signal import SIGINT, signal
+from signal import SIGINT, SIGTERM, signal
 import json
 
 # Import TUI and mock API modules
 from .tui import RichTUIManager, ChunkState, ChunkStatus, ProcessingStep
 from .mock_api import MockAPIClient, mock_call_openai_api
 from .batch_tui import BatchTUIManager, URLState
+from .error_handler import (
+    ErrorCategory,
+    ErrorEvent,
+    SessionErrorTracker,
+    classify_openai_error,
+    get_error_description,
+    is_recoverable_error,  # Use centralized check instead of hardcoding categories
+)
+from .config import (
+    # Network timeouts - DO NOT hardcode these values elsewhere
+    HTTP_REQUEST_TIMEOUT,
+    BROWSER_NAVIGATION_TIMEOUT,
+    BROWSER_NETWORK_IDLE_TIMEOUT,
+    SUBPROCESS_TIMEOUT,
+    # API configuration
+    OPENAI_MAX_RETRIES,
+    XML_VALIDATION_MAX_RETRIES,
+    # Batch processing - DO NOT hardcode polling intervals
+    BATCH_TUI_POLL_INTERVAL,
+    SINGLE_PAGE_TUI_POLL_INTERVAL,
+    SPINNER_ANIMATION_INTERVAL,
+    FINAL_STATE_PAUSE,
+    BATCH_FINAL_STATE_PAUSE,
+    # File system
+    TEMP_FOLDER_PREFIX,
+    ERROR_LOG_FILE_NAME,
+    get_system_temp_dir,
+)
 
 
 def validate_xml(xml_string: str) -> bool:
@@ -329,13 +357,17 @@ def restore_console_logging(handlers: list[logging.Handler]) -> None:
             root_logger.addHandler(handler)
 
 
-# Create a temp folder with datetime suffix
-temp_folder = Path(f"temp_{datetime.now().strftime('%Y%m%d_%H%M%S')}")
+# Create a temp folder in OS-specific temp directory with datetime suffix
+# Using get_system_temp_dir() from config ensures proper temp location on all OSes
+# The folder name uses a prefix for easy identification and cleanup
+_temp_folder_name = f"{TEMP_FOLDER_PREFIX}{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+temp_folder = get_system_temp_dir() / _temp_folder_name
 temp_folder.mkdir(exist_ok=True)
 
-# Create an error log file
-error_log_file = temp_folder / "error_log.txt"
-# Create an empty error log file
+# Create an error log file using centralized filename constant
+# This ensures consistent naming across the codebase
+error_log_file = temp_folder / ERROR_LOG_FILE_NAME
+# Create an empty error log file (truncate if exists)
 with open(error_log_file, "w", encoding="utf-8") as f:
     pass
 
@@ -350,17 +382,73 @@ def get_openai_api_key() -> str:
 
 
 # Global flag for graceful shutdown
+# This flag is checked by processing loops to stop cleanly
 shutdown_flag = False
+
+# Track if we've already handled a shutdown signal
+# Prevents double-handling if user presses Ctrl+C multiple times
+_shutdown_handled = False
 
 
 def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
-    global shutdown_flag
-    logger.info("Received interrupt signal. Initiating graceful shutdown...")
+    """
+    Handle interrupt signals (SIGINT/Ctrl+C and SIGTERM) with graceful shutdown.
+
+    Sets shutdown_flag to True so processing loops can exit cleanly.
+    Saves progress to allow resuming later and displays resume instructions.
+
+    DESIGN NOTES:
+    - Does NOT call sys.exit() in the handler - this is an anti-pattern
+    - Instead, sets shutdown_flag and lets the main loop handle exit
+    - On second signal, exits immediately (for users who really want to quit)
+
+    DO NOT:
+    - Call sys.exit() here - it can cause issues with cleanup
+    - Do heavy processing - signal handlers should be fast
+    - Use non-reentrant functions like print() for critical operations
+    """
+    global shutdown_flag, _shutdown_handled
+
+    # On second signal, exit immediately (user really wants to quit)
+    if _shutdown_handled:
+        logger.warning("Second interrupt received. Forcing immediate exit...")
+        # Use os._exit to bypass cleanup - user wants out NOW
+        os._exit(1)
+
+    _shutdown_handled = True
+    signal_name = "SIGINT" if signum == SIGINT else "SIGTERM"
+    logger.info(f"Received {signal_name}. Initiating graceful shutdown...")
     shutdown_flag = True
-    sys.exit(0)
+
+    # Save progress before exiting so user can resume later
+    # We do this in the handler because the main loop may not reach cleanup
+    try:
+        update_progress_file()
+        if progress_file and os.path.exists(progress_file):
+            # Use sys.stderr for signal handler output (more reliable than print)
+            sys.stderr.write("\n")
+            sys.stderr.write("=" * 60 + "\n")
+            sys.stderr.write("  SESSION SAVED - You can resume later!\n")
+            sys.stderr.write("=" * 60 + "\n")
+            sys.stderr.write("\n  To resume this session, run:\n")
+            sys.stderr.write(f'    apias --resume "{progress_file}"\n')
+            sys.stderr.write("\n  Progress has been saved to:\n")
+            sys.stderr.write(f"    {progress_file}\n")
+            sys.stderr.write("=" * 60 + "\n")
+            sys.stderr.write("\n")
+            sys.stderr.flush()
+    except Exception as e:
+        logger.warning(f"Could not save progress on shutdown: {e}")
+
+    # Do NOT call sys.exit() here - let the main loop detect shutdown_flag
+    # and exit cleanly. This allows proper cleanup of resources.
 
 
+# Register signal handlers for graceful shutdown
+# SIGINT: Ctrl+C from terminal
+# SIGTERM: kill command, Docker stop, systemd stop, etc.
 signal(SIGINT, signal_handler)
+signal(SIGTERM, signal_handler)
 
 # ============================
 # Helper Functions from DSL
@@ -910,7 +998,8 @@ class Spinner:
             if not self.pause_event.is_set():
                 self._clear_line()
                 print(f"\r{self.text} {next(self.spinner_chars)}", end="", flush=True)
-            time.sleep(0.1)
+            # Use centralized spinner animation interval - DO NOT hardcode timing values
+            time.sleep(SPINNER_ANIMATION_INTERVAL)
 
     def update_text(self, new_text: str) -> None:
         self.pause()
@@ -1134,8 +1223,11 @@ class Scraper:
                         response = None
                         try:
                             spinner.update_text(f"Loading {url}")
+                            # Use centralized timeout constant from config
                             response = page.goto(
-                                url, wait_until="networkidle", timeout=5000
+                                url,
+                                wait_until="networkidle",
+                                timeout=BROWSER_NETWORK_IDLE_TIMEOUT,
                             )
                         except PlaywrightTimeoutError:
                             self.print_error(f"Timeout while loading {url}")
@@ -1417,7 +1509,8 @@ def load_model_pricing() -> Optional[Dict[str, Any]]:
     ]
     for pricing_url in pricing_urls:
         try:
-            response = requests.get(pricing_url, timeout=10)
+            # Use centralized timeout from config - DO NOT hardcode
+            response = requests.get(pricing_url, timeout=HTTP_REQUEST_TIMEOUT)
             response.raise_for_status()
             logger.info(
                 f"Successfully fetched model pricing information from {pricing_url}"
@@ -1449,7 +1542,7 @@ async def make_openai_request(
     # Calculate proportional timeout based on payload size
     # The timeout must account for: base API response time + retry attempts with exponential backoff
     # Base formula: 120s base + 0.5s per 1K chars (much more realistic for GPT-5)
-    # With max_retries=2, OpenAI will make up to 3 attempts with exponential backoff
+    # With OPENAI_MAX_RETRIES, OpenAI will make up to (retries+1) attempts with exponential backoff
     # Total timeout = base_time * (1 + 2 + 4) = base_time * 7 (for 3 attempts with 2x backoff)
     # Max: 30 minutes (1800s) to handle very large payloads
     payload_chars = len(prompt)
@@ -1466,11 +1559,11 @@ async def make_openai_request(
 
     try:
         # Create AsyncOpenAI client with timeout and max_retries
-        # The library handles retries automatically (default is 2)
+        # Use centralized retry constant from config - DO NOT hardcode
         client = AsyncOpenAI(
             api_key=api_key,
             timeout=timeout_seconds,
-            max_retries=2,  # OpenAI library handles retries with exponential backoff
+            max_retries=OPENAI_MAX_RETRIES,
         )
 
         logger.debug("Sending request to OpenAI API (library will handle retries)...")
@@ -1828,6 +1921,8 @@ async def call_llm_to_convert_html_to_xml(
     tui_manager: Optional[RichTUIManager] = None,
     batch_tui: Optional[BatchTUIManager] = None,
     task_id: Optional[int] = None,
+    error_tracker: Optional[SessionErrorTracker] = None,
+    url: Optional[str] = None,
 ) -> Tuple[Optional[str], float, Optional[RichTUIManager]]:
     """
     Uses OpenAI's API to convert HTML content to structured XML asynchronously.
@@ -1895,6 +1990,8 @@ async def call_llm_to_convert_html_to_xml(
             mock_client=mock_client,
             batch_tui=batch_tui,
             task_id=task_id,
+            error_tracker=error_tracker,
+            url=url,
         )
 
         if tui_manager:
@@ -1948,6 +2045,8 @@ async def call_llm_to_convert_html_to_xml(
             mock_client=mock_client,
             batch_tui=batch_tui,
             task_id=task_id,
+            error_tracker=error_tracker,
+            url=url,
         )
 
         if xml_part:
@@ -2037,6 +2136,8 @@ async def _process_single_chunk(
     mock_client: Optional[MockAPIClient] = None,
     batch_tui: Optional[BatchTUIManager] = None,
     task_id: Optional[int] = None,
+    error_tracker: Optional[SessionErrorTracker] = None,
+    url: Optional[str] = None,
 ) -> Tuple[Optional[str], float]:
     """Process a single chunk of HTML content asynchronously with automatic XML validation retry."""
 
@@ -2330,7 +2431,8 @@ No additional commentary or explanations - ONLY the JSON object.
 </TEXT>"""
 
     total_cost = 0.0
-    max_retries = 1  # One retry for XML validation failures
+    # Use centralized retry constant from config - DO NOT hardcode
+    max_retries = XML_VALIDATION_MAX_RETRIES
 
     for attempt in range(max_retries + 1):
         try:
@@ -2382,6 +2484,11 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
             xml_output = extract_xml_from_input(xml_output)
 
             # Success! XML is valid
+            # Record success in error tracker to reset consecutive error count
+            # This prevents false circuit breaker trips from intermittent errors
+            if error_tracker:
+                error_tracker.record_success()
+
             logger.info(
                 f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${total_cost:.6f}"
                 + (" (succeeded on retry)" if attempt > 0 else "")
@@ -2416,17 +2523,39 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 return None, total_cost
 
         except Exception as e:
-            # Other errors (API failures, etc.) - don't retry
-            logger.error(f"LLM processing failed{chunk_label}: {e}")
-            # Show API error message in batch TUI
-            # Determine specific error message based on exception type
-            error_type = type(e).__name__
-            if "Timeout" in error_type or "timeout" in str(e).lower():
-                msg = "⚠️ LLM server timeout. Processing failed."
-            elif "Connection" in error_type or "connection" in str(e).lower():
-                msg = "❌ Connection to LLM server failed."
-            else:
-                msg = f"❌ LLM processing error: {error_type}"
+            # Classify the error for tracking and summary reporting
+            # This helps users understand WHY their job failed (quota, rate limit, etc.)
+            error_category = classify_openai_error(e)
+            error_desc = get_error_description(error_category)
+
+            # Record in error tracker if available
+            if error_tracker:
+                # Use centralized is_recoverable_error() - DO NOT hardcode category checks
+                # Recoverable errors can be retried; non-recoverable require user action
+                recoverable = is_recoverable_error(error_category)
+                error_event = ErrorEvent(
+                    category=error_category,
+                    message=str(e),
+                    task_id=task_id,
+                    url=url,
+                    recoverable=recoverable,
+                    raw_exception=type(e).__name__,
+                )
+                # Record error - circuit breaker may trigger to stop wasting API credits
+                should_stop = error_tracker.record(error_event)
+                if should_stop:
+                    # Circuit breaker tripped - log prominently so user knows processing stopped
+                    logger.warning(
+                        f"Circuit breaker triggered: {error_tracker.circuit_breaker.trigger_reason}"
+                    )
+
+            # Log with classified error type for debugging
+            logger.error(
+                f"LLM processing failed{chunk_label}: [{error_category.name}] {e}"
+            )
+
+            # Show API error message in batch TUI with classified error
+            msg = f"❌ {error_desc}"
             update_batch_status(batch_tui, task_id, URLState.PROCESSING, msg)
             return None, total_cost
 
@@ -2483,7 +2612,8 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
         logger.info(f"Fetching sitemap from {sitemap_url}")
         try:
             with Spinner("Fetching sitemap...") as spinner:
-                response = requests.get(sitemap_url, timeout=10)
+                # Use centralized timeout from config - DO NOT hardcode
+                response = requests.get(sitemap_url, timeout=HTTP_REQUEST_TIMEOUT)
                 response.raise_for_status()
             logger.info("Fetched sitemap successfully.")
             sitemap_content: str = response.text
@@ -2733,7 +2863,8 @@ def process_single_page(
             thread.start()
             while thread.is_alive():
                 spinner.step()
-                time.sleep(0.1)
+                # Use centralized spinner animation interval - DO NOT hardcode timing values
+                time.sleep(SPINNER_ANIMATION_INTERVAL)
             thread.join()
     else:
         # TUI mode - run thread and keep updating TUI while it's alive
@@ -2752,7 +2883,8 @@ def process_single_page(
                 update_count += 1
                 if update_count % 50 == 0:  # Log every 5 seconds
                     logger.debug(f"TUI updated {update_count} times")
-            time.sleep(0.1)  # Update TUI 10 times per second
+            # Use centralized TUI polling interval - DO NOT hardcode timing values
+            time.sleep(SINGLE_PAGE_TUI_POLL_INTERVAL)
         thread.join()
 
         logger.debug(f"Thread finished. Total TUI updates: {update_count}")
@@ -2761,7 +2893,8 @@ def process_single_page(
         if result.tui_manager and result.tui_manager.live:
             logger.debug("Performing final TUI update")
             result.tui_manager.live.update(result.tui_manager._create_dashboard())
-            time.sleep(0.5)  # Brief pause to let user see final state
+            # Use centralized pause duration - DO NOT hardcode timing values
+            time.sleep(FINAL_STATE_PAUSE)
         else:
             logger.debug(
                 f"No final TUI update - TUI manager exists: {result.tui_manager is not None}, Live exists: {result.tui_manager.live is not None if result.tui_manager else False}"
@@ -2812,6 +2945,7 @@ def process_url(
     pricing_info: Dict[str, Dict[str, float]],
     scrape_only: bool = False,
     batch_tui: Optional[BatchTUIManager] = None,
+    error_tracker: Optional[SessionErrorTracker] = None,
 ) -> Optional[str]:
     global progress_tracker
     """
@@ -2903,6 +3037,8 @@ def process_url(
                 pricing_info,
                 batch_tui=batch_tui,
                 task_id=idx,
+                error_tracker=error_tracker,
+                url=url,
             )
         )
         if result is None:
@@ -3028,30 +3164,59 @@ def process_url(
         return None
 
 
-def update_progress_file() -> None:
+def update_progress_file(atomic: bool = True) -> None:
+    """
+    Update the progress file with current scraping state.
+
+    Args:
+        atomic: If True, use atomic write (temp file + rename) to prevent corruption.
+                If False, write directly to the file (faster but less safe).
+    """
     global progress_file, temp_folder
-    if progress_file:
-        with cost_lock:
-            with open(progress_file, "w") as f:
-                json.dump(
-                    {
-                        "output_folder": str(temp_folder),
-                        "urls": [
-                            {
-                                "index": i,
-                                "url": url,
-                                "status": data["status"],
-                                "costs": data["cost"],
-                                "valid_xml": data.get("valid_xml"),
-                            }
-                            for i, (url, data) in enumerate(progress_tracker.items())
-                        ],
-                    },
-                    f,
-                    indent=2,
-                )
-    else:
+    if not progress_file:
         logger.warning("Progress file path not set. Unable to update progress.")
+        return
+
+    with cost_lock:
+        data = {
+            "output_folder": str(temp_folder),
+            "urls": [
+                {
+                    "index": i,
+                    "url": url,
+                    "status": url_data["status"],
+                    "costs": url_data["cost"],
+                    "valid_xml": url_data.get("valid_xml"),
+                }
+                for i, (url, url_data) in enumerate(progress_tracker.items())
+            ],
+        }
+
+        if atomic:
+            # Atomic write: write to temp file, then rename
+            # This ensures the progress file is never in a corrupted state
+            import tempfile
+
+            progress_path = Path(progress_file)
+            temp_fd, temp_path = tempfile.mkstemp(
+                suffix=".tmp",
+                prefix="progress_",
+                dir=progress_path.parent,
+            )
+            try:
+                with os.fdopen(temp_fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                # Atomic rename (on POSIX systems)
+                os.replace(temp_path, progress_file)
+            except Exception:
+                # Clean up temp file if rename fails
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        else:
+            # Direct write (faster but not crash-safe)
+            with open(progress_file, "w") as f:
+                json.dump(data, f, indent=2)
 
 
 def process_multiple_pages(
@@ -3060,7 +3225,7 @@ def process_multiple_pages(
     num_threads: int = 5,
     scrape_only: bool = False,
     no_tui: bool = False,
-) -> Optional[str]:
+) -> Tuple[Optional[str], Optional[SessionErrorTracker]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
 
@@ -3087,6 +3252,11 @@ def process_multiple_pages(
     # Use Rich TUI for batch mode or fallback to simple spinner
     batch_tui = BatchTUIManager(urls, no_tui=no_tui) if not no_tui else None
 
+    # Create error tracker for session-wide error aggregation and circuit breaker
+    error_tracker = SessionErrorTracker(
+        consecutive_threshold=3, quota_immediate_stop=True
+    )
+
     # Suppress console logging when batch TUI is active to prevent screen jumping
     removed_handlers = []
     if batch_tui:
@@ -3101,7 +3271,7 @@ def process_multiple_pages(
             # Restore logging before returning
             restore_console_logging(removed_handlers)
             logger.info("Processing cancelled by user before start")
-            return None
+            return None, error_tracker
 
         # Start live display
         batch_tui.start_live_display()
@@ -3124,15 +3294,17 @@ def process_multiple_pages(
                     pricing_info,
                     scrape_only,
                     batch_tui,
+                    error_tracker,
                 ): url
                 for idx, url in enumerate(urls)
             }
 
             # Update TUI while processing
             while True:
+                # Use centralized poll interval from config for consistent TUI responsiveness
                 done, pending = concurrent.futures.wait(
                     future_to_url.keys(),
-                    timeout=0.05,  # Reduced to 50ms for more fluid TUI updates
+                    timeout=BATCH_TUI_POLL_INTERVAL,
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
 
@@ -3140,9 +3312,18 @@ def process_multiple_pages(
                 if batch_tui:
                     batch_tui.update_display()
 
-                # Check for shutdown
+                # Check for shutdown or circuit breaker
                 if shutdown_flag or (batch_tui and batch_tui.should_stop):
                     logger.info("Shutdown requested. Cancelling remaining tasks.")
+                    executor.shutdown(wait=False)
+                    break
+
+                # Check circuit breaker for fatal errors (quota exceeded, consecutive failures)
+                if error_tracker.circuit_breaker.is_triggered:
+                    logger.warning(
+                        f"Circuit breaker triggered: {error_tracker.circuit_breaker.trigger_reason}. "
+                        f"Stopping batch processing to avoid wasting resources."
+                    )
                     executor.shutdown(wait=False)
                     break
 
@@ -3189,7 +3370,8 @@ def process_multiple_pages(
         if batch_tui:
             # Final update before stopping
             batch_tui.update_display()
-            time.sleep(1.0)  # Let user see final state
+            # Use centralized pause duration - DO NOT hardcode timing values
+            time.sleep(BATCH_FINAL_STATE_PAUSE)
             batch_tui.stop_live_display()
             # DON'T restore logging yet - keep it suppressed during merge
         else:
@@ -3207,7 +3389,7 @@ def process_multiple_pages(
         # Restore logging before returning
         if removed_handlers:
             restore_console_logging(removed_handlers)
-        return "scrape_only_completed"
+        return "scrape_only_completed", error_tracker
 
     # ========== Clean Merge Progress Display ==========
     # Logging is still suppressed here - show clean merge progress
@@ -3256,7 +3438,7 @@ def process_multiple_pages(
         if removed_handlers:
             restore_console_logging(removed_handlers)
         logger.error("No valid XML content extracted from pages.")
-        return None
+        return None, error_tracker
 
     # Show validation progress
     console.print("  Validating merged XML... 90%", style="cyan")
@@ -3289,13 +3471,13 @@ def process_multiple_pages(
         if removed_handlers:
             restore_console_logging(removed_handlers)
         logger.error(f"Error saving merged XML file: {e}")
-        return None
+        return None, error_tracker
 
     # NOW restore console logging after merge is complete
     if removed_handlers:
         restore_console_logging(removed_handlers)
 
-    return merged_xml
+    return merged_xml, error_tracker
 
 
 def read_patterns_from_file(file_path: str) -> Optional[str]:
@@ -3317,7 +3499,11 @@ def read_patterns_from_file(file_path: str) -> Optional[str]:
 
 
 def display_scraping_summary(
-    result: Dict[str, Any], urls: List[str], temp_folder: Path, error_log_file: Path
+    result: Dict[str, Any],
+    urls: List[str],
+    temp_folder: Path,
+    error_log_file: Path,
+    error_tracker: Optional[SessionErrorTracker] = None,
 ) -> None:
     summary_data = {
         "Base URL": urls[0] if urls else "N/A",
@@ -3342,6 +3528,48 @@ def display_scraping_summary(
 
     summary_box = create_summary_box(summary_data)
 
+    # Build root cause analysis section if there were errors
+    root_cause_section = ""
+    if error_tracker and error_tracker.total_errors > 0:
+        root_cause_section = "\n"
+        root_cause_section += "=" * 60 + "\n"
+        root_cause_section += "🔍 ROOT CAUSE ANALYSIS\n"
+        root_cause_section += "=" * 60 + "\n"
+
+        # Primary failure reason
+        primary_reason = error_tracker.get_primary_failure_reason()
+        if primary_reason:
+            root_cause_section += f"\n⚠️  Primary failure: {primary_reason}\n"
+
+        # Error breakdown by category
+        error_summary = error_tracker.get_error_summary()
+        if error_summary:
+            root_cause_section += "\n📊 Error breakdown:\n"
+            for category, count in sorted(
+                error_summary.items(), key=lambda x: x[1], reverse=True
+            ):
+                desc = get_error_description(category)
+                root_cause_section += f"   • {desc}: {count} occurrence(s)\n"
+
+        # Circuit breaker status
+        if error_tracker.circuit_breaker.is_triggered:
+            root_cause_section += f"\n🛑 Processing stopped: {error_tracker.circuit_breaker.trigger_reason}\n"
+
+        root_cause_section += "=" * 60 + "\n"
+
+    # Build data safety reassurance section
+    data_safety_section = "\n"
+    data_safety_section += "💾 DATA SAFETY\n"
+    data_safety_section += "-" * 40 + "\n"
+    data_safety_section += "✓ All scraped data has been saved to:\n"
+    data_safety_section += f"  {temp_folder}\n"
+    data_safety_section += "✓ Progress saved - job can be resumed\n"
+    data_safety_section += "\n"
+    data_safety_section += "📌 To resume this job later, run:\n"
+    progress_file_path = temp_folder / "progress.json"
+    data_safety_section += f"  apias --resume {progress_file_path}\n"
+    data_safety_section += "-" * 40 + "\n"
+
     if result["result"] == "already_completed":
         print(SUCCESS_SEPARATOR)
         print("✅ Scraping process already completed successfully.")
@@ -3351,11 +3579,18 @@ def display_scraping_summary(
         print(SUCCESS_SEPARATOR)
         print("✅ XML Extraction Successful.")
         print(summary_box)
+        if error_tracker and error_tracker.total_errors > 0:
+            # Show any warnings/errors that occurred during successful run
+            print(root_cause_section)
+        print(data_safety_section)
         print(SUCCESS_SEPARATOR)
     else:
         print(ERROR_SEPARATOR)
         print("❌ XML Extraction Failed or No Content Extracted.")
         print(summary_box)
+        if root_cause_section:
+            print(root_cause_section)
+        print(data_safety_section)
         print(ERROR_SEPARATOR)
 
 
@@ -3370,7 +3605,7 @@ def main_workflow(
     no_tui: bool = False,
     mock: bool = False,
     limit: Optional[int] = None,
-) -> Dict[str, Union[Optional[str], float, int]]:
+) -> Dict[str, Union[Optional[str], float, int, Optional[SessionErrorTracker]]]:
     global progress_tracker, total_cost
     """
     Executes the Web API Retrieval and XML Extraction workflow.
@@ -3402,7 +3637,9 @@ def main_workflow(
         logger.info("TUI disabled: Using plain text output")
     print(INFO_SEPARATOR)
 
-    result: Dict[str, Union[Optional[str], float, int]] = {
+    result: Dict[
+        str, Union[Optional[str], float, int, Optional[SessionErrorTracker]]
+    ] = {
         "result": None,
         "total_cost": 0.0,
         "total_urls": 0,
@@ -3638,9 +3875,11 @@ def main_workflow(
                 )
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
-            xml_result = process_multiple_pages(
+            xml_result, batch_error_tracker = process_multiple_pages(
                 urls, pricing_info, num_threads, scrape_only, no_tui
             )
+            # Store error tracker in result for summary display
+            result["error_tracker"] = batch_error_tracker
             if xml_result and temp_folder.exists():
                 valid_count, total_count = count_valid_xml_files(temp_folder)
                 # Clean output - counts will show in summary table
@@ -3771,12 +4010,168 @@ def start_resume_mode(json_file_path: str) -> None:
         resume_file=json_file_path,
     )
 
-    display_scraping_summary(result, urls, temp_folder, error_log_file)
+    display_scraping_summary(
+        result,
+        urls,
+        temp_folder,
+        error_log_file,
+        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+    )
+
+
+def _find_auto_resume_session() -> Optional[str]:
+    """
+    Find the most recent incomplete session for auto-resume.
+
+    Non-interactive version of check_for_resumable_sessions().
+    Used when --auto-resume flag is set for headless/CI operation.
+
+    Returns:
+        Path to most recent progress.json with incomplete work, or None
+    """
+    import glob
+
+    progress_files = glob.glob("temp_*/progress.json")
+
+    resumable_sessions: list[dict[str, Any]] = []
+    for pf in progress_files:
+        try:
+            with open(pf, "r") as f:
+                data = json.load(f)
+
+            urls = data.get("urls", [])
+            if not urls:
+                continue
+
+            completed = sum(1 for u in urls if u.get("status") == "completed")
+            failed = sum(1 for u in urls if u.get("status") == "failed")
+            total = len(urls)
+            incomplete = total - completed - failed
+
+            if incomplete > 0:
+                resumable_sessions.append(
+                    {
+                        "path": pf,
+                        "incomplete": incomplete,
+                        "mtime": os.path.getmtime(pf),
+                    }
+                )
+        except (json.JSONDecodeError, OSError, KeyError):
+            continue
+
+    if not resumable_sessions:
+        return None
+
+    # Return the most recent session (sort by mtime descending)
+    resumable_sessions.sort(key=lambda x: float(x["mtime"]), reverse=True)
+    return str(resumable_sessions[0]["path"])
+
+
+def check_for_resumable_sessions() -> Optional[str]:
+    """
+    Check for existing incomplete sessions that can be resumed.
+
+    Looks for temp_* directories with progress.json files that have
+    incomplete URLs (status != 'completed' and status != 'failed').
+
+    Returns:
+        Path to progress.json if user wants to resume, None otherwise
+    """
+    import glob
+
+    # Find all temp directories with progress.json files
+    progress_files = glob.glob("temp_*/progress.json")
+
+    resumable_sessions = []
+    for pf in progress_files:
+        try:
+            with open(pf, "r") as f:
+                data = json.load(f)
+
+            urls = data.get("urls", [])
+            if not urls:
+                continue
+
+            # Count incomplete URLs
+            completed = sum(1 for u in urls if u.get("status") == "completed")
+            failed = sum(1 for u in urls if u.get("status") == "failed")
+            total = len(urls)
+            incomplete = total - completed - failed
+
+            if incomplete > 0:
+                # This session has incomplete work
+                folder = data.get("output_folder", os.path.dirname(pf))
+                resumable_sessions.append(
+                    {
+                        "path": pf,
+                        "folder": folder,
+                        "total": total,
+                        "completed": completed,
+                        "failed": failed,
+                        "incomplete": incomplete,
+                        "mtime": os.path.getmtime(pf),
+                    }
+                )
+        except (json.JSONDecodeError, OSError, KeyError):
+            continue
+
+    if not resumable_sessions:
+        return None
+
+    # Sort by most recent first
+    resumable_sessions.sort(key=lambda x: x["mtime"], reverse=True)
+
+    # Show the user the available sessions
+    print("\n" + "=" * 60)
+    print("  RESUMABLE SESSIONS FOUND")
+    print("=" * 60)
+
+    for i, session in enumerate(resumable_sessions[:5], 1):  # Show max 5 sessions
+        mtime_str = datetime.fromtimestamp(session["mtime"]).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+        print(f"\n  [{i}] {session['folder']}")
+        print(f"      Last modified: {mtime_str}")
+        print(
+            f"      Progress: {session['completed']}/{session['total']} completed, "
+            f"{session['incomplete']} pending, {session['failed']} failed"
+        )
+
+    print("\n  [0] Start a new session (don't resume)")
+    print("=" * 60)
+
+    # Ask user which session to resume
+    while True:
+        try:
+            choice = input("\n  Enter number to resume (0 for new session): ").strip()
+            if choice == "0" or choice == "":
+                return None
+
+            idx = int(choice) - 1
+            if 0 <= idx < len(resumable_sessions):
+                selected = resumable_sessions[idx]
+                print(f"\n  Resuming session from: {selected['path']}")
+                return str(selected["path"])
+            else:
+                print("  Invalid choice. Please enter a valid number.")
+        except ValueError:
+            print("  Invalid input. Please enter a number.")
+        except KeyboardInterrupt:
+            print("\n  Cancelled.")
+            return None
 
 
 def start_single_scrape(
     url: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False
 ) -> None:
+    """Start scraping a single URL."""
+    from apias.config import validate_url
+
+    if not validate_url(url):
+        print(f"Error: Invalid URL format: {url}")
+        print("URL must start with http:// or https:// and have a valid domain")
+        sys.exit(1)
+
     result = main_workflow(
         urls=[url],
         mode="single",
@@ -3785,7 +4180,13 @@ def start_single_scrape(
         no_tui=no_tui,
         mock=mock,
     )
-    display_scraping_summary(result, [url], temp_folder, error_log_file)
+    display_scraping_summary(
+        result,
+        [url],
+        temp_folder,
+        error_log_file,
+        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+    )
 
 
 def create_summary_box(summary_data: Dict[str, str]) -> str:
@@ -3829,6 +4230,14 @@ def start_batch_scrape(
     mock: bool = False,
     limit: Optional[int] = None,
 ) -> None:
+    """Start batch scraping from a sitemap URL."""
+    from apias.config import validate_url
+
+    if not validate_url(url):
+        print(f"Error: Invalid URL format: {url}")
+        print("URL must start with http:// or https:// and have a valid domain")
+        sys.exit(1)
+
     result = main_workflow(
         urls=[url],
         mode="batch",
@@ -3840,7 +4249,13 @@ def start_batch_scrape(
         mock=mock,
         limit=limit,
     )
-    display_scraping_summary(result, [url], temp_folder, error_log_file)
+    display_scraping_summary(
+        result,
+        [url],
+        temp_folder,
+        error_log_file,
+        cast(Optional[SessionErrorTracker], result.get("error_tracker")),
+    )
 
 
 # ============================
@@ -3955,8 +4370,12 @@ def check_for_running_apias_instances() -> None:
         parent_pid = os.getppid()
 
         # Use ps command with full command line output
+        # Use centralized timeout from config - DO NOT hardcode
         result = subprocess.run(
-            ["ps", "-eo", "pid,command"], capture_output=True, text=True, timeout=5
+            ["ps", "-eo", "pid,command"],
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
         )
 
         # Find APIAS processes by matching Python processes running apias.py or apias module
@@ -4026,72 +4445,145 @@ def check_for_running_apias_instances() -> None:
 
 
 def main() -> None:
+    """Main entry point for APIAS CLI."""
     # Check for running APIAS instances to prevent multiple simultaneous API calls
     check_for_running_apias_instances()
 
-    parser = argparse.ArgumentParser(description="Web API Retrieval and XML Extraction")
+    parser = argparse.ArgumentParser(
+        description="APIAS - API Auto Scraper: Extract API documentation from web pages",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+EXAMPLES:
+  Single page mode (default):
+    apias --url "https://api.example.com/docs"
+    
+  Batch mode (scrape multiple pages from sitemap):
+    apias --url "https://example.com" --mode batch
+    apias --url "https://example.com" --mode batch --whitelist patterns.txt
+    apias --url "https://example.com" --mode batch --limit 50
+    
+  Resume interrupted session:
+    apias --resume "./temp_20240101_120000/progress.json"
+    
+  Headless/CI mode (no TUI, quiet output):
+    apias --url "https://example.com" --mode batch --quiet --auto-resume
+    
+  Using configuration file:
+    apias --url "https://example.com" --config apias_config.yaml
+
+For more information, visit: https://github.com/Emasoft/apias
+""",
+    )
+
+    # URL and mode options
     parser.add_argument(
-        "-r",
-        "--resume",
+        "-u",
+        "--url",
         type=str,
         default=None,
-        help="Path to the resume file (JSON)",
-        required=False,
-    )
-    parser.add_argument(
-        "-u", "--url", type=str, default=None, help="Base url to scrape", required=False
-    )
-    parser.add_argument(
-        "-w",
-        "--whitelist",
-        type=str,
-        default=None,
-        help="Path to the txt file with urls patterns to whitelist (one for each line)",
-        required=False,
-    )
-    parser.add_argument(
-        "-b",
-        "--blacklist",
-        type=str,
-        default=None,
-        help="Path to the txt file with urls patterns to blacklist (one for each line)",
-        required=False,
+        help="Base URL to scrape",
+        metavar="URL",
     )
     parser.add_argument(
         "-m",
         "--mode",
         type=str,
         default="single",
-        help="Scraping mode: single or batch (if -m=batch the script will parse the sitemap.xml file of the domain from the base url)",
-        required=False,
+        choices=["single", "batch"],
+        help="Scraping mode: 'single' for one page, 'batch' for sitemap crawl (default: single)",
+    )
+
+    # Resume and config options
+    parser.add_argument(
+        "-r",
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to progress.json file to resume an interrupted session",
+        metavar="FILE",
     )
     parser.add_argument(
-        "--scrape-only",
-        action="store_true",
-        default=False,
-        help="Scrape and clean HTML only without AI model processing. Saves cleaned HTML files to temp folder.",
-        required=False,
+        "-c",
+        "--config",
+        type=str,
+        default=None,
+        help="Path to YAML/JSON configuration file (see --generate-config)",
+        metavar="FILE",
     )
     parser.add_argument(
-        "--no-tui",
+        "--generate-config",
         action="store_true",
         default=False,
-        help="Disable Rich TUI for headless/script usage. Output will be plain text.",
-        required=False,
+        help="Generate example configuration file (apias_config.yaml) and exit",
+    )
+
+    # URL filtering (batch mode)
+    parser.add_argument(
+        "-w",
+        "--whitelist",
+        type=str,
+        default=None,
+        help="File with URL patterns to include (one regex per line, batch mode only)",
+        metavar="FILE",
     )
     parser.add_argument(
-        "--mock",
-        action="store_true",
-        default=False,
-        help="Use mock API for testing TUI without spending tokens. For development/testing only.",
-        required=False,
+        "-b",
+        "--blacklist",
+        type=str,
+        default=None,
+        help="File with URL patterns to exclude (one regex per line, batch mode only)",
+        metavar="FILE",
     )
     parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Limit the maximum number of pages to scrape (useful for testing with large websites). Only applies in batch mode.",
-        required=False,
+        help="Maximum number of pages to scrape (batch mode only)",
+        metavar="N",
+    )
+
+    # Output mode options
+    parser.add_argument(
+        "--no-tui",
+        action="store_true",
+        default=False,
+        help="Disable Rich TUI (plain text output for scripts/CI)",
+    )
+    parser.add_argument(
+        "--quiet",
+        "-q",
+        action="store_true",
+        default=False,
+        help="Minimal output (implies --no-tui, ideal for headless/CI)",
+    )
+    parser.add_argument(
+        "--auto-resume",
+        action="store_true",
+        default=False,
+        help="Automatically resume most recent incomplete session without prompting",
+    )
+
+    # Model configuration
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help="OpenAI model to use (default: gpt-4o-mini). Options: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo",
+        metavar="MODEL",
+    )
+
+    # Development/testing options
+    parser.add_argument(
+        "--scrape-only",
+        action="store_true",
+        default=False,
+        help="Scrape and clean HTML only (no AI processing)",
+    )
+    parser.add_argument(
+        "--mock",
+        action="store_true",
+        default=False,
+        help="Use mock API for TUI testing (development only)",
     )
     parser.add_argument(
         "--version",
@@ -4101,22 +4593,82 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Handle --generate-config first
+    if args.generate_config:
+        from apias.config import generate_example_config
+
+        generate_example_config("apias_config.yaml")
+        print("Generated example configuration: apias_config.yaml")
+        print(
+            "Edit the file and use with: apias --config apias_config.yaml --url <URL>"
+        )
+        sys.exit(0)
+
+    # Load configuration file if provided, with CLI overrides
+    from apias.config import load_config
+
+    cli_overrides = {
+        "no_tui": args.no_tui if args.no_tui else None,
+        "quiet": args.quiet if args.quiet else None,
+        "auto_resume": args.auto_resume if args.auto_resume else None,
+        "model": args.model,
+        "limit": args.limit,
+    }
+    # Remove None values to let config file values take precedence
+    cli_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
+
+    config = load_config(config_path=args.config, cli_overrides=cli_overrides)
+
+    # Apply config values to args (CLI takes precedence if set)
+    if not args.no_tui:
+        args.no_tui = config.no_tui
+    if not args.quiet:
+        args.quiet = config.quiet
+    if not args.auto_resume:
+        args.auto_resume = config.auto_resume
+    if args.limit is None:
+        args.limit = config.limit
+
+    # Quiet mode implies no_tui
+    if args.quiet:
+        args.no_tui = True
+
+    # Validate required arguments
     if args.url is None and args.resume is None:
-        print("Error: you need to specify an url or a json file.")
-        sys.exit()
+        parser.print_help()
+        print("\nError: You must specify --url or --resume")
+        sys.exit(1)
 
     if args.mode == "single" and (args.whitelist or args.blacklist):
-        print(
-            "Error: when using the single mode (default) you cannot use whitelist or blacklist."
-        )
+        print("Error: --whitelist and --blacklist are only valid with --mode batch")
+        sys.exit(1)
+
+    # Handle resume mode
     if args.resume:
-        # When using --resume, ignore other parameters
-        if any([args.url, args.blacklist, args.whitelist, args.mode]):
-            print("Warning: When using --resume, other parameters will be ignored.")
+        if any([args.url, args.blacklist, args.whitelist]):
+            print("Warning: When using --resume, other parameters are ignored.")
         start_resume_mode(args.resume)
     elif args.url and args.mode == "single":
         start_single_scrape(args.url, args.scrape_only, args.no_tui, args.mock)
     elif args.url and args.mode == "batch":
+        # Auto-resume: check for existing sessions without prompting
+        if args.auto_resume:
+            resume_path = _find_auto_resume_session()
+            if resume_path:
+                if not args.quiet:
+                    print(f"Auto-resuming session: {resume_path}")
+                start_resume_mode(resume_path)
+                print("Job Finished.\n")
+                return
+        elif not args.quiet and not args.no_tui:
+            # Interactive: ask user if they want to resume
+            resume_path = check_for_resumable_sessions()
+            if resume_path:
+                start_resume_mode(resume_path)
+                print("Job Finished.\n")
+                return
+
+        # Start new batch scrape
         start_batch_scrape(
             args.url,
             args.whitelist,
@@ -4127,21 +4679,7 @@ def main() -> None:
             args.limit,
         )
     else:
-        print(
-            "Error: Invalid combination of arguments. Please provide either --resume or --url argument."
-        )
-        print()
-        print("EXAMPLE USAGE for a single url:")
-        print('    python apias.py --url "https://example.com" --mode single')
-        print()
-        print("EXAMPLE USAGE for multiple urls from the same domain:")
-        print(
-            '    python apias.py --url "https://example.com" --mode batch --whitelist "whitelist.txt" --blacklist "blacklist.txt"'
-        )
-        print()
-        print("EXAMPLE USAGE for resuming a batch job terminated prematurely:")
-        print('    python apias.py --resume "./temp_output_folder/progress.json"')
-        print()
+        parser.print_help()
         sys.exit(1)
 
     print("Job Finished.\n")

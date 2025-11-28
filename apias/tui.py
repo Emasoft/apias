@@ -7,6 +7,7 @@ Provides:
 - Beautiful final statistics summary
 - Error logging and display
 - Progress bars and health monitoring
+- Cross-platform terminal support with ASCII fallbacks
 
 Usage:
     tui = RichTUIManager(total_chunks=19, no_tui=False)
@@ -15,38 +16,73 @@ Usage:
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from enum import Enum
 import threading
 import sys
-import tty
-import termios
-import select
-import signal
+import time
+import logging
 
 from rich.console import Console
 from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 from rich.layout import Layout
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from rich.text import Text
 from rich import box
-import time
-import logging
+
+# Import centralized constants - single source of truth for configuration values
+# DO NOT hardcode values here - add new constants to config.py instead
+from apias.config import (
+    TUI_SINGLE_PAGE_FPS,
+    TUI_WAITING_FPS,
+    MAX_FAILED_URLS_TO_SHOW,
+    FALLBACK_VERSION,
+    KEYBOARD_POLL_INTERVAL,
+)
+
+# Import shared terminal utilities for cross-platform support
+from apias.terminal_utils import (
+    Symbols,
+    KeyboardListener,
+    ProcessState,
+    BaseTUIManager,
+    detect_terminal_capabilities,
+    format_duration,
+    calculate_eta,
+)
+
+# Import version
+try:
+    from apias import __version__
+except ImportError:
+    # Use centralized fallback version from config.py
+    # DO NOT hardcode version string here
+    __version__ = FALLBACK_VERSION
 
 logger = logging.getLogger(__name__)
 
 
 class ChunkState(Enum):
-    """Chunk processing states"""
+    """Chunk processing states with ASCII fallback support"""
 
-    QUEUED = "⏳"
-    PROCESSING = "🔄"
-    COMPLETE = "✅"
-    RETRY = "⚠️"
-    FAILED = "❌"
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETE = "complete"
+    RETRY = "retry"
+    FAILED = "failed"
+
+    def get_symbol(self) -> str:
+        """Get the display symbol (emoji or ASCII) based on terminal capabilities"""
+        symbol_map = {
+            ChunkState.QUEUED: Symbols.PENDING,
+            ChunkState.PROCESSING: Symbols.PROCESSING,
+            ChunkState.COMPLETE: Symbols.COMPLETE,
+            ChunkState.RETRY: Symbols.RETRY,
+            ChunkState.FAILED: Symbols.FAILED,
+        }
+        return Symbols.get(symbol_map[self])
 
 
 class ProcessingStep(Enum):
@@ -106,38 +142,46 @@ class ProcessingStats:
     errors: List[str] = field(default_factory=list)
 
 
-class RichTUIManager:
+class RichTUIManager(BaseTUIManager):
     """
-    Manages Rich TUI for beautiful terminal output.
+    Manages Rich TUI for single-page chunk processing.
 
-    Handles live monitoring and final statistics display.
+    Handles live monitoring and final statistics display for
+    processing a single page split into multiple chunks.
+
+    Inherits thread-safe state management from BaseTUIManager.
     """
 
-    def __init__(self, total_chunks: int, no_tui: bool = False) -> None:
+    def __init__(
+        self, total_chunks: int, no_tui: bool = False, quiet: bool = False
+    ) -> None:
         """
-        Initialize TUI manager.
+        Initialize TUI manager for chunk processing.
 
         Args:
             total_chunks: Total number of chunks to process
             no_tui: If True, disable Rich TUI (for headless/scripts)
+            quiet: If True, minimal output (implies no_tui)
         """
-        # Force terminal detection and enable full features
-        self.console = Console(force_terminal=True, legacy_windows=False)
-        self.no_tui = no_tui
+        # Initialize base class (handles state management, console, etc.)
+        super().__init__(no_tui=no_tui, quiet=quiet)
+
+        # Chunk-specific state
         self.stats = ProcessingStats(total_chunks=total_chunks)
         self.chunks: Dict[int, ChunkStatus] = {}
-        self.live: Optional[Live] = None
-
-        # Keyboard control state
-        self.waiting_to_start = True  # Start in waiting state
-        self.should_stop = False  # Flag to stop processing
-        self.keyboard_listener_thread: Optional[threading.Thread] = None
-        # Terminal settings for restoring after keyboard listener - termios returns list[Any]
-        self.old_terminal_settings: Optional[list[Any]] = None
 
         # Initialize all chunks as queued
         for i in range(1, total_chunks + 1):
             self.chunks[i] = ChunkStatus(chunk_id=i)
+
+    # Override get_effective_elapsed to use stats.start_time
+    def get_effective_elapsed(self) -> float:  # type: ignore[override]
+        """Get elapsed time excluding pause duration."""
+        return super().get_effective_elapsed(self.stats.start_time)
+
+    # Note: waiting_to_start, should_stop, is_paused, is_running,
+    # _on_space_pressed, request_stop, wait_while_paused are now inherited
+    # from BaseTUIManager with thread-safe implementation.
 
     def start_live_display(self) -> None:
         """Start the live monitoring display"""
@@ -145,10 +189,12 @@ class RichTUIManager:
             self.live = Live(
                 self._create_dashboard(),
                 console=self.console,
-                refresh_per_second=4,
+                # Use centralized constant for refresh rate - DO NOT hardcode FPS values
+                refresh_per_second=TUI_SINGLE_PAGE_FPS,
                 screen=False,  # Don't use alternate screen (allows scrollback)
             )
             self.live.start()
+            logger.debug(f"Live display started at {TUI_SINGLE_PAGE_FPS} FPS")
 
     def stop_live_display(self) -> None:
         """Stop the live monitoring display"""
@@ -185,6 +231,11 @@ class RichTUIManager:
         """
         chunk = self.chunks.get(chunk_id)
         if not chunk:
+            # Log warning instead of silent failure - helps debug invalid chunk_id issues
+            # DO NOT silently return without logging - always trace unexpected conditions
+            logger.warning(
+                f"update_chunk_status called with unknown chunk_id={chunk_id}"
+            )
             return
 
         # Update chunk status
@@ -230,9 +281,7 @@ class RichTUIManager:
 
     def _print_chunk_update(self, chunk: ChunkStatus) -> None:
         """Print a single chunk update (when not in live mode)"""
-        status_text = (
-            f"{chunk.state.value} Chunk #{chunk.chunk_id:02d}: {chunk.state.name}"
-        )
+        status_text = f"{chunk.state.get_symbol()} Chunk #{chunk.chunk_id:02d}: {chunk.state.name}"
         if chunk.state == ChunkState.COMPLETE:
             status_text += f" ({chunk.size_in // 1024}KB → {chunk.size_out // 1024}KB, ${chunk.cost:.4f}, {chunk.duration:.1f}s)"
         elif chunk.state == ChunkState.PROCESSING:
@@ -268,11 +317,22 @@ class RichTUIManager:
             Layout(name="footer", size=footer_size),
         )
 
-        # Header
+        # Header with version and pause state indicator
+        rocket = Symbols.get(Symbols.ROCKET)
+        if self.process_state == ProcessState.PAUSED:
+            # Show paused indicator in header with pulsing animation
+            pulse = Symbols.get_pulse_frame()
+            pause_sym = Symbols.get(Symbols.PAUSE)
+            header_text = f"{pause_sym} [bold yellow]PAUSED[/] {pulse} APIAS v{__version__} - API Documentation Extractor"
+            header_style = "yellow"
+        else:
+            header_text = f"{rocket} [bold cyan]APIAS v{__version__}[/] - API Documentation Extractor"
+            header_style = "cyan"
+
         layout["header"].update(
             Panel(
-                "🚀 [bold cyan]APIAS[/] - API Documentation Extractor",
-                border_style="cyan",
+                header_text,
+                border_style=header_style,
             )
         )
 
@@ -282,21 +342,45 @@ class RichTUIManager:
         # Chunks table (now dynamic, will show more chunks on taller terminals)
         layout["chunks"].update(self._create_chunks_table())
 
-        # Footer
+        # Footer with state-aware controls and elapsed time
         elapsed = datetime.now() - self.stats.start_time
-        layout["footer"].update(
-            Text(
-                f"⏱️  Elapsed: {elapsed.seconds // 60:02d}:{elapsed.seconds % 60:02d}  |  "
-                f"Press Ctrl+C to stop  |  "
-                f"Last Update: {datetime.now().strftime('%H:%M:%S')}",
-                style="dim",
+        effective_elapsed = self.get_effective_elapsed()
+        clock = Symbols.get(Symbols.CLOCK)
+
+        # Show different footer based on pause state
+        if self.process_state == ProcessState.PAUSED:
+            # Paused state - show pulsing indicator and resume instructions
+            pulse = Symbols.get_pulse_frame()
+            pause_sym = Symbols.get(Symbols.PAUSE)
+            play_sym = Symbols.get(Symbols.PLAY)
+            footer_text = (
+                f"{pulse} [bold yellow]PAUSED[/bold yellow] {pulse}  |  "
+                f"SPACE: {play_sym} Resume  |  Ctrl+C: Stop & Exit  |  "
+                f"Paused at: {datetime.now().strftime('%H:%M:%S')}"
             )
-        )
+            footer_style = "bold yellow"
+        else:
+            # Running state - show pause and stop instructions
+            pause_sym = Symbols.get(Symbols.PAUSE)
+            stop_sym = Symbols.get(Symbols.STOP)
+            footer_text = (
+                f"{clock}  Elapsed: {int(effective_elapsed) // 60:02d}:{int(effective_elapsed) % 60:02d}  |  "
+                f"SPACE: {pause_sym} Pause  |  Ctrl+C: {stop_sym} Stop & Exit  |  "
+                f"Last Update: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            footer_style = "dim"
+
+        layout["footer"].update(Text.from_markup(footer_text, style=footer_style))
 
         return layout
 
-    def _create_stats_table(self) -> Table:
-        """Create the statistics table"""
+    def _create_stats_table(self) -> Panel:
+        """Create the statistics table with ETA (pause-aware)"""
+        # Use yellow border when paused, green when running
+        border_style = (
+            "yellow" if self.process_state == ProcessState.PAUSED else "green"
+        )
+
         table = Table(show_header=False, box=box.ROUNDED, expand=True)
         table.add_column("Metric", style="cyan", width=20)
         table.add_column("Value", style="bold green", width=12)
@@ -312,15 +396,26 @@ class RichTUIManager:
         )
         progress_pct = (completed_steps / total_steps) * 100 if total_steps > 0 else 0
 
+        # Use Symbols for progress bar characters (ASCII fallback)
         bar_length = 30
-        filled = int((progress_pct / 100) * bar_length)
-        progress_bar = "█" * filled + "░" * (bar_length - filled)
+        progress_bar = Symbols.make_progress_bar(progress_pct, bar_length)
+
+        # Calculate ETA using effective elapsed (excludes pause time)
+        effective_elapsed = self.get_effective_elapsed()
+        eta_seconds = calculate_eta(progress_pct, effective_elapsed)
+
+        # Show "(paused)" in ETA when paused, or time remaining otherwise
+        if self.process_state == ProcessState.PAUSED:
+            eta_str = "[yellow](paused)[/yellow]"
+        else:
+            eta_str = format_duration(eta_seconds) if eta_seconds else "--"
 
         table.add_row(
             "Overall Progress",
             f"{completed_steps}/{total_steps} steps",
             f"{progress_bar} {progress_pct:.0f}%",
         )
+        table.add_row("ETA", eta_str, "")
         table.add_row(
             "Processing Chunks", f"{processing}/{self.stats.total_chunks}", ""
         )
@@ -339,7 +434,10 @@ class RichTUIManager:
             f"~{self.stats.total_cost * 100:.1f}¢",
         )
 
-        return Panel(table, title="📊 Processing Stats", border_style="green")
+        chart = Symbols.get(Symbols.CHART)
+        return Panel(
+            table, title=f"{chart} Processing Stats", border_style=border_style
+        )
 
     def _create_chunks_table(self) -> Table:
         """Create the chunks status table (dynamically sized based on terminal height)"""
@@ -371,13 +469,13 @@ class RichTUIManager:
             chunk = self.chunks[chunk_id]
 
             # Format status with current step and spinner for active processing
-            status_text = f"{chunk.state.value} {chunk.state.name}"
+            status_text = f"{chunk.state.get_symbol()} {chunk.state.name}"
             if (
                 chunk.state == ChunkState.PROCESSING
                 and chunk.current_step != ProcessingStep.QUEUED
             ):
                 # Show current step when processing with animated spinner
-                spinner_frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+                spinner_frames = Symbols.get_spinner_frames()
                 spinner_idx = int(time.time() * 10) % len(
                     spinner_frames
                 )  # Animate based on time
@@ -431,9 +529,18 @@ class RichTUIManager:
                 style=style,
             )
 
+        # Dynamic title showing actual visible chunk count
+        processing_symbol = Symbols.get(Symbols.PROCESSING)
+        visible_count = len(visible_chunks)
+        total_count = len(self.chunks)
+        title_suffix = (
+            f" (showing {visible_count} of {total_count})"
+            if visible_count < total_count
+            else ""
+        )
         return Panel(
             table,
-            title=f"🔄 Chunk Status (showing last 10 of {len(self.chunks)})",
+            title=f"{processing_symbol} Chunk Status{title_suffix}",
             border_style="blue",
         )
 
@@ -459,9 +566,10 @@ class RichTUIManager:
         self.console.print()
 
         # Title
+        sparkles = Symbols.get(Symbols.SPARKLES)
         self.console.print(
             Panel(
-                "✨ [bold green]EXTRACTION COMPLETE[/] ✨",
+                f"{sparkles} [bold green]EXTRACTION COMPLETE[/] {sparkles}",
                 border_style="green",
                 expand=False,
             )
@@ -546,15 +654,23 @@ class RichTUIManager:
             files_table.add_column("Type", style="cyan", width=20)
             files_table.add_column("Location", style="blue", width=55)
 
-            files_table.add_row("📄 XML Output", f"{output_dir}/processed_*.xml")
-            files_table.add_row("🔗 Merged XML", f"{output_dir}/merged_output.xml")
-            files_table.add_row("📋 Error Log", f"{output_dir}/error_log.txt")
-            files_table.add_row("🌐 Scraped HTML", f"{output_dir}/*.html")
+            file_sym = Symbols.get(Symbols.FILE)
+            link_sym = Symbols.get(Symbols.LINK)
+            scrape_sym = Symbols.get(Symbols.SCRAPING)
+            files_table.add_row(
+                f"{file_sym} XML Output", f"{output_dir}/processed_*.xml"
+            )
+            files_table.add_row(
+                f"{link_sym} Merged XML", f"{output_dir}/merged_output.xml"
+            )
+            files_table.add_row(f"{file_sym} Error Log", f"{output_dir}/error_log.txt")
+            files_table.add_row(f"{scrape_sym} Scraped HTML", f"{output_dir}/*.html")
 
+            folder_sym = Symbols.get(Symbols.FOLDER)
             self.console.print(
                 Panel(
                     files_table,
-                    title="📁 Output Files",
+                    title=f"{folder_sym} Output Files",
                     border_style="blue",
                     expand=False,
                 )
@@ -562,14 +678,26 @@ class RichTUIManager:
             self.console.print()
 
         # Final status
+        check = Symbols.get(Symbols.CHECK)
+        dot = Symbols.get(Symbols.DOT)
         if self.stats.failed == 0:
-            self.console.print("[green]✓[/green] All chunks processed successfully!")
-            self.console.print("[green]✓[/green] XML validation passed")
-            self.console.print("[green]✓[/green] 0 permanent failures")
+            self.console.print(
+                f"[green]{check}[/green] All chunks processed successfully!"
+            )
+            self.console.print(f"[green]{check}[/green] XML validation passed")
+            self.console.print(f"[green]{check}[/green] 0 permanent failures")
         else:
-            self.console.print(f"[yellow]⚠[/yellow] {self.stats.failed} chunks failed")
-            for error in self.stats.errors[:5]:  # Show first 5 errors
-                self.console.print(f"  [red]•[/red] {error}")
+            retry_sym = Symbols.get(Symbols.RETRY)
+            self.console.print(
+                f"[yellow]{retry_sym}[/yellow] {self.stats.failed} chunks failed"
+            )
+            # Show errors (limited to MAX_FAILED_URLS_TO_SHOW from config)
+            # DO NOT hardcode display limits - use centralized constants
+            for error in self.stats.errors[:MAX_FAILED_URLS_TO_SHOW]:
+                self.console.print(f"  [red]{dot}[/red] {error}")
+            if len(self.stats.errors) > MAX_FAILED_URLS_TO_SHOW:
+                remaining = len(self.stats.errors) - MAX_FAILED_URLS_TO_SHOW
+                self.console.print(f"  [dim]... and {remaining} more errors[/dim]")
 
         self.console.print()
 
@@ -591,66 +719,21 @@ class RichTUIManager:
 
         print("=" * 60 + "\n")
 
-    def _keyboard_listener(self) -> None:
-        """Listen for SPACE keypress in a separate thread"""
-        try:
-            # Check if stdin is a terminal (TTY)
-            if not sys.stdin.isatty():
-                # Not a TTY, skip keyboard listener
-                return
-
-            if self.old_terminal_settings is None:
-                self.old_terminal_settings = termios.tcgetattr(sys.stdin)
-
-            tty.setcbreak(sys.stdin.fileno())
-            while not self.should_stop:
-                if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
-                    char = sys.stdin.read(1)
-                    if char == " ":  # SPACE key pressed
-                        if self.waiting_to_start:
-                            self.waiting_to_start = False
-                        else:
-                            self.should_stop = True
-                            break
-        except (termios.error, OSError):
-            # Terminal operations not supported, skip
-            pass
-        finally:
-            if self.old_terminal_settings is not None:
-                try:
-                    termios.tcsetattr(
-                        sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
-                    )
-                except (termios.error, OSError):
-                    pass
-
-    def start_keyboard_listener(self) -> None:
-        """Start the keyboard listener thread"""
-        if not self.no_tui and self.keyboard_listener_thread is None:
-            self.keyboard_listener_thread = threading.Thread(
-                target=self._keyboard_listener, daemon=True
-            )
-            self.keyboard_listener_thread.start()
-
-    def stop_keyboard_listener(self) -> None:
-        """Stop the keyboard listener thread and restore terminal"""
-        self.should_stop = True
-        if self.keyboard_listener_thread:
-            self.keyboard_listener_thread.join(timeout=1.0)
-            self.keyboard_listener_thread = None
-        if self.old_terminal_settings is not None:
-            termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self.old_terminal_settings)
-            self.old_terminal_settings = None
+    # Note: _on_space_pressed, request_stop, wait_while_paused,
+    # start_keyboard_listener, stop_keyboard_listener are inherited
+    # from BaseTUIManager with thread-safe implementation.
 
     def wait_for_start(self) -> None:
         """Display TUI and wait for SPACE keypress to start processing"""
         if self.no_tui:
-            return  # Skip in no-tui mode
+            # In no-tui mode, skip waiting and start immediately
+            self.process_state = ProcessState.RUNNING
+            return
 
         # Check if stdin is a TTY
         if not sys.stdin.isatty():
             # Not a TTY, skip waiting and start immediately
-            self.waiting_to_start = False
+            self.process_state = ProcessState.RUNNING
             return
 
         # Start keyboard listener
@@ -664,28 +747,35 @@ class RichTUIManager:
         self.live = Live(
             self._create_waiting_dashboard(),
             console=self.console,
-            refresh_per_second=10,  # Faster refresh for smooth spinner animations
+            # Use centralized constant for refresh rate - DO NOT hardcode FPS values
+            # TUI_WAITING_FPS is faster than TUI_SINGLE_PAGE_FPS for smooth spinner animations
+            refresh_per_second=TUI_WAITING_FPS,
             screen=True,  # Use alternate screen buffer for full control
             vertical_overflow="visible",  # Allow content to fill screen
         )
         self.live.start()
 
-        # Wait for user to press SPACE
-        while self.waiting_to_start and not self.should_stop:
-            time.sleep(0.1)
+        # Wait for user to press SPACE (state changes to RUNNING)
+        while self.process_state == ProcessState.WAITING:
+            # Use centralized polling interval - DO NOT hardcode timing values
+            time.sleep(KEYBOARD_POLL_INTERVAL)
             if self.live:
                 self.live.update(self._create_waiting_dashboard())
 
         # Switch to normal dashboard
-        if self.live and not self.should_stop:
+        if self.live and self.process_state == ProcessState.RUNNING:
             self.live.update(self._create_dashboard())
 
     def _create_waiting_dashboard(self) -> Table:
         """Create the waiting state dashboard with prominent start message"""
+        rocket = Symbols.get(Symbols.ROCKET)
+        pause = Symbols.get(Symbols.PAUSE)
+        chart = Symbols.get(Symbols.CHART)
+
         # Header
         header = Panel(
             Text(
-                "🚀 APIAS - API Documentation Extractor",
+                f"{rocket} APIAS v{__version__} - API Documentation Extractor",
                 justify="center",
                 style="bold cyan",
             ),
@@ -696,7 +786,7 @@ class RichTUIManager:
         # Waiting message (prominent)
         waiting_msg = Panel(
             Text.assemble(
-                ("⏸️  ", "bold yellow"),
+                (f"{pause}  ", "bold yellow"),
                 ("PRESS SPACE BAR TO START SCRAPING", "bold yellow blink"),
                 ("\n\n", ""),
                 ("Press SPACE again to stop", "dim white"),
@@ -704,7 +794,7 @@ class RichTUIManager:
             box=box.DOUBLE,
             padding=(2, 4),
             border_style="yellow",
-            title="[bold yellow]⏸️  READY TO START[/bold yellow]",
+            title=f"[bold yellow]{pause}  READY TO START[/bold yellow]",
             title_align="center",
         )
 
@@ -722,7 +812,7 @@ class RichTUIManager:
 
         stats_panel = Panel(
             stats_content,
-            title="📊 Processing Stats",
+            title=f"{chart} Processing Stats",
             border_style="cyan",
             box=box.ROUNDED,
         )

@@ -3,21 +3,20 @@ Batch TUI Module for monitoring multiple URLs being processed in parallel.
 
 Provides a scrollable dashboard that shows:
 - Multiple URLs being processed concurrently (10-100+)
-- Each URL gets 3 lines: header, stats, progress bar
+- Each URL gets 4 lines: header, stats, progress bar, status message (optional)
 - Real-time updates as threads process URLs
 - Scrollable viewport with arrow keys
+- Cross-platform terminal support with ASCII fallbacks
 - "PRESS SPACE TO START" waiting screen
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from enum import Enum
 import threading
 import sys
-import tty
-import termios
-import select
 import time
 
 from rich.console import Console
@@ -25,28 +24,64 @@ from rich.live import Live
 from rich.table import Table
 from rich.panel import Panel
 from rich.layout import Layout
-from rich.progress import BarColumn, Progress, TextColumn
 from rich.text import Text
 from rich import box
+
+# Import centralized constants - single source of truth for configuration values
+# DO NOT hardcode values here - add new constants to config.py instead
+from apias.config import (
+    TUI_REFRESH_FPS,
+    MAX_FAILED_URLS_TO_SHOW,
+    FALLBACK_VERSION,
+    KEYBOARD_POLL_INTERVAL,
+)
+
+# Import shared terminal utilities for cross-platform support
+from apias.terminal_utils import (
+    Symbols,
+    KeyboardListener,
+    ProcessState,
+    BaseTUIManager,
+    detect_terminal_capabilities,
+    format_duration,
+    calculate_eta,
+)
+
+# Module-level logger for tracing TUI operations and debugging
+logger = logging.getLogger(__name__)
 
 # Import version
 try:
     from apias import __version__
 except ImportError:
-    __version__ = "0.1.4"  # Fallback if import fails
+    # Use centralized fallback version from config.py
+    # DO NOT hardcode version string here
+    __version__ = FALLBACK_VERSION
 
 
 class URLState(Enum):
-    """States for URL processing"""
+    """States for URL processing with ASCII fallback support"""
 
-    PENDING = "⏳"
-    SCRAPING = "🌐"
-    PROCESSING = "🔄"
+    PENDING = "pending"
+    SCRAPING = "scraping"
+    PROCESSING = "processing"
     MERGING_CHUNKS = (
-        "🔀"  # Per-URL chunk merging (reconstructs coherent API from chunks)
+        "merging"  # Per-URL chunk merging (reconstructs coherent API from chunks)
     )
-    COMPLETE = "✅"
-    FAILED = "❌"
+    COMPLETE = "complete"
+    FAILED = "failed"
+
+    def get_symbol(self) -> str:
+        """Get the display symbol (emoji or ASCII) based on terminal capabilities"""
+        symbol_map = {
+            URLState.PENDING: Symbols.PENDING,
+            URLState.SCRAPING: Symbols.SCRAPING,
+            URLState.PROCESSING: Symbols.PROCESSING,
+            URLState.MERGING_CHUNKS: Symbols.MERGING,
+            URLState.COMPLETE: Symbols.COMPLETE,
+            URLState.FAILED: Symbols.FAILED,
+        }
+        return Symbols.get(symbol_map[self])
 
 
 @dataclass
@@ -84,96 +119,77 @@ class BatchStats:
     start_time: datetime = field(default_factory=datetime.now)
 
 
-class BatchTUIManager:
+class BatchTUIManager(BaseTUIManager):
     """
     TUI manager for batch processing of multiple URLs.
 
     Displays a scrollable list of URLs with real-time progress.
     Each URL shows: header (task # + URL), stats row, progress bar.
+
+    Inherits thread-safe state management from BaseTUIManager.
     """
 
-    def __init__(self, urls: List[str], no_tui: bool = False):
+    def __init__(
+        self, urls: List[str], no_tui: bool = False, quiet: bool = False
+    ) -> None:
         """
         Initialize batch TUI manager.
 
         Args:
             urls: List of URLs to process
             no_tui: If True, disable Rich TUI
+            quiet: If True, minimal output (implies no_tui)
         """
-        self.console = Console(force_terminal=True, legacy_windows=False)
-        self.no_tui = no_tui
+        # Initialize base class (handles state management, console, etc.)
+        super().__init__(no_tui=no_tui, quiet=quiet)
+
+        # Batch-specific state
         self.stats = BatchStats(total_urls=len(urls), pending=len(urls))
         self.tasks: Dict[int, URLTask] = {}
-        self.live: Optional[Live] = None
 
-        # Thread safety lock for task/stats updates
-        self._lock = threading.Lock()
+        # Additional lock for task/stats updates (separate from state lock)
+        self._task_lock = threading.Lock()
 
-        # Keyboard control state
-        self.waiting_to_start = True
-        self.should_stop = False
-        self.keyboard_listener_thread: Optional[threading.Thread] = None
-        self.old_terminal_settings: Optional[List[Any]] = None
-
-        # Scrolling state
+        # Scrolling state for URL list navigation
         self.scroll_offset = 0
 
         # Initialize all URLs as pending tasks
         for idx, url in enumerate(urls, start=1):
             self.tasks[idx] = URLTask(task_id=idx, url=url)
 
+    # Override get_effective_elapsed to use stats.start_time
+    def get_effective_elapsed(self) -> float:  # type: ignore[override]
+        """Get elapsed time excluding pause duration."""
+        return super().get_effective_elapsed(self.stats.start_time)
+
+    def _on_scroll_up(self) -> None:
+        """Handle scroll up (registered with keyboard listener)."""
+        if self.scroll_offset > 0:
+            self.scroll_offset -= 1
+
+    def _on_scroll_down(self) -> None:
+        """Handle scroll down (registered with keyboard listener)."""
+        max_offset = max(0, len(self.tasks) - 5)
+        if self.scroll_offset < max_offset:
+            self.scroll_offset += 1
+
     def start_keyboard_listener(self) -> None:
-        """Start listening for keyboard input (SPACE and arrow keys)"""
-        if not self.no_tui and sys.stdin.isatty():
-            self.keyboard_listener_thread = threading.Thread(
-                target=self._keyboard_listener, daemon=True
-            )
-            self.keyboard_listener_thread.start()
+        """Start keyboard listener with scroll support."""
+        super().start_keyboard_listener()
+        # Register scroll callbacks
+        if self._keyboard_listener:
+            self._keyboard_listener.register_callback("up", self._on_scroll_up)
+            self._keyboard_listener.register_callback("down", self._on_scroll_down)
 
-    def _keyboard_listener(self) -> None:
-        """Listen for SPACE (start/stop) and arrow keys (scroll)"""
-        try:
-            if not sys.stdin.isatty():
-                return
-
-            self.old_terminal_settings = termios.tcgetattr(sys.stdin)
-
-            tty.setcbreak(sys.stdin.fileno())
-            while not self.should_stop:
-                if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
-                    char = sys.stdin.read(1)
-                    if char == " ":  # SPACE key
-                        if self.waiting_to_start:
-                            self.waiting_to_start = False
-                        else:
-                            self.should_stop = True
-                            break
-                    elif char == "\x1b":  # Escape sequence (arrow keys)
-                        # Read next two characters for arrow keys
-                        next_chars = sys.stdin.read(2)
-                        if next_chars == "[A":  # Up arrow
-                            self.scroll_offset = max(0, self.scroll_offset - 1)
-                        elif next_chars == "[B":  # Down arrow
-                            max_scroll = max(
-                                0, len(self.tasks) - 10
-                            )  # Adjust based on visible tasks
-                            self.scroll_offset = min(max_scroll, self.scroll_offset + 1)
-        except (termios.error, OSError):
-            pass
-        finally:
-            # Restore terminal settings
-            if self.old_terminal_settings is not None:
-                try:
-                    termios.tcsetattr(
-                        sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
-                    )
-                except (termios.error, OSError):
-                    pass
+    # Note: waiting_to_start, should_stop, is_paused, is_running,
+    # _on_space_pressed, request_stop, wait_while_paused are inherited
+    # from BaseTUIManager with thread-safe implementation.
 
     def wait_for_start(self) -> None:
         """Display waiting screen until user presses SPACE"""
         if self.no_tui or not sys.stdin.isatty():
-            self.waiting_to_start = False
+            # No TUI mode - start immediately
+            self.process_state = ProcessState.RUNNING
             return
 
         self.start_keyboard_listener()
@@ -182,23 +198,28 @@ class BatchTUIManager:
         self.live = Live(
             self._create_waiting_dashboard(),
             console=self.console,
-            refresh_per_second=20,  # Increased to 20 FPS for more fluid updates
+            # Use centralized constant for refresh rate - DO NOT hardcode FPS values
+            refresh_per_second=TUI_REFRESH_FPS,
             screen=True,
         )
         self.live.start()
 
-        while self.waiting_to_start and not self.should_stop:
-            time.sleep(0.1)
+        # Wait until user presses SPACE (changes state from WAITING)
+        while self.process_state == ProcessState.WAITING:
+            # Use centralized polling interval - DO NOT hardcode timing values
+            time.sleep(KEYBOARD_POLL_INTERVAL)
             if self.live:
                 self.live.update(self._create_waiting_dashboard())
 
-        if self.live and not self.should_stop:
+        # Switch to main dashboard if not stopped
+        if self.live and self.process_state != ProcessState.STOPPED:
             self.live.update(self._create_dashboard())
 
     def _create_waiting_dashboard(self) -> Panel:
         """Create the waiting screen shown before processing starts"""
+        pause = Symbols.get(Symbols.PAUSE)
         waiting_msg = Text.assemble(
-            ("⏸️  ", "bold yellow"),
+            (f"{pause}  ", "bold yellow"),
             ("PRESS SPACE BAR TO START BATCH SCRAPING", "bold yellow blink"),
             ("\n\n", ""),
             (f"{self.stats.total_urls} URLs queued for processing", "dim white"),
@@ -211,12 +232,12 @@ class BatchTUIManager:
             box=box.DOUBLE,
             padding=(2, 4),
             border_style="yellow",
-            title="[bold yellow]⏸️  READY TO START[/bold yellow]",
+            title=f"[bold yellow]{pause}  READY TO START[/bold yellow]",
             title_align="center",
         )
 
     def _create_dashboard(self) -> Layout:
-        """Create the main batch processing dashboard"""
+        """Create the main batch processing dashboard (pause-aware)"""
         layout = Layout()
 
         # Calculate layout sizes
@@ -233,15 +254,23 @@ class BatchTUIManager:
             Layout(name="footer", size=footer_size),
         )
 
-        # Header
+        # Header with version and pause state indicator
+        rocket = Symbols.get(Symbols.ROCKET)
+        if self.process_state == ProcessState.PAUSED:
+            # Show paused indicator in header with pulsing animation
+            pulse = Symbols.get_pulse_frame()
+            pause_sym = Symbols.get(Symbols.PAUSE)
+            header_text = f"{pause_sym} [bold yellow]PAUSED[/] {pulse} APIAS v{__version__} - Batch Processing Dashboard"
+            header_style = "yellow"
+        else:
+            header_text = f"{rocket} [bold cyan]APIAS v{__version__}[/] - Batch Processing Dashboard"
+            header_style = "cyan"
+
         layout["header"].update(
             Panel(
-                Text(
-                    f"🚀 APIAS v{__version__} - Batch Processing Dashboard",
-                    justify="center",
-                    style="bold cyan",
-                ),
+                Text.from_markup(header_text, justify="center"),
                 box=box.ROUNDED,
+                border_style=header_style,
             )
         )
 
@@ -251,21 +280,44 @@ class BatchTUIManager:
         # URLs list (scrollable)
         layout["urls"].update(self._create_urls_panel(urls_size))
 
-        # Footer
-        elapsed = datetime.now() - self.stats.start_time
-        layout["footer"].update(
-            Text(
-                f"⏱️  Elapsed: {elapsed.seconds // 60:02d}:{elapsed.seconds % 60:02d}  |  "
-                f"Scroll: ↑↓ arrows  |  Stop: SPACE or Ctrl+C  |  "
-                f"Last Update: {datetime.now().strftime('%H:%M:%S')}",
-                style="dim",
+        # Footer with state-aware controls
+        effective_elapsed = self.get_effective_elapsed()
+        clock = Symbols.get(Symbols.CLOCK)
+        arrow_up = Symbols.get(Symbols.ARROW_UP)
+        arrow_down = Symbols.get(Symbols.ARROW_DOWN)
+
+        if self.process_state == ProcessState.PAUSED:
+            # Paused state - show pulsing indicator and resume instructions
+            pulse = Symbols.get_pulse_frame()
+            play_sym = Symbols.get(Symbols.PLAY)
+            footer_text = (
+                f"{pulse} [bold yellow]PAUSED[/bold yellow] {pulse}  |  "
+                f"SPACE: {play_sym} Resume  |  Ctrl+C: Stop & Exit  |  "
+                f"Paused at: {datetime.now().strftime('%H:%M:%S')}"
             )
-        )
+            footer_style = "bold yellow"
+        else:
+            # Running state - show pause and stop instructions
+            pause_sym = Symbols.get(Symbols.PAUSE)
+            stop_sym = Symbols.get(Symbols.STOP)
+            footer_text = (
+                f"{clock}  Elapsed: {int(effective_elapsed) // 60:02d}:{int(effective_elapsed) % 60:02d}  |  "
+                f"Scroll: {arrow_up}{arrow_down}  |  SPACE: {pause_sym} Pause  |  Ctrl+C: {stop_sym} Stop & Exit  |  "
+                f"Last Update: {datetime.now().strftime('%H:%M:%S')}"
+            )
+            footer_style = "dim"
+
+        layout["footer"].update(Text.from_markup(footer_text, style=footer_style))
 
         return layout
 
     def _create_stats_panel(self) -> Panel:
-        """Create overall statistics panel"""
+        """Create overall statistics panel with ETA (pause-aware)"""
+        # Use yellow border when paused, green when running
+        border_style = (
+            "yellow" if self.process_state == ProcessState.PAUSED else "green"
+        )
+
         table = Table(show_header=False, box=None, expand=True)
         table.add_column("Metric", style="cyan", width=20)
         table.add_column("Value", style="bold green", justify="center")
@@ -276,11 +328,23 @@ class BatchTUIManager:
             if self.stats.total_urls > 0
             else 0
         )
+
+        # Use Symbols for progress bar (ASCII fallback)
         bar_length = 40
-        filled = int((progress_pct / 100) * bar_length)
-        progress_bar = "█" * filled + "░" * (bar_length - filled)
+        progress_bar = Symbols.make_progress_bar(progress_pct, bar_length)
+
+        # Calculate ETA using effective elapsed (excludes pause time)
+        effective_elapsed = self.get_effective_elapsed()
+        eta_seconds = calculate_eta(progress_pct, effective_elapsed)
+
+        # Show "(paused)" in ETA when paused
+        if self.process_state == ProcessState.PAUSED:
+            eta_str = "[yellow](paused)[/yellow]"
+        else:
+            eta_str = format_duration(eta_seconds) if eta_seconds else "--"
 
         table.add_row("Overall Progress", f"{progress_bar} {progress_pct:.0f}%")
+        table.add_row("ETA", eta_str)
         table.add_row("Total URLs", f"{self.stats.total_urls}")
         table.add_row("Pending", f"{self.stats.pending}")
         table.add_row("Scraping", f"{self.stats.scraping}")
@@ -297,14 +361,20 @@ class BatchTUIManager:
             f"${self.stats.total_cost:.4f} (~{self.stats.total_cost * 100:.1f}¢)",
         )
 
+        chart = Symbols.get(Symbols.CHART)
         return Panel(
-            table, title="[bold cyan]📊 Statistics[/bold cyan]", box=box.ROUNDED
+            table,
+            title=f"[bold cyan]{chart} Statistics[/bold cyan]",
+            box=box.ROUNDED,
+            border_style=border_style,
         )
 
     def _create_urls_panel(self, available_height: int) -> Panel:
-        """Create scrollable URLs panel with 3 lines per URL"""
-        # Calculate how many complete tasks (3 lines each) fit in available height
-        lines_per_task = 3
+        """Create scrollable URLs panel with 4 lines per URL (when status_message present)"""
+        # Calculate how many complete tasks fit in available height
+        # Each task uses 4 lines: header, stats, progress bar, status message (optional)
+        # But we use 4 to account for worst case with status messages
+        lines_per_task = 4
         visible_tasks = max(
             1, (available_height - 4) // lines_per_task
         )  # -4 for panel borders/title
@@ -325,7 +395,7 @@ class BatchTUIManager:
             lines.append(f"[bold cyan]Task #{task_id:02d}:[/bold cyan] {url_display}")
 
             # Line 2: Stats row
-            state_emoji = task.state.value
+            state_emoji = task.state.get_symbol()
             size_in_kb = task.size_in / 1024 if task.size_in > 0 else 0
             size_out_kb = task.size_out / 1024 if task.size_out > 0 else 0
             duration_str = f"{task.duration:.1f}s" if task.duration > 0 else "0.0s"
@@ -340,7 +410,7 @@ class BatchTUIManager:
 
             stats_line = (
                 f"  {state_emoji} Status: [yellow]{task.state.name}{chunk_info}[/yellow]  |  "
-                f"Size: {size_in_kb:.1f}KB → {size_out_kb:.1f}KB  |  "
+                f"Size: {size_in_kb:.1f}KB -> {size_out_kb:.1f}KB  |  "
                 f"Cost: ${task.cost:.4f}  |  "
                 f"Duration: {duration_str}"
             )
@@ -353,26 +423,32 @@ class BatchTUIManager:
             prefix = "  ["  # Progress bar prefix
             suffix = "]"  # Progress bar suffix
 
-            # Estimated time remaining
+            # Estimated time remaining using shared utility
             if task.progress_pct > 0 and task.progress_pct < 100 and task.start_time:
                 elapsed = time.time() - task.start_time
-                estimated_total = (elapsed / task.progress_pct) * 100
-                remaining = estimated_total - elapsed
-                eta_str = f" {task.progress_pct:.0f}% Est: {remaining:.0f}s"
+                eta_seconds = calculate_eta(task.progress_pct, elapsed)
+                eta_str = (
+                    f" {task.progress_pct:.0f}% Est: {format_duration(eta_seconds)}"
+                    if eta_seconds
+                    else f" {task.progress_pct:.0f}%"
+                )
             else:
                 eta_str = f" {task.progress_pct:.0f}%"
 
-            # Add checkmark when complete
-            completion_marker = " ✅" if task.state == URLState.COMPLETE else ""
+            # Add checkmark when complete using Symbols
+            complete_symbol = Symbols.get(Symbols.COMPLETE)
+            completion_marker = (
+                f" {complete_symbol}" if task.state == URLState.COMPLETE else ""
+            )
 
             # Calculate bar length to fill available width
             reserved_space = (
-                len(prefix) + len(suffix) + len(eta_str) + len(completion_marker)
+                len(prefix) + len(suffix) + len(eta_str) + 3  # +3 for emoji width
             )
             bar_length = max(20, term_width - panel_padding - reserved_space)
 
-            filled = int((task.progress_pct / 100) * bar_length)
-            progress_bar = "█" * filled + "░" * (bar_length - filled)
+            # Use Symbols for progress bar (ASCII fallback)
+            progress_bar = Symbols.make_progress_bar(task.progress_pct, bar_length)
 
             progress_line = (
                 f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
@@ -412,10 +488,11 @@ class BatchTUIManager:
         if len(task_ids) > visible_tasks:
             scroll_info = f" (showing {start_idx + 1}-{end_idx} of {len(task_ids)})"
 
+        file_sym = Symbols.get(Symbols.FILE)
         content = Text.from_markup("\n".join(lines))
         return Panel(
             content,
-            title=f"[bold cyan]📋 URL Processing{scroll_info}[/bold cyan]",
+            title=f"[bold cyan]{file_sym} URL Processing{scroll_info}[/bold cyan]",
             box=box.ROUNDED,
             height=available_height,
         )
@@ -426,10 +503,12 @@ class BatchTUIManager:
             self.live = Live(
                 self._create_dashboard(),
                 console=self.console,
-                refresh_per_second=20,  # Increased to 20 FPS for more fluid updates
+                # Use centralized constant for refresh rate - DO NOT hardcode FPS values
+                refresh_per_second=TUI_REFRESH_FPS,
                 screen=True,
             )
             self.live.start()
+            logger.debug(f"Live display started at {TUI_REFRESH_FPS} FPS")
 
     def update_task(
         self,
@@ -458,13 +537,17 @@ class BatchTUIManager:
             total_chunks: Total number of chunks (0 if not chunked)
             status_message: Status/error/retry message to display above progress bar
                           Examples:
-                          - "⚠️ LLM server timeout. Retrying in 3s..."
-                          - "❌ Source page not found. Aborting task."
-                          - "🔄 LLM returned invalid XML. Retrying..."
+                          - "Warning: LLM server timeout. Retrying in 3s..."
+                          - "Error: Source page not found. Aborting task."
+                          - "Retry: LLM returned invalid XML. Retrying..."
         """
-        with self._lock:
+        # Use _task_lock for thread-safe task/stats updates
+        with self._task_lock:
             task = self.tasks.get(task_id)
             if not task:
+                # Log warning instead of silent failure - helps debug invalid task_id issues
+                # DO NOT silently return without logging - always trace unexpected conditions
+                logger.warning(f"update_task called with unknown task_id={task_id}")
                 return
 
             # Track start time
@@ -526,16 +609,167 @@ class BatchTUIManager:
             self.live.update(self._create_dashboard())
 
     def stop_live_display(self) -> None:
-        """Stop the live display"""
+        """Stop the live display and keyboard listener"""
+        # Stop keyboard listener first
+        self.stop_keyboard_listener()
+
         if self.live:
             self.live.stop()
             self.live = None
 
-        # Restore terminal settings
-        if self.old_terminal_settings is not None:
-            try:
-                termios.tcsetattr(
-                    sys.stdin, termios.TCSADRAIN, self.old_terminal_settings
+    def show_final_summary(self, output_dir: str = "") -> None:
+        """
+        Show beautiful final batch processing summary.
+
+        Args:
+            output_dir: Output directory path
+        """
+        if self.no_tui:
+            self._print_simple_summary(output_dir)
+            return
+
+        # Stop live display if active
+        self.stop_live_display()
+
+        # Clear screen and show summary
+        self.console.clear()
+        self.console.print()
+
+        # Title
+        sparkles = Symbols.get(Symbols.SPARKLES)
+        self.console.print(
+            Panel(
+                f"{sparkles} [bold green]BATCH PROCESSING COMPLETE[/] {sparkles}",
+                border_style="green",
+                expand=False,
+            )
+        )
+        self.console.print()
+
+        # Main statistics table
+        stats_table = Table(show_header=True, box=box.ROUNDED, expand=False, width=80)
+        stats_table.add_column("Metric", style="cyan", width=25)
+        stats_table.add_column("Value", style="bold green", width=15)
+        stats_table.add_column("Details", style="yellow", width=35)
+
+        # Calculate success rate
+        success_rate = (
+            (self.stats.completed / self.stats.total_urls * 100)
+            if self.stats.total_urls > 0
+            else 0
+        )
+
+        # Time elapsed
+        elapsed = datetime.now() - self.stats.start_time
+        time_str = format_duration(elapsed.total_seconds())
+
+        # Average cost per URL
+        avg_cost = (
+            self.stats.total_cost / self.stats.completed
+            if self.stats.completed > 0
+            else 0
+        )
+
+        # Average time per URL
+        total_duration = sum(t.duration for t in self.tasks.values() if t.duration > 0)
+        avg_time = (
+            total_duration / self.stats.completed if self.stats.completed > 0 else 0
+        )
+
+        stats_table.add_row(
+            "Success Rate",
+            f"{success_rate:.1f}%",
+            f"{self.stats.completed}/{self.stats.total_urls} URLs",
+        )
+        stats_table.add_row(
+            "Total Cost",
+            f"${self.stats.total_cost:.5f}",
+            f"~{self.stats.total_cost * 100:.1f} cents",
+        )
+        stats_table.add_row("Avg Cost/URL", f"${avg_cost:.5f}", "<1 cent per URL")
+        stats_table.add_row("Processing Time", time_str, f"~{avg_time:.1f}s per URL")
+
+        self.console.print(stats_table)
+        self.console.print()
+
+        # Output files panel
+        if output_dir:
+            files_table = Table(
+                show_header=True, box=box.SIMPLE, expand=False, width=80
+            )
+            files_table.add_column("Type", style="cyan", width=20)
+            files_table.add_column("Location", style="blue", width=55)
+
+            file_sym = Symbols.get(Symbols.FILE)
+            link_sym = Symbols.get(Symbols.LINK)
+            scrape_sym = Symbols.get(Symbols.SCRAPING)
+            files_table.add_row(
+                f"{file_sym} XML Output", f"{output_dir}/processed_*.xml"
+            )
+            files_table.add_row(
+                f"{link_sym} Merged XML", f"{output_dir}/merged_output.xml"
+            )
+            files_table.add_row(f"{file_sym} Error Log", f"{output_dir}/error_log.txt")
+            files_table.add_row(f"{scrape_sym} Scraped HTML", f"{output_dir}/*.html")
+
+            folder_sym = Symbols.get(Symbols.FOLDER)
+            self.console.print(
+                Panel(
+                    files_table,
+                    title=f"{folder_sym} Output Files",
+                    border_style="blue",
+                    expand=False,
                 )
-            except (termios.error, OSError):
-                pass
+            )
+            self.console.print()
+
+        # Final status
+        check = Symbols.get(Symbols.CHECK)
+        dot = Symbols.get(Symbols.DOT)
+        if self.stats.failed == 0:
+            self.console.print(
+                f"[green]{check}[/green] All URLs processed successfully!"
+            )
+            self.console.print(f"[green]{check}[/green] XML validation passed")
+            self.console.print(f"[green]{check}[/green] 0 permanent failures")
+        else:
+            retry_sym = Symbols.get(Symbols.RETRY)
+            self.console.print(
+                f"[yellow]{retry_sym}[/yellow] {self.stats.failed} URLs failed"
+            )
+            # Show failed URLs (limited to MAX_FAILED_URLS_TO_SHOW from config)
+            # DO NOT hardcode display limits - use centralized constants
+            failed_tasks = [
+                t for t in self.tasks.values() if t.state == URLState.FAILED
+            ]
+            for task in failed_tasks[:MAX_FAILED_URLS_TO_SHOW]:
+                error_msg = task.error[:50] if task.error else "Unknown error"
+                self.console.print(
+                    f"  [red]{dot}[/red] Task #{task.task_id}: {error_msg}"
+                )
+            if len(failed_tasks) > MAX_FAILED_URLS_TO_SHOW:
+                remaining = len(failed_tasks) - MAX_FAILED_URLS_TO_SHOW
+                self.console.print(f"  [dim]... and {remaining} more[/dim]")
+
+        self.console.print()
+
+    def _print_simple_summary(self, output_dir: str = "") -> None:
+        """Print simple text summary (for --no-tui mode)"""
+        print("\n" + "=" * 60)
+        print("BATCH PROCESSING COMPLETE")
+        print("=" * 60)
+        success_rate = (
+            self.stats.completed / self.stats.total_urls * 100
+            if self.stats.total_urls > 0
+            else 0
+        )
+        print(
+            f"Success Rate: {self.stats.completed}/{self.stats.total_urls} ({success_rate:.1f}%)"
+        )
+        print(f"Total Cost: ${self.stats.total_cost:.5f}")
+        print(f"Failed: {self.stats.failed}")
+
+        if output_dir:
+            print(f"\nOutput Directory: {output_dir}")
+
+        print("=" * 60 + "\n")
