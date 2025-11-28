@@ -1448,15 +1448,16 @@ def start_scraping(
         content, mime_type = scraper.scrape(url)
         if content:
             content = f"{url}:\n\n" + content
-            if no_tui:
+            # Only print completion message if not in quiet mode (for TUI)
+            if no_tui and not quiet:
                 print("... done.")
             return content
         else:
-            if no_tui:
+            if no_tui and not quiet:
                 print("No content retrieved.")
             return None
     except Exception as e:
-        if no_tui:
+        if no_tui and not quiet:
             print(f"Error during scraping: {str(e)}")
         return None
 
@@ -3710,15 +3711,27 @@ def main_workflow(
     # Configure logging level based on TUI mode
     configure_logging_for_tui(no_tui)
 
-    print(INFO_SEPARATOR)
-    logger.info("Starting Web API Retrieval workflow.")
-    if scrape_only:
-        logger.info("Scrape-only mode enabled: AI processing will be skipped")
-    if mock:
-        logger.info("MOCK MODE enabled: Using simulated API responses (no token costs)")
-    if no_tui:
-        logger.info("TUI disabled: Using plain text output")
-    print(INFO_SEPARATOR)
+    # Suppress console logging IMMEDIATELY in batch mode with TUI
+    # This prevents ANY logger output before TUI starts
+    handlers_and_level: tuple[list[logging.Handler], int] = (
+        [],
+        logging.INFO,
+    )  # Default if not batch mode with TUI
+    if mode == "batch" and not no_tui:
+        handlers_and_level = suppress_console_logging()
+    else:
+        # Only show initial messages if NOT in batch TUI mode
+        print(INFO_SEPARATOR)
+        logger.info("Starting Web API Retrieval workflow.")
+        if scrape_only:
+            logger.info("Scrape-only mode enabled: AI processing will be skipped")
+        if mock:
+            logger.info(
+                "MOCK MODE enabled: Using simulated API responses (no token costs)"
+            )
+        if no_tui:
+            logger.info("TUI disabled: Using plain text output")
+        print(INFO_SEPARATOR)
 
     result: Dict[
         str, Union[Optional[str], float, int, Optional[SessionErrorTracker]]
@@ -3854,19 +3867,12 @@ def main_workflow(
         whitelist_str = read_patterns_from_file(whitelist) if whitelist else None
         blacklist_str = read_patterns_from_file(blacklist) if blacklist else None
 
-        # Suppress console logging EARLY in batch mode (before sitemap fetch)
-        # to prevent Spinner output from appearing before TUI starts
-        handlers_and_level: tuple[list[logging.Handler], int] = (
-            [],
-            logging.INFO,
-        )  # Default if not batch mode with TUI
-        if mode == "batch" and not no_tui:
-            handlers_and_level = suppress_console_logging()
-
         # Extract and filter URLs if in batch mode
         if mode == "batch":
-            print(SEPARATOR)
-            logger.info("Fetching sitemap")
+            # Only print separator and messages if NOT using TUI
+            if no_tui:
+                print(SEPARATOR)
+                logger.info("Fetching sitemap")
             if not urls:
                 logger.error("No URLs provided for batch mode.")
                 # Restore logging if we suppressed it
