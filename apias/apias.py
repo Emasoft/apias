@@ -2656,9 +2656,13 @@ def web_scraper(url: str, no_tui: bool = False, quiet: bool = False) -> Optional
 # ============================
 
 
-def fetch_sitemap(urls: List[str]) -> Optional[str]:
+def fetch_sitemap(urls: List[str], quiet: bool = False) -> Optional[str]:
     """
     Fetches the sitemap.xml from the base domain of the given URLs using HTTP requests.
+
+    Args:
+        urls: List of URLs to fetch sitemap from
+        quiet: If True, suppress Spinner output (for batch TUI mode)
     """
     for url in urls:
         parsed_url = urlparse(url)
@@ -2666,7 +2670,7 @@ def fetch_sitemap(urls: List[str]) -> Optional[str]:
         sitemap_url = base_url.rstrip("/") + "/sitemap.xml"
         logger.info(f"Fetching sitemap from {sitemap_url}")
         try:
-            with Spinner("Fetching sitemap...") as spinner:
+            with Spinner("Fetching sitemap...", quiet=quiet) as spinner:
                 # Use centralized timeout from config - DO NOT hardcode
                 response = requests.get(sitemap_url, timeout=HTTP_REQUEST_TIMEOUT)
                 response.raise_for_status()
@@ -3314,7 +3318,10 @@ def process_multiple_pages(
     )
 
     # Suppress console logging when batch TUI is active to prevent screen jumping
-    handlers_and_level = ([], logging.INFO)  # Default values if not suppressed
+    handlers_and_level: tuple[list[logging.Handler], int] = (
+        [],
+        logging.INFO,
+    )  # Default values if not suppressed
     if batch_tui:
         handlers_and_level = suppress_console_logging()
 
@@ -3386,14 +3393,19 @@ def process_multiple_pages(
                     # Cancel remaining futures gracefully
                     executor.shutdown(wait=False, cancel_futures=True)
 
-                    # Stop live display and restore logging BEFORE showing dialog
+                    # Stop live display FIRST (while logging still suppressed)
                     if batch_tui:
                         batch_tui.stop_live_display()
-                        restore_console_logging(handlers_and_level)
-                        # Show graceful error dialog to user
+
+                        # Show graceful error dialog to user (while logging STILL suppressed)
+                        # This prevents worker threads from logging during dialog display
                         batch_tui.show_circuit_breaker_dialog(
                             trigger_reason, str(temp_folder)
                         )
+
+                        # Only restore logging AFTER dialog is shown
+                        # (worker threads have had time to finish)
+                        restore_console_logging(handlers_and_level)
 
                     # Return early - do NOT continue to merge phase
                     return None, error_tracker
@@ -3842,15 +3854,28 @@ def main_workflow(
         whitelist_str = read_patterns_from_file(whitelist) if whitelist else None
         blacklist_str = read_patterns_from_file(blacklist) if blacklist else None
 
+        # Suppress console logging EARLY in batch mode (before sitemap fetch)
+        # to prevent Spinner output from appearing before TUI starts
+        handlers_and_level: tuple[list[logging.Handler], int] = (
+            [],
+            logging.INFO,
+        )  # Default if not batch mode with TUI
+        if mode == "batch" and not no_tui:
+            handlers_and_level = suppress_console_logging()
+
         # Extract and filter URLs if in batch mode
         if mode == "batch":
             print(SEPARATOR)
             logger.info("Fetching sitemap")
             if not urls:
                 logger.error("No URLs provided for batch mode.")
+                # Restore logging if we suppressed it
+                if not no_tui:
+                    restore_console_logging(handlers_and_level)
                 return result
             base_url = urls[0]
-            sitemap_content = fetch_sitemap([base_url])
+            # Pass quiet=True to suppress Spinner output when TUI will be used
+            sitemap_content = fetch_sitemap([base_url], quiet=not no_tui)
             if not sitemap_content:
                 logger.error("Sitemap retrieval failed. Exiting workflow.")
                 return result
