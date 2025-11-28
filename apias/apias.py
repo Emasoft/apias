@@ -229,14 +229,18 @@ def update_batch_status(
         # But allow our own timestamp brackets through
         escaped_msg = escaped_msg.replace(f"\\[{timestamp}\\]", f"[{timestamp}]")
 
-        # Log the status message for debugging
-        logger.info(f"Task #{task_id}: {message}")
+        # CRITICAL: Do NOT log when batch TUI is active - all output goes through TUI
+        # Logging would break the TUI display with raw text appearing on screen
+        # Only log in no_tui mode (when batch_tui.no_tui is True)
+        if batch_tui.no_tui:
+            logger.info(f"Task #{task_id}: {message}")
 
         # Update the batch TUI
         batch_tui.update_task(task_id, state, status_message=escaped_msg, **kwargs)
     except Exception as e:
-        # Fail gracefully if status update fails
-        logger.warning(f"Failed to update batch TUI status: {e}")
+        # Fail gracefully if status update fails - only log in no_tui mode
+        if batch_tui and batch_tui.no_tui:
+            logger.warning(f"Failed to update batch TUI status: {e}")
 
 
 # Global variables for cost tracking
@@ -3475,24 +3479,27 @@ def process_multiple_pages(
         return "scrape_only_completed", error_tracker
 
     # ========== Clean Merge Progress Display ==========
-    # Logging is still suppressed here - show clean merge progress
+    # CRITICAL: Only show merge progress in no_tui mode
+    # When batch TUI is active, merge happens silently - no console output
     console = Console(force_terminal=True)
 
-    # Clear screen and show merge header
-    console.clear()
-    console.print()
-    console.print(
-        Panel(
-            Text.assemble(
-                ("🔄 ", "bold cyan"),
-                ("Merging XML Files", "bold cyan"),
-            ),
-            box=box.DOUBLE,
-            border_style="cyan",
-            padding=(1, 2),
+    # Only show merge UI if not using TUI
+    if no_tui:
+        # Clear screen and show merge header
+        console.clear()
+        console.print()
+        console.print(
+            Panel(
+                Text.assemble(
+                    ("🔄 ", "bold cyan"),
+                    ("Merging XML Files", "bold cyan"),
+                ),
+                box=box.DOUBLE,
+                border_style="cyan",
+                padding=(1, 2),
+            )
         )
-    )
-    console.print()
+        console.print()
 
     # Progress variables
     merge_progress = {"current": 0, "total": 0, "message": ""}
@@ -3503,7 +3510,8 @@ def process_multiple_pages(
         merge_progress["total"] = total
         merge_progress["message"] = message
 
-        if total > 0:
+        # Only show progress in no_tui mode
+        if no_tui and total > 0:
             percentage = int((current / total) * 85)  # 0-85% for merging files
             console.print(
                 f"  [{current}/{total}] {message}... {percentage}%", style="cyan"
@@ -3513,18 +3521,21 @@ def process_multiple_pages(
     merged_xml = merge_xmls(temp_folder, progress_callback=merge_progress_callback)
 
     if not merged_xml or merged_xml == "<TEXTUAL_API />":
-        console.print(
-            "  ❌ No valid XML content extracted from pages.", style="bold red"
-        )
-        console.print()
+        # Only show error message in no_tui mode
+        if no_tui:
+            console.print(
+                "  ❌ No valid XML content extracted from pages.", style="bold red"
+            )
+            console.print()
         # Restore logging before returning
         if batch_tui:
             restore_console_logging(handlers_and_level)
         logger.error("No valid XML content extracted from pages.")
         return None, error_tracker
 
-    # Show validation progress
-    console.print("  Validating merged XML... 90%", style="cyan")
+    # Show validation progress only in no_tui mode
+    if no_tui:
+        console.print("  Validating merged XML... 90%", style="cyan")
 
     # Save merged XML
     logger.info("Saving merged XML output")
@@ -3533,23 +3544,27 @@ def process_multiple_pages(
         temp_folder.mkdir(parents=True, exist_ok=True)
         with open(merged_xml_file, "w", encoding="utf-8") as f:
             f.write(merged_xml)
-        console.print("  Saving merged XML... 100%", style="bold green")
-        console.print()
-        console.print(
-            Panel(
-                Text.assemble(
-                    ("✅ ", "bold green"),
-                    (f"Merge Complete! Saved to: {merged_xml_file}", "green"),
-                ),
-                box=box.ROUNDED,
-                border_style="green",
+        # Only show success messages in no_tui mode
+        if no_tui:
+            console.print("  Saving merged XML... 100%", style="bold green")
+            console.print()
+            console.print(
+                Panel(
+                    Text.assemble(
+                        ("✅ ", "bold green"),
+                        (f"Merge Complete! Saved to: {merged_xml_file}", "green"),
+                    ),
+                    box=box.ROUNDED,
+                    border_style="green",
+                )
             )
-        )
-        console.print()
+            console.print()
         logger.info(f"Merged XML saved successfully to {merged_xml_file}")
     except OSError as e:
-        console.print(f"  ❌ Error saving merged XML: {e}", style="bold red")
-        console.print()
+        # Only show error message in no_tui mode
+        if no_tui:
+            console.print(f"  ❌ Error saving merged XML: {e}", style="bold red")
+            console.print()
         # Restore logging before returning
         if batch_tui:
             restore_console_logging(handlers_and_level)
