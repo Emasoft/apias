@@ -3286,6 +3286,7 @@ def process_multiple_pages(
     num_threads: int = 5,
     scrape_only: bool = False,
     no_tui: bool = False,
+    handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
 ) -> Tuple[Optional[str], Optional[SessionErrorTracker]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
@@ -3296,6 +3297,7 @@ def process_multiple_pages(
         num_threads: Number of concurrent threads
         scrape_only: If True, skip AI processing
         no_tui: If True, disable Rich TUI (use simple spinner)
+        handlers_and_level: Tuple of (handlers, level) from suppress_console_logging() for restoration
     """
     from rich.console import Console
     from rich.text import Text
@@ -3318,13 +3320,8 @@ def process_multiple_pages(
         consecutive_threshold=3, quota_immediate_stop=True
     )
 
-    # Suppress console logging when batch TUI is active to prevent screen jumping
-    handlers_and_level: tuple[list[logging.Handler], int] = (
-        [],
-        logging.INFO,
-    )  # Default values if not suppressed
-    if batch_tui:
-        handlers_and_level = suppress_console_logging()
+    # NOTE: Logging is already suppressed in main_workflow before this function is called
+    # Do NOT suppress again here or it will create conflicts with handler restoration
 
     if batch_tui:
         # Show waiting screen and wait for SPACE
@@ -3978,7 +3975,7 @@ def main_workflow(
         elif mode == "batch":
             logger.info("Workflow Type: Batch Processing")
             xml_result, batch_error_tracker = process_multiple_pages(
-                urls, pricing_info, num_threads, scrape_only, no_tui
+                urls, pricing_info, num_threads, scrape_only, no_tui, handlers_and_level
             )
             # Store error tracker in result for summary display
             result["error_tracker"] = batch_error_tracker
