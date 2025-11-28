@@ -1,0 +1,111 @@
+# Error Thresholds Configuration for APIAS
+#
+# This file defines circuit breaker behavior for the error collection system.
+# The circuit breaker monitors errors and stops processing when thresholds are exceeded
+# to prevent wasting API quota, time, and money on failing operations.
+#
+# Design Principles:
+# - Fatal errors trip immediately (quota, auth, invalid API key)
+# - Transient errors allow multiple retries (timeouts, connection errors)
+# - High thresholds for expected failures (404s, some malformed responses)
+# - Per-category thresholds (not one-size-fits-all)
+#
+# Threshold Behavior:
+# - Consecutive errors: Circuit trips after N consecutive errors of same category
+# - Success reset: Any success resets the consecutive count for ALL categories
+# - Immediate trip: Some errors are so severe they trip on first occurrence
+#
+# See apias/error_collector.py for implementation details.
+
+circuit_breaker:
+  # Immediate Trip Categories
+  # -------------------------
+  # These errors are so severe that the circuit trips immediately on first occurrence.
+  # WHY: These indicate fundamental problems that won't resolve with retries:
+  #   - QUOTA_EXCEEDED: Out of API quota - no point continuing
+  #   - AUTHENTICATION: Invalid credentials - need user intervention
+  #   - INVALID_API_KEY: Bad API key - need user intervention
+
+  immediate_trip:
+    - QUOTA_EXCEEDED
+    - AUTHENTICATION
+    - INVALID_API_KEY
+
+  # Per-Category Thresholds
+  # -----------------------
+  # Number of consecutive errors before circuit trips.
+  # Lower threshold = more aggressive protection (trip sooner)
+  # Higher threshold = more lenient (allow more retries)
+
+  thresholds:
+    # API Rate Limiting (trip immediately)
+    # WHY: Rate limits indicate we're hitting API too fast
+    # Need to back off immediately to avoid extended cooldown
+    RATE_LIMIT: 1
+
+    # API Timeouts (allow 5 consecutive)
+    # WHY: Timeouts can be transient (network congestion, server load)
+    # Allow some retries before giving up
+    API_TIMEOUT: 5
+
+    # Connection Errors (allow 3 consecutive)
+    # WHY: Network issues can be intermittent (WiFi, DNS, routing)
+    # Allow moderate retries before deciding network is down
+    CONNECTION_ERROR: 3
+
+    # Server Errors (allow 10 consecutive)
+    # WHY: Server 500/502/503 can be transient (restarts, deployments)
+    # Allow generous retries as service may recover quickly
+    SERVER_ERROR: 10
+
+    # Invalid Response (allow 3 consecutive)
+    # WHY: LLM sometimes returns malformed JSON or unexpected format
+    # Allow retries as this can be transient (model update, prompt issue)
+    INVALID_RESPONSE: 3
+
+    # Source Not Found (allow 20 consecutive)
+    # WHY: 404 errors are expected for some URLs (dead links, moved pages)
+    # High threshold as this is not a system problem
+    SOURCE_NOT_FOUND: 20
+
+    # Parse Errors (allow 5 consecutive)
+    # WHY: HTML parsing can fail on malformed pages
+    # Allow moderate retries as some pages may have recoverable issues
+    PARSE_ERROR: 5
+
+    # XML Validation (allow 3 consecutive)
+    # WHY: XML validation failures indicate schema mismatch
+    # Allow some retries but trip if widespread issue
+    XML_VALIDATION: 3
+
+    # Unknown Errors (allow 5 consecutive)
+    # WHY: Unclassified errors need investigation
+    # Moderate threshold as we don't know severity
+    UNKNOWN: 5
+
+# Performance Note:
+# ----------------
+# These thresholds balance two competing concerns:
+#   1. Fail fast: Don't waste time/quota on hopeless operations
+#   2. Resilience: Don't give up too early on transient issues
+#
+# Adjust based on your specific use case:
+#   - Expensive API calls → Lower thresholds (fail faster)
+#   - Cheap/free processing → Higher thresholds (more resilient)
+#   - Time-sensitive tasks → Lower thresholds (faster failure detection)
+#   - Background batch jobs → Higher thresholds (maximize completion rate)
+
+# Testing Note:
+# ------------
+# To test circuit breaker behavior:
+#   1. Set thresholds very low (e.g., all = 1)
+#   2. Process URLs known to fail (404s, bad domains)
+#   3. Verify circuit trips and shows dialog
+#   4. Check session.log for detailed error records
+#
+# To simulate specific errors:
+#   - QUOTA_EXCEEDED: Exhaust API quota first
+#   - RATE_LIMIT: Send many parallel requests
+#   - API_TIMEOUT: Process very long content with low timeout
+#   - CONNECTION_ERROR: Disconnect network during processing
+#   - SERVER_ERROR: Process during API downtime/maintenance

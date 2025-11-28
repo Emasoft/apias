@@ -3380,7 +3380,7 @@ def process_multiple_pages(
     no_tui: bool = False,
     handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
     session_log_path: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[SessionErrorTracker]]:
+) -> Tuple[Optional[str], Optional[ErrorCollector]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
 
@@ -3473,7 +3473,7 @@ def process_multiple_pages(
             # Restore logging before returning
             restore_console_logging(handlers_and_level)
             logger.info("Processing cancelled by user before start")
-            return None, error_tracker
+            return None, error_collector
 
         # Start live display
         batch_tui.start_live_display()
@@ -3501,30 +3501,52 @@ def process_multiple_pages(
                 for idx, url in enumerate(urls)
             }
 
-            # Update TUI while processing
+            # ===== NEW HYBRID POLLING MAIN LOOP (Week 2 Integration) =====
+            # WHY: Replaces fixed 100ms polling with hybrid approach:
+            # - 50ms baseline polling (20 FPS) for stable TUI updates
+            # - Instant wake-up for critical events (circuit breaker, quota exceeded)
+            # - Event processing decoupled from TUI rendering
+            # - Atomic snapshots eliminate race conditions
+
             while True:
-                # Use centralized poll interval from config for consistent TUI responsiveness
+                # HYBRID POLLING: 50ms baseline + instant wake-up for critical events
+                # WHY: StatusPipeline.wait_for_update() returns immediately if
+                # CircuitBreakerEvent is published, otherwise times out after 50ms
+                critical = status_pipeline.wait_for_update(timeout=0.05)
+
+                # PROCESS EVENTS: Dispatch all pending events from worker threads
+                # WHY: EventBus.dispatch() processes StatusEvent, ErrorEvent, etc.
+                # that were published by process_url() in worker threads
+                event_bus.dispatch(timeout=0.01)
+
+                # CHECK COMPLETED FUTURES: Non-blocking check
+                # WHY: timeout=0 means don't wait for completion, just check status
+                # This allows TUI updates even if no tasks completed recently
                 done, pending = concurrent.futures.wait(
                     future_to_url.keys(),
-                    timeout=BATCH_TUI_POLL_INTERVAL,
+                    timeout=0,  # Non-blocking
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
 
-                # Update TUI display
+                # UPDATE TUI WITH ATOMIC SNAPSHOT
+                # WHY: get_snapshot() returns immutable copy - no race conditions
+                # TUI can render without holding locks or worrying about concurrent updates
                 if batch_tui:
-                    batch_tui.update_display()
+                    snapshot = status_pipeline.get_snapshot()
+                    batch_tui.render_snapshot(snapshot)
 
-                # Check for shutdown or circuit breaker
+                # Check for shutdown or user cancellation
                 if shutdown_flag or (batch_tui and batch_tui.should_stop):
                     logger.info("Shutdown requested. Cancelling remaining tasks.")
                     executor.shutdown(wait=False)
                     break
 
-                # Check circuit breaker for fatal errors (quota exceeded, rate limit, etc.)
-                if error_tracker.circuit_breaker.is_triggered:
-                    trigger_reason = (
-                        error_tracker.circuit_breaker.trigger_reason or "Unknown error"
-                    )
+                # CHECK CIRCUIT BREAKER: NEW event-driven system
+                # WHY: critical flag indicates CircuitBreakerEvent was published
+                # error_collector.is_tripped checks if circuit breaker has triggered
+                if critical and error_collector.is_tripped:
+                    # Get trigger reason from NEW error collector
+                    trigger_reason = error_collector.trigger_reason or "Unknown error"
                     logger.warning(
                         f"Circuit breaker triggered: {trigger_reason}. "
                         f"Stopping batch processing to avoid wasting resources."
@@ -3536,10 +3558,17 @@ def process_multiple_pages(
                     if batch_tui:
                         batch_tui.stop_live_display()
 
-                        # Show graceful error dialog to user (while logging STILL suppressed)
-                        # This prevents worker threads from logging during dialog display
-                        batch_tui.show_circuit_breaker_dialog(
-                            trigger_reason, str(temp_folder)
+                        # NEW SYSTEM: Dialog is automatically queued via CircuitBreakerEvent
+                        # WHY: CircuitBreakerEvent was published by error_collector.record_error()
+                        # DialogManager subscribed to it and queued CRITICAL priority dialog
+                        # We show pending dialogs AFTER TUI stops (below)
+
+                        # Show all pending dialogs (circuit breaker dialog will be first due to CRITICAL priority)
+                        # WHY: DialogManager queues dialogs by priority and shows them after TUI
+                        # This prevents dialog corruption and ensures clean user experience
+                        dialog_manager.show_pending_dialogs(
+                            output_dir=temp_folder,
+                            session_log=Path(session_log_path) if session_log_path else None
                         )
 
                         # NOTE: Do NOT restore logging here! Worker threads are still running
@@ -3548,8 +3577,14 @@ def process_multiple_pages(
                         # Since we're returning immediately, logging will remain suppressed
                         # and the program will exit cleanly without any thread output.
 
+                    # Uninstall logger interceptor before returning
+                    # WHY: Restore normal logging behavior for subsequent operations
+                    if logger_interceptor:
+                        logger_interceptor.uninstall()
+
                     # Return early - do NOT continue to merge phase
-                    return None, error_tracker
+                    # Return NEW error_collector instead of old error_tracker
+                    return None, error_collector
 
                 # Process completed futures
                 for future in done:
@@ -3560,27 +3595,40 @@ def process_multiple_pages(
                         xml_content = future.result()
                         if xml_content:
                             xml_list.append(xml_content)
+                            # NEW SYSTEM: Status already updated via events from process_url()
+                            # WHY: process_url() calls update_batch_status() which publishes StatusEvent
+                            # This redundant update kept for transition safety
                             if batch_tui:
-                                batch_tui.update_task(
-                                    task_id, URLState.COMPLETE, progress_pct=100.0
+                                status_pipeline.update_status(
+                                    task_id=task_id,
+                                    state=URLState.COMPLETE,
+                                    message="Completed successfully",
+                                    progress_pct=100.0
                                 )
                             else:
                                 spinner.update_text(
                                     f"Processed {len(xml_list)}/{len(urls)} URLs"
                                 )
                         else:
+                            # NEW SYSTEM: Status already updated via events from process_url()
                             if batch_tui:
-                                batch_tui.update_task(
-                                    task_id,
-                                    URLState.FAILED,
+                                status_pipeline.update_status(
+                                    task_id=task_id,
+                                    state=URLState.FAILED,
+                                    message="Processing failed",
                                     progress_pct=0.0,
-                                    error="Processing failed",
+                                    error="Processing failed"
                                 )
                     except Exception as e:
                         logger.error(f"Unhandled exception for URL {url}: {str(e)}")
+                        # NEW SYSTEM: Publish exception via status pipeline
                         if batch_tui:
-                            batch_tui.update_task(
-                                task_id, URLState.FAILED, progress_pct=0.0, error=str(e)
+                            status_pipeline.update_status(
+                                task_id=task_id,
+                                state=URLState.FAILED,
+                                message=f"Exception: {str(e)}",
+                                progress_pct=0.0,
+                                error=str(e)
                             )
 
                     # Remove from map
@@ -3592,17 +3640,37 @@ def process_multiple_pages(
 
     finally:
         if batch_tui:
-            # Final update before stopping
-            batch_tui.update_display()
+            # Final update before stopping (NEW SYSTEM: use atomic snapshot)
+            # WHY: get_snapshot() provides immutable copy for final TUI render
+            # This ensures consistent state display even if worker threads are still updating
+            snapshot = status_pipeline.get_snapshot()
+            batch_tui.render_snapshot(snapshot)
             # Use centralized pause duration - DO NOT hardcode timing values
             time.sleep(BATCH_FINAL_STATE_PAUSE)
             batch_tui.stop_live_display()
 
+            # Show pending dialogs (circuit breaker, error summary)
+            # WHY: DialogManager queues dialogs during processing and shows them
+            # AFTER TUI stops to prevent corruption. Priority queue ensures
+            # critical dialogs (circuit breaker) shown before normal dialogs.
+            dialog_manager.show_pending_dialogs(
+                output_dir=temp_folder,
+                session_log=Path(session_log_path) if session_log_path else None
+            )
+
             # Show session summary with log location
-            # Calculate error count from error_tracker
-            error_count = len(error_tracker.errors) if error_tracker else 0
+            # Calculate error count from NEW error_collector
+            # WHY: error_collector tracks ALL errors (network, API, scraping, XML)
+            # not just LLM errors like old error_tracker
+            error_count = error_collector.total_errors
             if session_log_path:
                 batch_tui.show_session_summary(str(session_log_path), error_count)
+
+            # Uninstall logger interceptor to restore normal logging
+            # WHY: Allows subsequent operations (merge, validation) to log normally
+            # without console suppression. Clean transition back to normal mode.
+            if logger_interceptor:
+                logger_interceptor.uninstall()
 
             # DON'T restore logging yet - keep it suppressed during merge
         else:
@@ -3620,7 +3688,7 @@ def process_multiple_pages(
         # Restore logging before returning
         if batch_tui:
             restore_console_logging(handlers_and_level)
-        return "scrape_only_completed", error_tracker
+        return "scrape_only_completed", error_collector
 
     # ========== Clean Merge Progress Display ==========
     # CRITICAL: Only show merge progress in no_tui mode
@@ -3675,7 +3743,7 @@ def process_multiple_pages(
         if batch_tui:
             restore_console_logging(handlers_and_level)
         logger.error("No valid XML content extracted from pages.")
-        return None, error_tracker
+        return None, error_collector
 
     # Show validation progress only in no_tui mode
     if no_tui:
@@ -3713,13 +3781,13 @@ def process_multiple_pages(
         if batch_tui:
             restore_console_logging(handlers_and_level)
         logger.error(f"Error saving merged XML file: {e}")
-        return None, error_tracker
+        return None, error_collector
 
     # NOW restore console logging after merge is complete
     if batch_tui:
         restore_console_logging(handlers_and_level)
 
-    return merged_xml, error_tracker
+    return merged_xml, error_collector
 
 
 def read_patterns_from_file(file_path: str) -> Optional[str]:
