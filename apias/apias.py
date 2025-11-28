@@ -2059,9 +2059,9 @@ async def call_llm_to_convert_html_to_xml(
     no_tui: bool = False,
     mock: bool = False,
     tui_manager: Optional[RichTUIManager] = None,
-    batch_tui: Optional[BatchTUIManager] = None,
+    status_pipeline: Optional[StatusPipeline] = None,
     task_id: Optional[int] = None,
-    error_tracker: Optional[SessionErrorTracker] = None,
+    error_collector: Optional[ErrorCollector] = None,
     url: Optional[str] = None,
 ) -> Tuple[Optional[str], float, Optional[RichTUIManager]]:
     """
@@ -2074,8 +2074,10 @@ async def call_llm_to_convert_html_to_xml(
         pricing_info: Model pricing information
         no_tui: If True, disable Rich TUI output
         mock: If True, use mock API instead of real OpenAI
-        batch_tui: Optional BatchTUIManager for status message display
-        task_id: Optional task ID for batch TUI updates
+        status_pipeline: Optional StatusPipeline for event-driven status updates
+        task_id: Optional task ID for status pipeline updates
+        error_collector: Optional ErrorCollector for comprehensive error tracking
+        url: Optional URL being processed (for error reporting)
     """
     # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
@@ -2128,9 +2130,9 @@ async def call_llm_to_convert_html_to_xml(
             chunk_num=1,
             mock=mock,
             mock_client=mock_client,
-            batch_tui=batch_tui,
+            status_pipeline=status_pipeline,
             task_id=task_id,
-            error_tracker=error_tracker,
+            error_collector=error_collector,
             url=url,
         )
 
@@ -2183,9 +2185,9 @@ async def call_llm_to_convert_html_to_xml(
             chunk_num=i,
             mock=mock,
             mock_client=mock_client,
-            batch_tui=batch_tui,
+            status_pipeline=status_pipeline,
             task_id=task_id,
-            error_tracker=error_tracker,
+            error_collector=error_collector,
             url=url,
         )
 
@@ -2274,9 +2276,9 @@ async def _process_single_chunk(
     chunk_num: Optional[int] = None,
     mock: bool = False,
     mock_client: Optional[MockAPIClient] = None,
-    batch_tui: Optional[BatchTUIManager] = None,
+    status_pipeline: Optional[StatusPipeline] = None,
     task_id: Optional[int] = None,
-    error_tracker: Optional[SessionErrorTracker] = None,
+    error_collector: Optional[ErrorCollector] = None,
     url: Optional[str] = None,
 ) -> Tuple[Optional[str], float]:
     """Process a single chunk of HTML content asynchronously with automatic XML validation retry."""
@@ -2624,10 +2626,11 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
             xml_output = extract_xml_from_input(xml_output)
 
             # Success! XML is valid
-            # Record success in error tracker to reset consecutive error count
+            # NEW SYSTEM: Record success in error_collector to reset consecutive error counts
+            # WHY: Resets ALL category counters - any success proves system is working
             # This prevents false circuit breaker trips from intermittent errors
-            if error_tracker:
-                error_tracker.record_success()
+            if error_collector:
+                error_collector.record_success()
 
             logger.info(
                 f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${total_cost:.6f}"
@@ -2641,9 +2644,9 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 logger.warning(
                     f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. Retrying with corrective instructions..."
                 )
-                # Show retry message in batch TUI
+                # Show retry message (NEW SYSTEM: via status_pipeline)
                 update_batch_status(
-                    batch_tui,
+                    status_pipeline,
                     task_id,
                     URLState.PROCESSING,
                     "🔄 LLM returned invalid XML. Retrying...",
@@ -2653,9 +2656,18 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 logger.error(
                     f"XML validation failed{chunk_label} after {max_retries + 1} attempts: {e}"
                 )
-                # Show final failure message in batch TUI
+                # NEW SYSTEM: Record XML validation error
+                if error_collector:
+                    error_collector.record_error(
+                        category=NewErrorCategory.XML_VALIDATION,
+                        message=f"XML validation failed after {max_retries + 1} attempts: {str(e)}",
+                        task_id=task_id,
+                        url=url,
+                        exception=e,
+                    )
+                # Show final failure message (NEW SYSTEM: via status_pipeline)
                 update_batch_status(
-                    batch_tui,
+                    status_pipeline,
                     task_id,
                     URLState.PROCESSING,
                     "❌ XML validation failed after retries.",
@@ -2665,38 +2677,43 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
         except Exception as e:
             # Classify the error for tracking and summary reporting
             # This helps users understand WHY their job failed (quota, rate limit, etc.)
-            error_category = classify_openai_error(e)
-            error_desc = get_error_description(error_category)
+            old_error_category = classify_openai_error(e)
+            error_desc = get_error_description(old_error_category)
 
-            # Record in error tracker if available
-            if error_tracker:
-                # Use centralized is_recoverable_error() - DO NOT hardcode category checks
-                # Recoverable errors can be retried; non-recoverable require user action
-                recoverable = is_recoverable_error(error_category)
-                error_event = ErrorEvent(
-                    category=error_category,
-                    message=str(e),
+            # NEW SYSTEM: Map old error categories to new ErrorCategory enum
+            # WHY: error_collector uses new ErrorCategory with per-category thresholds
+            if error_collector:
+                # Map old ErrorCategory to new NewErrorCategory
+                new_category_map = {
+                    "QUOTA_EXCEEDED": NewErrorCategory.QUOTA_EXCEEDED,
+                    "AUTHENTICATION": NewErrorCategory.AUTHENTICATION,
+                    "RATE_LIMIT": NewErrorCategory.RATE_LIMIT,
+                    "API_TIMEOUT": NewErrorCategory.API_TIMEOUT,
+                    "INVALID_REQUEST": NewErrorCategory.INVALID_RESPONSE,
+                    "API_ERROR": NewErrorCategory.SERVER_ERROR,
+                }
+                new_category = new_category_map.get(
+                    old_error_category.name, NewErrorCategory.UNKNOWN
+                )
+
+                # Record error - circuit breaker may trigger immediately for fatal errors
+                # (quota, auth) or after threshold for recoverable errors (timeout, rate limit)
+                error_collector.record_error(
+                    category=new_category,
+                    message=f"LLM API error: {str(e)}",
                     task_id=task_id,
                     url=url,
-                    recoverable=recoverable,
-                    raw_exception=type(e).__name__,
+                    exception=e,
                 )
-                # Record error - circuit breaker may trigger to stop wasting API credits
-                should_stop = error_tracker.record(error_event)
-                if should_stop:
-                    # Circuit breaker tripped - log prominently so user knows processing stopped
-                    logger.warning(
-                        f"Circuit breaker triggered: {error_tracker.circuit_breaker.trigger_reason}"
-                    )
 
             # Log with classified error type for debugging
             logger.error(
-                f"LLM processing failed{chunk_label}: [{error_category.name}] {e}"
+                f"LLM processing failed{chunk_label}: [{old_error_category.name}] {e}"
             )
 
-            # Show API error message in batch TUI with classified error
+            # Show API error message (NEW SYSTEM: via status_pipeline)
             msg = f"❌ {error_desc}"
-            update_batch_status(batch_tui, task_id, URLState.PROCESSING, msg)
+            update_batch_status(status_pipeline, task_id, URLState.PROCESSING, msg)
             return None, total_cost
 
     # Should never reach here, but just in case
