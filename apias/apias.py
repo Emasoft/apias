@@ -150,6 +150,27 @@ from .error_handler import (
     get_error_description,
     is_recoverable_error,  # Use centralized check instead of hardcoding categories
 )
+
+# WHY: New event-driven error handling and status update system (Week 2 integration)
+# These modules replace SessionErrorTracker and direct BatchTUI updates with
+# a decoupled event bus architecture for better thread safety and responsiveness
+from .event_system import (
+    EventBus,
+    StatusEvent,
+    ErrorEvent as NewErrorEvent,  # Renamed to avoid conflict with error_handler.ErrorEvent
+    CircuitBreakerEvent,
+    DialogEvent,
+    URLState as EventURLState,  # Will replace batch_tui.URLState once integration complete
+)
+from .error_collector import (
+    ErrorCollector,
+    load_error_config,
+    ErrorCategory as NewErrorCategory,  # Renamed to avoid conflict
+)
+from .status_pipeline import StatusPipeline, TaskSnapshot
+from .dialog_manager import DialogManager
+from .logger_interceptor import LoggerInterceptor
+
 from .config import (
     # Network timeouts - DO NOT hardcode these values elsewhere
     HTTP_REQUEST_TIMEOUT,
