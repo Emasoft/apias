@@ -219,47 +219,70 @@ def format_timestamp() -> str:
 
 
 def update_batch_status(
-    batch_tui: Optional[BatchTUIManager],
+    batch_tui_or_pipeline: Optional[Union[BatchTUIManager, StatusPipeline]],
     task_id: Optional[int],
     state: URLState,
     message: str,
     **kwargs: Any,
 ) -> None:
     """
-    Helper function to update batch TUI with status messages.
+    Helper function to update batch status via TUI or StatusPipeline.
     Handles Rich markup escaping, Unicode fallback, and logging.
 
+    WHY: Supports both old (BatchTUIManager) and new (StatusPipeline) systems
+    during Week 2 integration. This allows gradual migration without breaking
+    existing code.
+
     Args:
-        batch_tui: Optional BatchTUIManager instance
+        batch_tui_or_pipeline: Optional BatchTUIManager or StatusPipeline instance
         task_id: Optional task ID
         state: URLState for the update
-        message: Status message (will be timestamped and escaped)
-        **kwargs: Additional parameters to pass to update_task()
+        message: Status message (will be timestamped and escaped for TUI,
+                 or passed directly for StatusPipeline)
+        **kwargs: Additional parameters to pass to update_task() or update_status()
+
+    Design Note: StatusPipeline publishes events that are processed by main thread,
+    while BatchTUIManager updates TUI directly. This function abstracts the difference.
     """
-    if not batch_tui or task_id is None:
+    if not batch_tui_or_pipeline or task_id is None:
         return
 
     try:
-        # Add timestamp
-        timestamp = format_timestamp()
-        timestamped_msg = f"[{timestamp}] {message}"
-
-        # Escape Rich markup special characters to prevent rendering issues
-        # Replace [ and ] with escaped versions
-        escaped_msg = timestamped_msg.replace("[", r"\[").replace("]", r"\]")
-        # But allow our own timestamp brackets through
-        escaped_msg = escaped_msg.replace(f"\\[{timestamp}\\]", f"[{timestamp}]")
-
         # Log all status updates to session.log for debugging
         # Console output is suppressed in batch TUI mode (StreamHandlers removed)
         # but file logging (session.log) continues normally via FileHandlers
         logger.info(f"Task #{task_id}: {message}")
 
-        # Update the batch TUI
-        batch_tui.update_task(task_id, state, status_message=escaped_msg, **kwargs)
+        # Check which system we're using
+        if isinstance(batch_tui_or_pipeline, StatusPipeline):
+            # NEW SYSTEM: Publish StatusEvent via event bus
+            # WHY: Decoupled, lock-free, supports hybrid polling
+            # StatusPipeline will add timestamp in its own handler
+            batch_tui_or_pipeline.update_status(
+                task_id=task_id,
+                state=state,
+                message=message,
+                **kwargs  # Pass through: progress_pct, size_in, size_out, cost, etc.
+            )
+        else:
+            # OLD SYSTEM: Direct BatchTUIManager update
+            # WHY: Backward compatibility during migration
+            # Add timestamp
+            timestamp = format_timestamp()
+            timestamped_msg = f"[{timestamp}] {message}"
+
+            # Escape Rich markup special characters to prevent rendering issues
+            # Replace [ and ] with escaped versions
+            escaped_msg = timestamped_msg.replace("[", r"\[").replace("]", r"\]")
+            # But allow our own timestamp brackets through
+            escaped_msg = escaped_msg.replace(f"\\[{timestamp}\\]", f"[{timestamp}]")
+
+            # Update the batch TUI
+            batch_tui_or_pipeline.update_task(task_id, state, status_message=escaped_msg, **kwargs)
+
     except Exception as e:
         # Fail gracefully if status update fails - log the error to session.log
-        logger.warning(f"Failed to update batch TUI status: {e}")
+        logger.warning(f"Failed to update batch status: {e}")
 
 
 # Global variables for cost tracking
