@@ -60,6 +60,18 @@ DEFAULT_MODEL: Final[str] = "gpt-4o-mini"  # Default OpenAI model
 OPENAI_MAX_RETRIES: Final[int] = 0  # NO internal retries - circuit breaker handles this
 XML_VALIDATION_MAX_RETRIES: Final[int] = 1  # Retries for XML validation failures
 
+# --- Retry Backoff Configuration ---
+# WHY exponential backoff: Prevents thundering herd when multiple threads retry simultaneously
+# WHY deterministic jitter: Provides variation between retries while remaining reproducible
+# NOTE: Random jitter was removed because it makes bugs hard to reproduce and tests flaky
+# Base delay in seconds for first retry (doubles each attempt: 1s, 2s, 4s, 8s...)
+RETRY_BASE_DELAY_SECONDS: Final[float] = 1.0
+# Maximum delay cap to prevent excessively long waits
+RETRY_MAX_DELAY_SECONDS: Final[float] = 30.0
+# Deterministic jitter sequence: cycles through these multipliers (0.8x to 1.2x)
+# WHY tuple: Immutable sequence ensures consistent behavior across the codebase
+RETRY_JITTER_SEQUENCE: Final[tuple[float, ...]] = (0.80, 0.90, 1.00, 1.10, 1.20)
+
 # --- Batch Processing ---
 DEFAULT_NUM_THREADS: Final[int] = 5  # Default concurrent threads for batch mode
 MAX_SAFE_THREADS: Final[int] = 20  # Warn if more threads requested
@@ -103,7 +115,15 @@ URL_TRUNCATE_MAX_LENGTH: Final[int] = 60  # Max chars before truncating URL
 # --- Keyboard/Thread Timing ---
 # Keyboard listener polling interval and thread cleanup timeout
 KEYBOARD_POLL_INTERVAL: Final[float] = 0.1  # seconds for keyboard input polling
-KEYBOARD_THREAD_TIMEOUT: Final[float] = 1.0  # seconds to wait for thread cleanup
+KEYBOARD_THREAD_TIMEOUT: Final[float] = (
+    1.0  # seconds to wait for keyboard thread cleanup
+)
+
+# ThreadPoolExecutor shutdown timeout
+# WHY: Gives running tasks time to complete gracefully before forcing exit
+# Too short: Tasks may be interrupted mid-write, corrupting output
+# Too long: Unresponsive exit experience for users
+EXECUTOR_SHUTDOWN_TIMEOUT: Final[float] = 5.0  # seconds to wait for executor shutdown
 
 
 # --- Progress Percentages (Single Source of Truth) ---

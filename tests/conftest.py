@@ -43,7 +43,7 @@ def pytest_configure(config: Config) -> None:
         config.pluginmanager.unregister(name="logging-plugin")
 
 
-@pytest.hookimpl(tryfirst=True, hookwrapper=True)  # type: ignore[misc]
+@pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_sessionfinish(
     session: pytest.Session,  # noqa: ARG001
     exitstatus: int,  # noqa: ARG001
@@ -71,7 +71,7 @@ def pytest_sessionfinish(
         logging.Logger.addHandler = _ORIGINAL_ADD_HANDLER  # type: ignore[method-assign]
 
 
-@pytest.fixture  # type: ignore[misc]
+@pytest.fixture
 def sample_api_doc() -> str:
     """Return sample API documentation for testing."""
     return """
@@ -82,7 +82,7 @@ def sample_api_doc() -> str:
     """
 
 
-@pytest.fixture  # type: ignore[misc]
+@pytest.fixture
 def sample_config() -> dict[str, str]:
     """Return sample configuration for testing."""
     return {"base_url": "http://example.com", "output_format": "markdown"}
@@ -110,7 +110,7 @@ def _has_openai_api_key() -> bool:
     return bool(key) and not key.startswith("sk-test") and len(key) > 20
 
 
-@pytest.fixture(autouse=True)  # type: ignore[misc]
+@pytest.fixture(autouse=True)
 def auto_mock_openai(request: FixtureRequest) -> Generator[None, None, None]:
     """
     Automatically mock make_openai_request when no API key is available.
@@ -123,8 +123,13 @@ def auto_mock_openai(request: FixtureRequest) -> Generator[None, None, None]:
 
     This allows "real_api" tests to run with the mock when no API key
     is available, achieving 100% test pass rate in CI environments.
+
+    Thread Safety:
+    - Uses thread-safe reset_mock_openai() for cleanup
+    - Each test gets fresh mock config
     """
     # Import here to avoid circular imports at module load time
+    # WHY local import: apias.mock_api imports apias.apias which may not be needed
     from apias.mock_api import mock_make_openai_request, reset_mock_openai
 
     # Get test markers
@@ -149,20 +154,26 @@ def auto_mock_openai(request: FixtureRequest) -> Generator[None, None, None]:
     # For non-real_api tests (including mock_api), don't auto-patch
 
     if should_mock:
-        # Reset mock config to defaults for clean state
+        # WHY reset before: Ensures clean state, previous test might have modified config
         reset_mock_openai()
 
         # Patch make_openai_request with mock version
-        with patch(
-            "apias.apias.make_openai_request",
-            new=mock_make_openai_request,
-        ):
-            yield
+        # WHY with statement: Automatic cleanup on test completion (success or failure)
+        try:
+            with patch(
+                "apias.apias.make_openai_request",
+                new=mock_make_openai_request,
+            ):
+                yield
+        finally:
+            # WHY cleanup after: Reset config even if test raised exception
+            # DO NOT: Rely only on `with` - some test failures may leave state dirty
+            reset_mock_openai()
     else:
         yield
 
 
-@pytest.fixture  # type: ignore[misc]
+@pytest.fixture
 def mock_openai_config() -> Generator[Callable[..., None], None, None]:
     """
     Fixture to configure mock OpenAI behavior for specific tests.

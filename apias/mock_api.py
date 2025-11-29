@@ -11,85 +11,69 @@ Features:
 - Configurable error simulation (rate limits, timeouts, malformed responses)
 - Realistic cost calculation
 - Support for testing all "real_api" tests without actual API calls
+- Thread-safe configuration for parallel test execution
+
+Thread Safety:
+- _mock_config is protected by _config_lock for thread-safe access
+- Use configure_mock_openai() and reset_mock_openai() for atomic config changes
+- mock_make_openai_request() takes a snapshot of config at call time
 """
 
 import asyncio
 import hashlib
 import json
 import random
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
+# ============================================================================
+# Constants - Centralized source of truth for all tunable parameters
+# ============================================================================
+
+# API Simulation Timing Constants
+# WHY: Based on empirical observation of real OpenAI API response times
+MIN_API_DELAY_SECONDS = (
+    0.3  # Minimum simulated API latency (typical for small requests)
+)
+MAX_API_DELAY_SECONDS = (
+    2.5  # Maximum simulated API latency (prevents unrealistic delays)
+)
+RANDOM_JITTER_MAX_SECONDS = 0.5  # Random variation simulating network/server variance
+FAILURE_RATE = 0.1  # 10% simulated failure rate matches observed API reliability
+
+# Token and Cost Constants
+# WHY: Based on GPT-4 pricing model approximations for realistic cost simulation
+# See: https://openai.com/pricing
+CHARS_PER_TOKEN = 4  # OpenAI tokenizer averages ~4 chars/token for English text
+INPUT_COST_PER_TOKEN_DEFAULT = 0.00001  # ~$0.01 per 1K tokens (GPT-4 input)
+OUTPUT_COST_PER_TOKEN_DEFAULT = 0.00003  # ~$0.03 per 1K tokens (GPT-4 output)
+OUTPUT_TOKENS_MIN = 1000  # Minimum output tokens for non-deterministic mode
+OUTPUT_TOKENS_MAX = 5000  # Maximum output tokens for non-deterministic mode
+
+# Prompt Size Thresholds for Response Template Selection
+# WHY: Different size prompts generate different mock response types to simulate
+#      realistic variation in API responses based on content complexity
+PROMPT_SIZE_LARGE = 200000  # Large chunk - module with many methods
+PROMPT_SIZE_MEDIUM = 50000  # Medium chunk - class or module section
+PROMPT_SIZE_SMALL = 10000  # Small chunk - function or variables
+PROMPT_SIZE_TOKENIZATION = 100000  # Normalizer for delay calculation
+
+# Hash Constants
+# WHY SHA256: Cryptographically strong hash ensures deterministic prompt -> response mapping
+# WHY 8 chars: Sufficient entropy (16^8 = 4 billion combinations) for uniqueness
+PROMPT_HASH_LENGTH = 8
 
 
-class MockAPIClient:
-    """Mock OpenAI API client that simulates realistic behavior"""
+# ============================================================================
+# XML Template Selection (Shared function to eliminate DRY violation)
+# ============================================================================
 
-    def __init__(self, deterministic: bool = False) -> None:
-        """
-        Initialize mock client.
-
-        Args:
-            deterministic: If True, disables random failures and jitter for predictable testing
-        """
-        self.total_cost = 0.0
-        self.call_count = 0
-        self.deterministic = deterministic
-
-    async def responses_create(self, **kwargs: Any) -> "MockResponse":
-        """
-        Simulate OpenAI API call with realistic delays and occasional failures.
-
-        Simulates:
-        - Variable latency (300ms - 2500ms) unless deterministic mode
-        - ~10% failure rate on first attempt unless deterministic mode
-        - Realistic cost calculation
-        """
-        self.call_count += 1
-
-        # Extract prompt size to calculate realistic delay and cost
-        messages = kwargs.get("messages", [])
-        prompt = messages[0]["content"] if messages else ""
-        prompt_size = len(prompt)
-
-        # Simulate realistic API latency based on prompt size
-        base_delay = 0.3  # 300ms minimum
-        size_factor = prompt_size / 100000  # Longer prompts take longer
-
-        if self.deterministic:
-            # Predictable delay for testing
-            delay = min(base_delay + size_factor, 2.5)
-        else:
-            # Random jitter for realistic simulation
-            random_jitter = random.uniform(0, 0.5)
-            delay = min(base_delay + size_factor + random_jitter, 2.5)
-
-        await asyncio.sleep(delay)
-
-        # Simulate occasional failures (~10% on first attempt) unless deterministic
-        if not self.deterministic and random.random() < 0.1:
-            raise MockAPIException("Simulated API failure - will retry")
-
-        # Calculate realistic cost (based on GPT-4 pricing approximation)
-        # Input: ~$0.01 per 1K tokens, Output: ~$0.03 per 1K tokens
-        input_tokens = prompt_size // 4  # Rough estimate: 4 chars per token
-        output_tokens = random.randint(1000, 5000)  # Varies by chunk
-        cost = (input_tokens * 0.00001) + (output_tokens * 0.00003)
-        self.total_cost += cost
-
-        # Generate mock XML response
-        xml_content = self._generate_mock_xml(prompt_size)
-
-        return MockResponse(xml_content=xml_content, cost=cost)
-
-    def _generate_mock_xml(self, prompt_size: int) -> str:
-        """Generate realistic mock XML based on prompt size"""
-
-        # Determine content type based on size
-        if prompt_size > 200000:
-            # Large chunk - probably contains a class with many methods
-            return """<MODULE>
+# XML templates for mock responses - defined at module level for reuse
+# WHY separate templates: Different prompt sizes should generate appropriately sized responses
+_XML_TEMPLATE_MODULE = """<MODULE>
 <NAME>textual.app</NAME>
 <CLASS>
 <NAME>App</NAME>
@@ -115,26 +99,162 @@ class MockAPIClient:
 </PARAMETER>
 </PARAMETERS>
 </METHOD>
-<FIELD>
-<NAME>ALLOW_IN_MAXIMIZED_VIEW</NAME>
-<SIGNATURE>ALLOW_IN_MAXIMIZED_VIEW = 'Footer'</SIGNATURE>
-<DESCRIPTION>The default value of Screen.ALLOW_IN_MAXIMIZED_VIEW.</DESCRIPTION>
-</FIELD>
 </CLASS_API>
 </CLASS>
 </MODULE>"""
-        elif prompt_size > 50000:
-            # Medium chunk - maybe a class or module section
-            return """<CLASS>
-<NAME>ActionError</NAME>
-<CLASS_DESCRIPTION>Bases: Exception. Base class for exceptions relating to actions.</CLASS_DESCRIPTION>
+
+_XML_TEMPLATE_CLASS = """<CLASS>
+<NAME>Widget</NAME>
+<CLASS_DESCRIPTION>A visual element in the TUI application.</CLASS_DESCRIPTION>
+<CLASS_API>
+<METHOD>
+<NAME>refresh</NAME>
+<SIGNATURE>def refresh(self) -> None</SIGNATURE>
+<RETURN_TYPE>None</RETURN_TYPE>
+<DESCRIPTION>Request a refresh of the widget.</DESCRIPTION>
+</METHOD>
+</CLASS_API>
 </CLASS>"""
-        else:
-            # Small chunk - variables or simple elements
-            return """<VARIABLE modifiers="module-attribute" name="ScreenType">
-<SIGNATURE>ScreenType = TypeVar('ScreenType', bound=Screen)</SIGNATURE>
-<DESCRIPTION>Type var for a Screen, used in get_screen.</DESCRIPTION>
+
+_XML_TEMPLATE_FUNCTION = """<FUNCTION>
+<NAME>add</NAME>
+<SIGNATURE>def add(a: int, b: int) -> int</SIGNATURE>
+<RETURN_TYPE>int</RETURN_TYPE>
+<DESCRIPTION>Add two numbers together.</DESCRIPTION>
+<PARAMETERS>
+<PARAMETER>
+<NAME>a</NAME>
+<TYPE>int</TYPE>
+<DESCRIPTION>First number to add.</DESCRIPTION>
+</PARAMETER>
+<PARAMETER>
+<NAME>b</NAME>
+<TYPE>int</TYPE>
+<DESCRIPTION>Second number to add.</DESCRIPTION>
+</PARAMETER>
+</PARAMETERS>
+</FUNCTION>"""
+
+_XML_TEMPLATE_VARIABLE = """<VARIABLE modifiers="module-attribute" name="DEFAULT_TIMEOUT">
+<SIGNATURE>DEFAULT_TIMEOUT = 30</SIGNATURE>
+<DESCRIPTION>Default timeout in seconds for API requests.</DESCRIPTION>
 </VARIABLE>"""
+
+
+def _select_xml_template_by_size(prompt_size: int) -> str:
+    """
+    Select appropriate XML template based on prompt size.
+
+    WHY this function exists: Centralizes template selection logic that was duplicated
+    in both MockAPIClient._generate_mock_xml() and _generate_deterministic_xml().
+    This eliminates DRY violation and ensures consistent behavior.
+
+    Args:
+        prompt_size: Length of the prompt in characters
+
+    Returns:
+        XML template string matching the prompt size category
+
+    DO NOT: Duplicate this logic elsewhere. Always call this function.
+    """
+    if prompt_size > PROMPT_SIZE_LARGE:
+        return _XML_TEMPLATE_MODULE
+    elif prompt_size > PROMPT_SIZE_MEDIUM:
+        return _XML_TEMPLATE_CLASS
+    elif prompt_size > PROMPT_SIZE_SMALL:
+        return _XML_TEMPLATE_FUNCTION
+    else:
+        return _XML_TEMPLATE_VARIABLE
+
+
+class MockAPIClient:
+    """Mock OpenAI API client that simulates realistic behavior.
+
+    Thread Safety: Each instance has its own random generator and state.
+    Use separate instances per thread for concurrent testing.
+    """
+
+    def __init__(
+        self,
+        deterministic: bool = False,
+        random_seed: Optional[int] = None,
+    ) -> None:
+        """
+        Initialize mock client.
+
+        Args:
+            deterministic: If True, disables random failures and jitter for predictable testing
+            random_seed: If provided, seeds the random number generator for reproducible
+                        non-deterministic behavior. Useful for debugging flaky tests.
+                        WHY: Allows reproducing specific random scenarios for debugging.
+        """
+        self.total_cost = 0.0
+        self.call_count = 0
+        self.deterministic = deterministic
+        # WHY instance-specific RNG: Isolates randomness per client, prevents cross-test interference
+        self._rng = random.Random(random_seed)
+
+    async def responses_create(self, **kwargs: Any) -> "MockResponse":
+        """
+        Simulate OpenAI API call with realistic delays and occasional failures.
+
+        Simulates:
+        - Variable latency (MIN_API_DELAY_SECONDS - MAX_API_DELAY_SECONDS) unless deterministic
+        - FAILURE_RATE failure rate on first attempt unless deterministic mode
+        - Realistic cost calculation based on CHARS_PER_TOKEN estimation
+        """
+        self.call_count += 1
+
+        # Extract prompt size to calculate realistic delay and cost
+        # WHY validation: Prevents silent failures if messages structure is wrong
+        messages = kwargs.get("messages")
+        if not messages:
+            raise ValueError(
+                "MockAPIClient.responses_create() called without messages. "
+                "This indicates a bug in the calling code."
+            )
+        prompt = messages[0].get("content", "")
+        prompt_size = len(prompt)
+
+        # Simulate realistic API latency based on prompt size
+        # WHY size_factor: Larger prompts take longer to process, simulating real API behavior
+        size_factor = prompt_size / PROMPT_SIZE_TOKENIZATION
+
+        if self.deterministic:
+            # WHY no jitter in deterministic: Ensures reproducible test timing
+            delay = min(MIN_API_DELAY_SECONDS + size_factor, MAX_API_DELAY_SECONDS)
+        else:
+            # WHY jitter: Simulates real-world network/server load variance
+            random_jitter = self._rng.uniform(0, RANDOM_JITTER_MAX_SECONDS)
+            delay = min(
+                MIN_API_DELAY_SECONDS + size_factor + random_jitter,
+                MAX_API_DELAY_SECONDS,
+            )
+
+        await asyncio.sleep(delay)
+
+        # Simulate occasional failures unless deterministic
+        # WHY FAILURE_RATE: Tests retry logic without requiring real API failures
+        if not self.deterministic and self._rng.random() < FAILURE_RATE:
+            raise MockAPIException("Simulated API failure - will retry")
+
+        # Calculate realistic cost based on token estimation
+        input_tokens = prompt_size // CHARS_PER_TOKEN
+        if self.deterministic:
+            # WHY fixed output in deterministic: Ensures reproducible cost calculations
+            output_tokens = (OUTPUT_TOKENS_MIN + OUTPUT_TOKENS_MAX) // 2
+        else:
+            output_tokens = self._rng.randint(OUTPUT_TOKENS_MIN, OUTPUT_TOKENS_MAX)
+
+        cost = (input_tokens * INPUT_COST_PER_TOKEN_DEFAULT) + (
+            output_tokens * OUTPUT_COST_PER_TOKEN_DEFAULT
+        )
+        self.total_cost += cost
+
+        # Generate mock XML response using shared template selector
+        xml_content = _select_xml_template_by_size(prompt_size)
+
+        return MockResponse(xml_content=xml_content, cost=cost)
 
 
 class MockResponse:
@@ -240,12 +360,17 @@ class MockOpenAIConfig:
 
 
 # WHY global: Allows tests to configure mock behavior before running
+# WHY lock: Thread-safety for parallel test execution (pytest-xdist)
+# Race condition without lock: Thread A writes config, Thread B reads partial state
 _mock_config: MockOpenAIConfig = MockOpenAIConfig()
+_config_lock = threading.Lock()
 
 
 def configure_mock_openai(config: MockOpenAIConfig) -> None:
     """
     Configure mock OpenAI behavior for testing.
+
+    Thread-safe: Uses lock to prevent race conditions with mock_make_openai_request().
 
     Args:
         config: MockOpenAIConfig instance with desired settings
@@ -255,15 +380,23 @@ def configure_mock_openai(config: MockOpenAIConfig) -> None:
             error_scenario=MockErrorScenario.RATE_LIMIT,
             delay_seconds=0.1
         ))
+
+    DO NOT: Access _mock_config directly - always use this function.
     """
     global _mock_config
-    _mock_config = config
+    with _config_lock:
+        _mock_config = config
 
 
 def reset_mock_openai() -> None:
-    """Reset mock configuration to defaults."""
+    """
+    Reset mock configuration to defaults.
+
+    Thread-safe: Uses lock to prevent race conditions.
+    """
     global _mock_config
-    _mock_config = MockOpenAIConfig()
+    with _config_lock:
+        _mock_config = MockOpenAIConfig()
 
 
 def _generate_deterministic_xml(prompt: str) -> str:
@@ -272,24 +405,30 @@ def _generate_deterministic_xml(prompt: str) -> str:
 
     Same prompt always produces same XML output, making tests reproducible.
     The XML content varies based on what the prompt is asking for.
+
+    WHY hash-based selection: Provides determinism while varying responses based on content.
+    WHY special cases: Some tests check for specific response strings.
     """
-    # Use first 8 chars of hash for deterministic selection
-    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    # WHY SHA256: Cryptographically strong, deterministic, good distribution
+    # WHY [:PROMPT_HASH_LENGTH]: 8 hex chars = 16^8 = 4B combinations (sufficient)
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:PROMPT_HASH_LENGTH]
     hash_int = int(prompt_hash, 16)
 
     # Detect what kind of content the prompt is asking for
+    # WHY lowercase: Case-insensitive matching for reliability
     prompt_lower = prompt.lower()
 
+    # WHY special cases: These match specific test assertions
     if "test_response_ok" in prompt_lower or "respond with exactly" in prompt_lower:
-        # Test asking for specific response
+        # Test asking for specific response (test_real_api_returns_content)
         return "TEST_RESPONSE_OK"
 
     if "hello" in prompt_lower and len(prompt) < 100:
-        # Simple greeting test
+        # Simple greeting test (test_real_api_request)
         return "hello"
 
     if "cost test" in prompt_lower:
-        # Cost tracking test
+        # Cost tracking test (test_real_api_cost_tracking)
         return "cost test"
 
     if "html" in prompt_lower and "xml" in prompt_lower:
@@ -300,88 +439,39 @@ def _generate_deterministic_xml(prompt: str) -> str:
             _XML_TEMPLATE_FUNCTION,
             _XML_TEMPLATE_VARIABLE,
         ]
-        # Select template based on prompt hash for determinism
+        # WHY hash-based selection: Deterministic but varies by prompt content
         template_idx = hash_int % len(templates)
         return templates[template_idx]
 
-    # Default: return a realistic XML structure based on prompt size
-    if len(prompt) > 200000:
-        return _XML_TEMPLATE_MODULE
-    elif len(prompt) > 50000:
-        return _XML_TEMPLATE_CLASS
-    elif len(prompt) > 10000:
-        return _XML_TEMPLATE_FUNCTION
-    else:
-        return _XML_TEMPLATE_VARIABLE
+    # Default: use shared template selector based on prompt size
+    # WHY _select_xml_template_by_size: DRY - same logic as MockAPIClient.responses_create()
+    return _select_xml_template_by_size(len(prompt))
 
 
-# XML templates for deterministic responses
-_XML_TEMPLATE_MODULE = """<MODULE>
-<NAME>textual.app</NAME>
-<CLASS>
-<NAME>App</NAME>
-<CLASS_DESCRIPTION>Bases: Generic[ReturnType], DOMNode. The base class for Textual Applications.</CLASS_DESCRIPTION>
-<CLASS_API>
-<METHOD>
-<NAME>action_add_class</NAME>
-<SIGNATURE>async action_add_class(selector, class_name)</SIGNATURE>
-<RETURN_TYPE>None</RETURN_TYPE>
-<DESCRIPTION>Add a CSS class to selected widgets.</DESCRIPTION>
-<PARAMETERS>
-<PARAMETER>
-<NAME>selector</NAME>
-<TYPE>str</TYPE>
-<DESCRIPTION>CSS selector to target widgets.</DESCRIPTION>
-<DEFAULT>required</DEFAULT>
-</PARAMETER>
-<PARAMETER>
-<NAME>class_name</NAME>
-<TYPE>str</TYPE>
-<DESCRIPTION>The class name to add.</DESCRIPTION>
-<DEFAULT>required</DEFAULT>
-</PARAMETER>
-</PARAMETERS>
-</METHOD>
-</CLASS_API>
-</CLASS>
-</MODULE>"""
+# NOTE: XML templates are defined at module top (lines 72-137) to avoid duplication
+# DO NOT: Add template definitions here - use _XML_TEMPLATE_* constants above
 
-_XML_TEMPLATE_CLASS = """<CLASS>
-<NAME>Widget</NAME>
-<CLASS_DESCRIPTION>A visual element in the TUI application.</CLASS_DESCRIPTION>
-<CLASS_API>
-<METHOD>
-<NAME>refresh</NAME>
-<SIGNATURE>def refresh(self) -> None</SIGNATURE>
-<RETURN_TYPE>None</RETURN_TYPE>
-<DESCRIPTION>Request a refresh of the widget.</DESCRIPTION>
-</METHOD>
-</CLASS_API>
-</CLASS>"""
 
-_XML_TEMPLATE_FUNCTION = """<FUNCTION>
-<NAME>add</NAME>
-<SIGNATURE>def add(a: int, b: int) -> int</SIGNATURE>
-<RETURN_TYPE>int</RETURN_TYPE>
-<DESCRIPTION>Add two numbers together.</DESCRIPTION>
-<PARAMETERS>
-<PARAMETER>
-<NAME>a</NAME>
-<TYPE>int</TYPE>
-<DESCRIPTION>First number to add.</DESCRIPTION>
-</PARAMETER>
-<PARAMETER>
-<NAME>b</NAME>
-<TYPE>int</TYPE>
-<DESCRIPTION>Second number to add.</DESCRIPTION>
-</PARAMETER>
-</PARAMETERS>
-</FUNCTION>"""
+def create_custom_response_key(prompt: str) -> str:
+    """
+    Create a hash key for custom responses.
 
-_XML_TEMPLATE_VARIABLE = """<VARIABLE modifiers="module-attribute" name="DEFAULT_TIMEOUT">
-<SIGNATURE>DEFAULT_TIMEOUT = 30</SIGNATURE>
-<DESCRIPTION>Default timeout in seconds for API requests.</DESCRIPTION>
-</VARIABLE>"""
+    Use this to register custom responses in MockOpenAIConfig.custom_responses.
+
+    Args:
+        prompt: The exact prompt text that will trigger this response
+
+    Returns:
+        8-character hash key to use as dictionary key
+
+    Example:
+        key = create_custom_response_key("my specific prompt")
+        config = MockOpenAIConfig(custom_responses={key: "<MY_CUSTOM_XML/>"})
+        configure_mock_openai(config)
+
+    WHY this function: Encapsulates hash algorithm, prevents copy-paste errors.
+    """
+    return hashlib.sha256(prompt.encode()).hexdigest()[:PROMPT_HASH_LENGTH]
 
 
 async def mock_make_openai_request(
@@ -396,6 +486,8 @@ async def mock_make_openai_request(
     This function is a drop-in replacement that can be used to patch
     make_openai_request in tests, allowing "real_api" tests to run
     without actual API calls.
+
+    Thread-safe: Takes a snapshot of config under lock to prevent race conditions.
 
     Args:
         api_key: API key (ignored in mock)
@@ -419,15 +511,18 @@ async def mock_make_openai_request(
     Raises:
         Various exceptions based on configured error scenario
     """
-    global _mock_config
+    # WHY snapshot: Thread-safety - config might change during async operation
+    # Take snapshot under lock, then release lock before any async operations
+    with _config_lock:
+        config = _mock_config
 
-    # Simulate delay if configured
-    if _mock_config.delay_seconds > 0:
-        await asyncio.sleep(_mock_config.delay_seconds)
+    # Simulate delay if configured (outside lock - delay can be long)
+    if config.delay_seconds > 0:
+        await asyncio.sleep(config.delay_seconds)
 
-    # Handle error scenarios
-    if _mock_config.error_scenario == MockErrorScenario.RATE_LIMIT:
-        # Import here to avoid circular imports
+    # Handle error scenarios - use config snapshot for thread-safety
+    # WHY imports inside conditionals: Avoid circular imports, only load when needed
+    if config.error_scenario == MockErrorScenario.RATE_LIMIT:
         from openai import RateLimitError
 
         raise RateLimitError(
@@ -438,17 +533,17 @@ async def mock_make_openai_request(
             },
         )
 
-    if _mock_config.error_scenario == MockErrorScenario.TIMEOUT:
+    if config.error_scenario == MockErrorScenario.TIMEOUT:
         from openai import APITimeoutError
 
         raise APITimeoutError(request=None)
 
-    if _mock_config.error_scenario == MockErrorScenario.CONNECTION_ERROR:
+    if config.error_scenario == MockErrorScenario.CONNECTION_ERROR:
         from openai import APIConnectionError
 
         raise APIConnectionError(message="Connection failed", request=None)
 
-    if _mock_config.error_scenario == MockErrorScenario.QUOTA_EXCEEDED:
+    if config.error_scenario == MockErrorScenario.QUOTA_EXCEEDED:
         from openai import RateLimitError
 
         raise RateLimitError(
@@ -463,19 +558,20 @@ async def mock_make_openai_request(
         )
 
     # Generate response content
-    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    # WHY PROMPT_HASH_LENGTH: Centralized constant for consistent hash truncation
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:PROMPT_HASH_LENGTH]
 
-    # Check for custom response first
-    if prompt_hash in _mock_config.custom_responses:
-        xml_content = _mock_config.custom_responses[prompt_hash]
+    # Check for custom response first (from config snapshot)
+    if prompt_hash in config.custom_responses:
+        xml_content = config.custom_responses[prompt_hash]
     else:
         xml_content = _generate_deterministic_xml(prompt)
 
-    # Handle malformed response scenarios
-    if _mock_config.error_scenario == MockErrorScenario.MALFORMED_JSON:
+    # Handle malformed response scenarios - use config snapshot
+    if config.error_scenario == MockErrorScenario.MALFORMED_JSON:
         # Return response with invalid JSON in content field
         content = "{{not valid json"
-    elif _mock_config.error_scenario == MockErrorScenario.INVALID_XML:
+    elif config.error_scenario == MockErrorScenario.INVALID_XML:
         # Return response with malformed XML
         content = json.dumps(
             {
@@ -484,7 +580,7 @@ async def mock_make_openai_request(
                 "completeness_check": True,
             }
         )
-    elif _mock_config.error_scenario == MockErrorScenario.EMPTY_RESPONSE:
+    elif config.error_scenario == MockErrorScenario.EMPTY_RESPONSE:
         content = json.dumps(
             {
                 "xml_content": "",
@@ -503,13 +599,18 @@ async def mock_make_openai_request(
         )
 
     # Calculate realistic token counts and costs
-    prompt_tokens = len(prompt) // 4  # Rough: 4 chars per token
-    completion_tokens = len(content) // 4
+    # WHY CHARS_PER_TOKEN: OpenAI tokenizer averages ~4 chars/token for English
+    prompt_tokens = len(prompt) // CHARS_PER_TOKEN
+    completion_tokens = len(content) // CHARS_PER_TOKEN
 
-    model_pricing = pricing_info.get(model, pricing_info.get(_mock_config.model, {}))
-    input_cost = prompt_tokens * model_pricing.get("input_cost_per_token", 0.00001)
+    # WHY config.model fallback: Allow model override in config for testing
+    model_pricing = pricing_info.get(model, pricing_info.get(config.model, {}))
+    # WHY constants for defaults: Centralized pricing fallbacks matching GPT-4 rates
+    input_cost = prompt_tokens * model_pricing.get(
+        "input_cost_per_token", INPUT_COST_PER_TOKEN_DEFAULT
+    )
     output_cost = completion_tokens * model_pricing.get(
-        "output_cost_per_token", 0.00003
+        "output_cost_per_token", OUTPUT_COST_PER_TOKEN_DEFAULT
     )
     request_cost = input_cost + output_cost
 

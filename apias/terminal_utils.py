@@ -9,11 +9,12 @@ Provides:
 - Process state management (waiting, running, paused, stopped)
 """
 
+import atexit
 import locale
 import logging
 import os
 import sys
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from datetime import datetime as DatetimeType
@@ -422,8 +423,10 @@ def _check_unicode_support() -> bool:
         encoding = locale.getpreferredencoding(False).lower()
         if "utf" in encoding:
             return True
-    except Exception:
-        pass
+    except Exception as e:
+        # WHY debug not warning: This is a fallback check, failure is expected on some systems
+        # DO NOT: Use pass without logging - makes debugging encoding issues impossible
+        logger.debug(f"Could not get preferred encoding: {e}")
 
     # Check LANG environment variable
     lang = os.environ.get("LANG", "").lower()
@@ -435,8 +438,10 @@ def _check_unicode_support() -> bool:
         if hasattr(sys.stdout, "encoding") and sys.stdout.encoding:
             if "utf" in sys.stdout.encoding.lower():
                 return True
-    except Exception:
-        pass
+    except Exception as e:
+        # WHY debug not warning: Fallback check, sys.stdout may not have encoding attribute
+        # DO NOT: Use pass without logging - makes debugging impossible
+        logger.debug(f"Could not check stdout encoding: {e}")
 
     # Default to True on modern systems, False on Windows legacy console
     if IS_WINDOWS:
@@ -502,13 +507,45 @@ class KeyboardListener:
     - Space bar detection (start/stop)
     - Arrow key detection (scrolling)
     - Graceful cleanup on exit
+
+    Thread Safety:
+    - All instances are tracked for atexit cleanup
+    - Terminal settings restored even on abnormal exit
     """
+
+    # Class-level tracking of all instances for atexit cleanup
+    # WHY: Ensures terminal restoration even on abnormal exit
+    _all_instances: ClassVar[List["KeyboardListener"]] = []
+    _atexit_registered: ClassVar[bool] = False
 
     def __init__(self) -> None:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._old_settings: Optional[Any] = None
         self._callbacks: Dict[str, Callable[[], None]] = {}
+
+        # Track this instance for cleanup
+        KeyboardListener._all_instances.append(self)
+
+        # Register atexit handler once
+        if not KeyboardListener._atexit_registered:
+            atexit.register(KeyboardListener._cleanup_all_instances)
+            KeyboardListener._atexit_registered = True
+
+    @classmethod
+    def _cleanup_all_instances(cls) -> None:
+        """
+        Cleanup all keyboard listener instances on exit.
+
+        WHY atexit: Ensures terminal restoration even on abnormal exit
+        DO NOT: Remove this - leaves terminal in broken state on crash
+        """
+        for instance in cls._all_instances:
+            try:
+                instance.stop()
+            except Exception as e:
+                logger.debug(f"Error cleaning up keyboard listener: {e}")
+        cls._all_instances.clear()
 
     def register_callback(self, key: str, callback: Callable[[], None]) -> None:
         """
@@ -598,8 +635,10 @@ class KeyboardListener:
                     self._trigger_callback("right")
                 elif next_chars == "[D":
                     self._trigger_callback("left")
-            except Exception:
-                pass
+            except Exception as e:
+                # WHY debug not warning: Keyboard input failures are common and recoverable
+                # DO NOT: Use pass without logging - makes debugging input issues impossible
+                logger.debug(f"Arrow key read error (Unix): {e}")
 
     def _listen_windows(self) -> None:
         """Windows-specific keyboard listening using msvcrt"""
@@ -631,8 +670,10 @@ class KeyboardListener:
                     self._trigger_callback("left")
                 elif special == b"M":  # Right arrow
                     self._trigger_callback("right")
-            except Exception:
-                pass
+            except Exception as e:
+                # WHY debug not warning: Keyboard input failures are common and recoverable
+                # DO NOT: Use pass without logging - makes debugging input issues impossible
+                logger.debug(f"Special key read error (Windows): {e}")
 
     def _trigger_callback(self, key: str) -> None:
         """Trigger registered callback for a key"""

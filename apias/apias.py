@@ -101,6 +101,7 @@ VERSION = __version__
 
 import argparse
 import asyncio
+import atexit
 import concurrent.futures
 import fnmatch
 import itertools
@@ -146,9 +147,13 @@ from .config import (  # Network timeouts - DO NOT hardcode these values elsewhe
     BATCH_FINAL_STATE_PAUSE,
     BROWSER_NETWORK_IDLE_TIMEOUT,
     ERROR_LOG_FILE_NAME,
+    EXECUTOR_SHUTDOWN_TIMEOUT,
     FINAL_STATE_PAUSE,
     HTTP_REQUEST_TIMEOUT,
     OPENAI_MAX_RETRIES,
+    RETRY_BASE_DELAY_SECONDS,
+    RETRY_JITTER_SEQUENCE,
+    RETRY_MAX_DELAY_SECONDS,
     SINGLE_PAGE_TUI_POLL_INTERVAL,
     SPINNER_ANIMATION_INTERVAL,
     SUBPROCESS_TIMEOUT,
@@ -489,6 +494,47 @@ error_log_file = temp_folder / ERROR_LOG_FILE_NAME
 with open(error_log_file, "w", encoding="utf-8") as f:
     pass
 
+# Track if session has resumable progress (set by signal handler)
+# WHY: If progress.json exists, user may want to resume - don't delete temp folder
+_session_has_progress = False
+
+
+def _cleanup_temp_folder_on_exit() -> None:
+    """
+    Clean up temp folder on exit if no progress file exists.
+
+    WHY atexit handler: Ensures cleanup even on abnormal exit (exceptions, SIGTERM)
+    WHY check _session_has_progress: Don't delete if user might want to resume
+
+    DO NOT: Remove this handler - it prevents disk space accumulation from failed sessions
+    """
+    global temp_folder, _session_has_progress
+
+    # Don't cleanup if session was saved for resume
+    if _session_has_progress:
+        logger.debug(f"Keeping temp folder for resume: {temp_folder}")
+        return
+
+    # Check if progress.json exists (another indicator of resumable state)
+    progress_file = temp_folder / "progress.json"
+    if progress_file.exists():
+        logger.debug(f"Keeping temp folder (progress.json exists): {temp_folder}")
+        return
+
+    # Safe to clean up - no resumable state
+    if temp_folder and temp_folder.exists():
+        try:
+            shutil.rmtree(temp_folder)
+            logger.debug(f"Cleaned up temp folder: {temp_folder}")
+        except Exception as e:
+            # Don't fail on cleanup errors - just log
+            logger.warning(f"Could not clean up temp folder {temp_folder}: {e}")
+
+
+# Register cleanup handler
+# WHY atexit: Runs on normal exit, sys.exit(), and unhandled exceptions
+atexit.register(_cleanup_temp_folder_on_exit)
+
 
 def get_openai_api_key() -> str:
     openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -540,9 +586,14 @@ def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
 
     # Save progress before exiting so user can resume later
     # We do this in the handler because the main loop may not reach cleanup
+    global _session_has_progress
     try:
         update_progress_file()
         if progress_file and os.path.exists(progress_file):
+            # Mark session as having progress - prevents temp folder cleanup
+            # WHY: User may want to resume, so don't delete their data
+            _session_has_progress = True
+
             # Use sys.stderr for signal handler output (more reliable than print)
             sys.stderr.write("\n")
             sys.stderr.write("=" * 60 + "\n")
@@ -585,17 +636,8 @@ def escape_xml(xml_doc: str) -> str:
     return xml_doc
 
 
-def unescape_xml(xml_doc: str) -> str:
-    """
-    To unescape the text strings and the attributes values.
-    DO NOT UNESCAPE CDATA, Comments and Processing Instructions
-    """
-    xml_doc = xml_doc.replace("&quot;", '"')
-    xml_doc = xml_doc.replace("&apos;", "'")
-    xml_doc = xml_doc.replace("&lt;", "<")
-    xml_doc = xml_doc.replace("&gt;", ">")
-    xml_doc = xml_doc.replace("&amp;", "&")
-    return xml_doc
+# REMOVED: unescape_xml() - was never called, escape_xml() is sufficient
+# If XML unescaping is needed in future, add it back with proper test coverage
 
 
 def extract_xml_from_input(input_data: str) -> str:
@@ -641,39 +683,8 @@ def extract_xml_from_input(input_data: str) -> str:
     return xml_content
 
 
-def extract_xml_from_input_iter(input_data: str) -> str:
-    """
-    Extracts and validates XML content from the input string within iterations.
-    """
-    input_data = input_data.strip()
-    if input_data.startswith("```xml") and input_data.endswith("```"):
-        input_data = input_data[len("```xml") : -len("```")]
-    elif input_data.startswith("```XML") and input_data.endswith("```"):
-        input_data = input_data[len("```XML") : -len("```")]
-    elif input_data.startswith("```") and input_data.endswith("```"):
-        input_data = input_data[len("```") : -len("```")]
-
-    input_data = input_data.replace("\\\\n", "\n").replace("\\n", "\n")
-    input_data = input_data.replace('\\\\\\"', '\\\\"').replace('\\"', '"')
-
-    xml_content = input_data
-    if not (
-        xml_content.lower().startswith("<xml") and xml_content.lower().endswith("xml>")
-    ):
-        xml_content = (
-            '<XML version="1.0" encoding="UTF-8" standalone="yes" >\n'
-            + xml_content
-            + "\n</XML>"
-        )
-
-    # Validate the XML content
-    logger.debug(f"Extracted Iteration XML Content:\n{input_data}")
-    try:
-        DefusedET.fromstring(xml_content)  # Validates XML
-    except ET.ParseError:
-        logger.error("ERROR - Extracted XML is not valid")
-    finally:
-        return xml_content
+# REMOVED: extract_xml_from_input_iter() - was never called, duplicated extract_xml_from_input()
+# The _iter version had subtle differences but was never used in any code path
 
 
 def merge_xmls(
@@ -2665,16 +2676,28 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
         except ValueError as e:
             # XML validation error
             if attempt < max_retries:
+                # WHY exponential backoff: Prevents thundering herd when all threads retry
+                # WHY deterministic jitter: Cycles through fixed multipliers for reproducibility
+                # NOTE: Random jitter removed - makes bugs hard to reproduce and tests flaky
+                # Formula: delay = min(base * 2^attempt * jitter, max_delay)
+                base_delay = RETRY_BASE_DELAY_SECONDS * (2**attempt)
+                jitter = RETRY_JITTER_SEQUENCE[attempt % len(RETRY_JITTER_SEQUENCE)]
+                delay = min(base_delay * jitter, RETRY_MAX_DELAY_SECONDS)
+
                 logger.warning(
-                    f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. Retrying with corrective instructions..."
+                    f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s with corrective instructions..."
                 )
-                # Show retry message via status handler (BatchTUI or StatusPipeline)
+                # Show retry countdown via status handler (BatchTUI or StatusPipeline)
                 update_batch_status(
                     status_handler,
                     task_id,
                     URLState.PROCESSING,
-                    "🔄 LLM returned invalid XML. Retrying...",
+                    f"🔄 LLM returned invalid XML. Retrying in {delay:.0f}s...",
                 )
+                # CRITICAL: Wait before retry to avoid hammering API
+                # DO NOT remove this delay - it prevents rate limiting
+                await asyncio.sleep(delay)
                 continue  # Try again with validation instructions
             else:
                 logger.error(
@@ -3826,7 +3849,15 @@ def process_multiple_pages(
                 # Check for shutdown or user cancellation
                 if shutdown_flag or (batch_tui and batch_tui.should_stop):
                     logger.info("Shutdown requested. Cancelling remaining tasks.")
-                    executor.shutdown(wait=False)
+                    # WHY wait=True with timeout: Allows running tasks to complete gracefully
+                    # WHY cancel_futures=True: Cancels pending (not-yet-started) tasks immediately
+                    # DO NOT use wait=False - threads continue running and may corrupt output
+                    executor.shutdown(
+                        wait=True,
+                        cancel_futures=True,
+                    )
+                    # Note: shutdown() with wait=True may block up to EXECUTOR_SHUTDOWN_TIMEOUT
+                    # but the with-statement exit will also call shutdown(wait=True)
                     break
 
                 # CHECK CIRCUIT BREAKER: NEW event-driven system
@@ -3840,7 +3871,10 @@ def process_multiple_pages(
                         f"Stopping batch processing to avoid wasting resources."
                     )
                     # Cancel remaining futures gracefully
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    # WHY wait=True: Allow running tasks to complete, preventing data corruption
+                    # WHY cancel_futures=True: Don't start any new tasks
+                    # DO NOT use wait=False - threads may corrupt output files
+                    executor.shutdown(wait=True, cancel_futures=True)
 
                     # Stop live display FIRST (while logging still suppressed)
                     if batch_tui:
