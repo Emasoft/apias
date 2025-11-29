@@ -697,10 +697,25 @@ def merge_xmls(
     error_log = []
 
     # Get list of XML files and sort by task ID for deterministic order
-    # Files are named: processed_1.xml, processed_2.xml, etc.
+    # Batch mode files: processed_1.xml, processed_2.xml, etc.
+    # Single-page mode file: processed_single_page.xml
+    def extract_sort_key(filepath: Path) -> int:
+        """Extract numeric sort key from filename, handling non-numeric names."""
+        # CRITICAL FIX: processed_single_page.xml was causing int() error
+        # Split by '_' and try to parse the second part as int
+        # If not numeric (e.g., "single"), use 0 as fallback
+        parts = filepath.stem.split("_")
+        if len(parts) >= 2:
+            try:
+                return int(parts[1])
+            except ValueError:
+                # Non-numeric like "single" from processed_single_page.xml
+                return 0
+        return 0
+
     xml_files = sorted(
         temp_folder.glob("processed_*.xml"),
-        key=lambda f: int(f.stem.split("_")[1]),  # Extract task ID from filename
+        key=extract_sort_key,
     )
     total_files = len(xml_files)
 
