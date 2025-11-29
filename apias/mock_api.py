@@ -1,17 +1,26 @@
 """
-Mock API module for testing TUI without spending tokens.
+Mock API module for testing without spending tokens.
 
-Simulates realistic API behavior with:
-- Variable response times (0.3s - 2.5s)
-- Occasional failures (~10% rate)
-- Realistic XML generation
-- Cost simulation
+Provides two levels of mocking:
+1. MockAPIClient - Low-level TUI simulation with variable delays
+2. mock_make_openai_request - High-level drop-in replacement for make_openai_request()
+
+Features:
+- Deterministic responses based on prompt content hash
+- Exact response structure matching real OpenAI API
+- Configurable error simulation (rate limits, timeouts, malformed responses)
+- Realistic cost calculation
+- Support for testing all "real_api" tests without actual API calls
 """
 
 import asyncio
+import hashlib
 import json
 import random
-from typing import Any, Optional, Tuple
+import time
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class MockAPIClient:
@@ -190,3 +199,341 @@ async def mock_call_openai_api(
     except Exception as e:
         # Unexpected error
         raise RuntimeError(f"Mock API unexpected error: {e}") from e
+
+
+# ============================================================================
+# High-Level Mock for make_openai_request()
+# ============================================================================
+
+
+class MockErrorScenario(Enum):
+    """Error scenarios that can be simulated by the mock."""
+
+    NONE = auto()  # No error - normal response
+    RATE_LIMIT = auto()  # 429 rate limit error
+    TIMEOUT = auto()  # API timeout
+    CONNECTION_ERROR = auto()  # Network connection failed
+    MALFORMED_JSON = auto()  # Response is not valid JSON
+    INVALID_XML = auto()  # XML content is malformed
+    EMPTY_RESPONSE = auto()  # Empty content in response
+    QUOTA_EXCEEDED = auto()  # Insufficient quota
+
+
+@dataclass
+class MockOpenAIConfig:
+    """
+    Configuration for mock OpenAI behavior.
+
+    Attributes:
+        deterministic: If True, same prompt always gives same response
+        error_scenario: Which error to simulate (or NONE for success)
+        delay_seconds: Simulated API latency (0 for instant)
+        model: Model name to return in response
+        custom_responses: Dict mapping prompt hashes to custom XML responses
+    """
+
+    deterministic: bool = True
+    error_scenario: MockErrorScenario = MockErrorScenario.NONE
+    delay_seconds: float = 0.0
+    model: str = "gpt-5-nano-2025-08-07"
+    custom_responses: Dict[str, str] = field(default_factory=dict)
+
+
+# WHY global: Allows tests to configure mock behavior before running
+_mock_config: MockOpenAIConfig = MockOpenAIConfig()
+
+
+def configure_mock_openai(config: MockOpenAIConfig) -> None:
+    """
+    Configure mock OpenAI behavior for testing.
+
+    Args:
+        config: MockOpenAIConfig instance with desired settings
+
+    Example:
+        configure_mock_openai(MockOpenAIConfig(
+            error_scenario=MockErrorScenario.RATE_LIMIT,
+            delay_seconds=0.1
+        ))
+    """
+    global _mock_config
+    _mock_config = config
+
+
+def reset_mock_openai() -> None:
+    """Reset mock configuration to defaults."""
+    global _mock_config
+    _mock_config = MockOpenAIConfig()
+
+
+def _generate_deterministic_xml(prompt: str) -> str:
+    """
+    Generate deterministic XML based on prompt content hash.
+
+    Same prompt always produces same XML output, making tests reproducible.
+    The XML content varies based on what the prompt is asking for.
+    """
+    # Use first 8 chars of hash for deterministic selection
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+    hash_int = int(prompt_hash, 16)
+
+    # Detect what kind of content the prompt is asking for
+    prompt_lower = prompt.lower()
+
+    if "test_response_ok" in prompt_lower or "respond with exactly" in prompt_lower:
+        # Test asking for specific response
+        return "TEST_RESPONSE_OK"
+
+    if "hello" in prompt_lower and len(prompt) < 100:
+        # Simple greeting test
+        return "hello"
+
+    if "cost test" in prompt_lower:
+        # Cost tracking test
+        return "cost test"
+
+    if "html" in prompt_lower and "xml" in prompt_lower:
+        # HTML to XML conversion request
+        templates = [
+            _XML_TEMPLATE_MODULE,
+            _XML_TEMPLATE_CLASS,
+            _XML_TEMPLATE_FUNCTION,
+            _XML_TEMPLATE_VARIABLE,
+        ]
+        # Select template based on prompt hash for determinism
+        template_idx = hash_int % len(templates)
+        return templates[template_idx]
+
+    # Default: return a realistic XML structure based on prompt size
+    if len(prompt) > 200000:
+        return _XML_TEMPLATE_MODULE
+    elif len(prompt) > 50000:
+        return _XML_TEMPLATE_CLASS
+    elif len(prompt) > 10000:
+        return _XML_TEMPLATE_FUNCTION
+    else:
+        return _XML_TEMPLATE_VARIABLE
+
+
+# XML templates for deterministic responses
+_XML_TEMPLATE_MODULE = """<MODULE>
+<NAME>textual.app</NAME>
+<CLASS>
+<NAME>App</NAME>
+<CLASS_DESCRIPTION>Bases: Generic[ReturnType], DOMNode. The base class for Textual Applications.</CLASS_DESCRIPTION>
+<CLASS_API>
+<METHOD>
+<NAME>action_add_class</NAME>
+<SIGNATURE>async action_add_class(selector, class_name)</SIGNATURE>
+<RETURN_TYPE>None</RETURN_TYPE>
+<DESCRIPTION>Add a CSS class to selected widgets.</DESCRIPTION>
+<PARAMETERS>
+<PARAMETER>
+<NAME>selector</NAME>
+<TYPE>str</TYPE>
+<DESCRIPTION>CSS selector to target widgets.</DESCRIPTION>
+<DEFAULT>required</DEFAULT>
+</PARAMETER>
+<PARAMETER>
+<NAME>class_name</NAME>
+<TYPE>str</TYPE>
+<DESCRIPTION>The class name to add.</DESCRIPTION>
+<DEFAULT>required</DEFAULT>
+</PARAMETER>
+</PARAMETERS>
+</METHOD>
+</CLASS_API>
+</CLASS>
+</MODULE>"""
+
+_XML_TEMPLATE_CLASS = """<CLASS>
+<NAME>Widget</NAME>
+<CLASS_DESCRIPTION>A visual element in the TUI application.</CLASS_DESCRIPTION>
+<CLASS_API>
+<METHOD>
+<NAME>refresh</NAME>
+<SIGNATURE>def refresh(self) -> None</SIGNATURE>
+<RETURN_TYPE>None</RETURN_TYPE>
+<DESCRIPTION>Request a refresh of the widget.</DESCRIPTION>
+</METHOD>
+</CLASS_API>
+</CLASS>"""
+
+_XML_TEMPLATE_FUNCTION = """<FUNCTION>
+<NAME>add</NAME>
+<SIGNATURE>def add(a: int, b: int) -> int</SIGNATURE>
+<RETURN_TYPE>int</RETURN_TYPE>
+<DESCRIPTION>Add two numbers together.</DESCRIPTION>
+<PARAMETERS>
+<PARAMETER>
+<NAME>a</NAME>
+<TYPE>int</TYPE>
+<DESCRIPTION>First number to add.</DESCRIPTION>
+</PARAMETER>
+<PARAMETER>
+<NAME>b</NAME>
+<TYPE>int</TYPE>
+<DESCRIPTION>Second number to add.</DESCRIPTION>
+</PARAMETER>
+</PARAMETERS>
+</FUNCTION>"""
+
+_XML_TEMPLATE_VARIABLE = """<VARIABLE modifiers="module-attribute" name="DEFAULT_TIMEOUT">
+<SIGNATURE>DEFAULT_TIMEOUT = 30</SIGNATURE>
+<DESCRIPTION>Default timeout in seconds for API requests.</DESCRIPTION>
+</VARIABLE>"""
+
+
+async def mock_make_openai_request(
+    api_key: str,
+    prompt: str,
+    pricing_info: Dict[str, Dict[str, float]],
+    model: str = "gpt-5-nano-2025-08-07",
+) -> Dict[str, Any]:
+    """
+    Mock replacement for make_openai_request() that returns identical structure.
+
+    This function is a drop-in replacement that can be used to patch
+    make_openai_request in tests, allowing "real_api" tests to run
+    without actual API calls.
+
+    Args:
+        api_key: API key (ignored in mock)
+        prompt: The prompt being sent
+        pricing_info: Pricing info for cost calculation
+        model: Model name (used for pricing lookup)
+
+    Returns:
+        Dict matching exact structure of real make_openai_request():
+        {
+            "id": str,
+            "object": str,
+            "created": int,
+            "model": str,
+            "choices": [{"index": int, "message": {...}, "finish_reason": str}],
+            "usage": {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int},
+            "request_cost": float,
+            "finish_reason": str
+        }
+
+    Raises:
+        Various exceptions based on configured error scenario
+    """
+    global _mock_config
+
+    # Simulate delay if configured
+    if _mock_config.delay_seconds > 0:
+        await asyncio.sleep(_mock_config.delay_seconds)
+
+    # Handle error scenarios
+    if _mock_config.error_scenario == MockErrorScenario.RATE_LIMIT:
+        # Import here to avoid circular imports
+        from openai import RateLimitError
+
+        raise RateLimitError(
+            message="Rate limit exceeded",
+            response=type("Response", (), {"status_code": 429, "headers": {}})(),
+            body={
+                "error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}
+            },
+        )
+
+    if _mock_config.error_scenario == MockErrorScenario.TIMEOUT:
+        from openai import APITimeoutError
+
+        raise APITimeoutError(request=None)
+
+    if _mock_config.error_scenario == MockErrorScenario.CONNECTION_ERROR:
+        from openai import APIConnectionError
+
+        raise APIConnectionError(message="Connection failed", request=None)
+
+    if _mock_config.error_scenario == MockErrorScenario.QUOTA_EXCEEDED:
+        from openai import RateLimitError
+
+        raise RateLimitError(
+            message="You exceeded your current quota",
+            response=type("Response", (), {"status_code": 429, "headers": {}})(),
+            body={
+                "error": {
+                    "message": "You exceeded your current quota",
+                    "type": "insufficient_quota",
+                }
+            },
+        )
+
+    # Generate response content
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:8]
+
+    # Check for custom response first
+    if prompt_hash in _mock_config.custom_responses:
+        xml_content = _mock_config.custom_responses[prompt_hash]
+    else:
+        xml_content = _generate_deterministic_xml(prompt)
+
+    # Handle malformed response scenarios
+    if _mock_config.error_scenario == MockErrorScenario.MALFORMED_JSON:
+        # Return response with invalid JSON in content field
+        content = "{{not valid json"
+    elif _mock_config.error_scenario == MockErrorScenario.INVALID_XML:
+        # Return response with malformed XML
+        content = json.dumps(
+            {
+                "xml_content": "<invalid><unclosed>",
+                "document_type": "MODULE",
+                "completeness_check": True,
+            }
+        )
+    elif _mock_config.error_scenario == MockErrorScenario.EMPTY_RESPONSE:
+        content = json.dumps(
+            {
+                "xml_content": "",
+                "document_type": "MODULE",
+                "completeness_check": False,
+            }
+        )
+    else:
+        # Normal response
+        content = json.dumps(
+            {
+                "xml_content": xml_content,
+                "document_type": "MODULE",
+                "completeness_check": True,
+            }
+        )
+
+    # Calculate realistic token counts and costs
+    prompt_tokens = len(prompt) // 4  # Rough: 4 chars per token
+    completion_tokens = len(content) // 4
+
+    model_pricing = pricing_info.get(model, pricing_info.get(_mock_config.model, {}))
+    input_cost = prompt_tokens * model_pricing.get("input_cost_per_token", 0.00001)
+    output_cost = completion_tokens * model_pricing.get(
+        "output_cost_per_token", 0.00003
+    )
+    request_cost = input_cost + output_cost
+
+    # Return exact structure matching make_openai_request()
+    return {
+        "id": f"chatcmpl-mock-{prompt_hash}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": content,
+                },
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+        "request_cost": request_cost,
+        "finish_reason": "stop",
+    }

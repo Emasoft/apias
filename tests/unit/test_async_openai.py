@@ -13,17 +13,17 @@ The --real-api flag requires OPENAI_API_KEY environment variable and incurs cost
 import asyncio
 import os
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, cast
 
 import pytest
 
+import apias.apias as apias_module  # WHY import module: allows patching to work
 from apias.apias import (
     _process_single_chunk,
     call_llm_to_convert_html_to_xml,
     call_openai_api,
     get_openai_api_key,
     load_model_pricing,
-    make_openai_request,
 )
 from apias.mock_api import MockAPIClient, mock_call_openai_api
 
@@ -41,16 +41,17 @@ def has_openai_api_key() -> bool:
         return os.environ.get("OPENAI_API_KEY", "") != ""
 
 
-@pytest.fixture
-def pricing_info() -> Dict[str, Dict[str, float]]:
+@pytest.fixture  # type: ignore[misc]
+def pricing_info() -> dict[str, dict[str, float]]:
     """Real pricing information loaded from remote source."""
     pricing = load_model_pricing()
     if pricing is None:
         pytest.skip("Could not load pricing information from remote source")
-    return pricing
+    # WHY cast: load_model_pricing returns dict[str, Any], but pricing data is dict[str, dict[str, float]]
+    return cast(dict[str, dict[str, float]], pricing)
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[misc]
 def simple_html_content() -> str:
     """Simple HTML content for testing API conversion."""
     return """
@@ -65,7 +66,7 @@ def simple_html_content() -> str:
     """
 
 
-@pytest.fixture
+@pytest.fixture  # type: ignore[misc]
 def mock_client() -> MockAPIClient:
     """Mock API client for testing without real API calls."""
     return MockAPIClient()
@@ -76,10 +77,10 @@ def mock_client() -> MockAPIClient:
 # ============================================================================
 
 
-@pytest.mark.mock_api
-@pytest.mark.asyncio
+@pytest.mark.mock_api  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_mock_api_returns_response(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
     """Test mock API returns valid response structure."""
     xml_output, cost = await mock_call_openai_api(
@@ -94,10 +95,10 @@ async def test_mock_api_returns_response(
     assert cost >= 0, "Cost should be non-negative"
 
 
-@pytest.mark.mock_api
-@pytest.mark.asyncio
+@pytest.mark.mock_api  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_mock_api_cost_tracking(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
     """Test mock API tracks costs correctly."""
     client = MockAPIClient(deterministic=True)  # No random failures in tests
@@ -115,10 +116,10 @@ async def test_mock_api_cost_tracking(
     assert client.call_count == 3, "Call count should be 3"
 
 
-@pytest.mark.mock_api
-@pytest.mark.asyncio
+@pytest.mark.mock_api  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_mock_llm_conversion(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
     simple_html_content: str,
 ) -> None:
     """Test HTML to XML conversion using mock API."""
@@ -140,10 +141,10 @@ async def test_mock_llm_conversion(
     assert xml_content is not None, "Mock API should return XML content"
 
 
-@pytest.mark.mock_api
-@pytest.mark.asyncio
+@pytest.mark.mock_api  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_mock_api_response_varies_by_size(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
     """Test mock API returns different XML based on prompt size."""
     # Small prompt
@@ -174,18 +175,21 @@ async def test_mock_api_response_varies_by_size(
 # ============================================================================
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_api_request(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
-    """Test real OpenAI API request succeeds and returns valid structure."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test real OpenAI API request succeeds and returns valid structure.
 
-    api_key = get_openai_api_key()
-    result = await make_openai_request(
+    Note: This test runs with mock when --real-api is not passed.
+    The auto_mock_openai fixture patches make_openai_request automatically.
+    """
+    # WHY no skip: auto_mock_openai fixture handles API key detection
+    # WHY module call: patch only works when function called through module
+    api_key = get_openai_api_key() or "mock-key"
+    result = await apias_module.make_openai_request(
         api_key=api_key,
         prompt="Say 'hello' and nothing else.",
         pricing_info=pricing_info,
@@ -199,18 +203,20 @@ async def test_real_api_request(
     assert result["request_cost"] >= 0, "Request cost should be non-negative"
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_api_returns_content(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
-    """Test that real API returns actual content in the response."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test that real API returns actual content in the response.
 
-    api_key = get_openai_api_key()
-    result = await make_openai_request(
+    Note: This test runs with mock when --real-api is not passed.
+    The mock returns deterministic content based on prompt.
+    """
+    # WHY module call: patch only works when function called through module
+    api_key = get_openai_api_key() or "mock-key"
+    result = await apias_module.make_openai_request(
         api_key=api_key,
         prompt="Respond with exactly: TEST_RESPONSE_OK",
         pricing_info=pricing_info,
@@ -221,18 +227,19 @@ async def test_real_api_returns_content(
     assert len(content) > 0, "Content should not be empty"
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_api_cost_tracking(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
-    """Test that real API request cost is tracked correctly."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test that real API request cost is tracked correctly.
 
-    api_key = get_openai_api_key()
-    result = await make_openai_request(
+    Note: This test runs with mock when --real-api is not passed.
+    """
+    # WHY module call: patch only works when function called through module
+    api_key = get_openai_api_key() or "mock-key"
+    result = await apias_module.make_openai_request(
         api_key=api_key,
         prompt="Say 'cost test' and nothing more.",
         pricing_info=pricing_info,
@@ -244,16 +251,16 @@ async def test_real_api_cost_tracking(
     assert cost >= 0, "Cost should be non-negative"
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_call_openai_api(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
 ) -> None:
-    """Test that call_openai_api returns XML content and cost."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test that call_openai_api returns XML content and cost.
 
+    Note: This test runs with mock when --real-api is not passed.
+    """
     html_prompt = """Convert this to APIAS XML format:
     <html><body><h1>Test Function</h1><p>Adds numbers.</p></body></html>
     """
@@ -266,17 +273,17 @@ async def test_real_call_openai_api(
     assert cost >= 0, "Cost should be non-negative"
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_process_single_chunk(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
     simple_html_content: str,
 ) -> None:
-    """Test processing a real HTML chunk through the API."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test processing a real HTML chunk through the API.
 
+    Note: This test runs with mock when --real-api is not passed.
+    """
     xml_output, cost = await _process_single_chunk(
         html_content=simple_html_content,
         pricing_info=pricing_info,
@@ -288,23 +295,24 @@ async def test_real_process_single_chunk(
         assert isinstance(xml_output, str), "XML output should be a string if present"
 
 
-@pytest.mark.real_api
-@pytest.mark.slow
-@pytest.mark.asyncio
+@pytest.mark.real_api  # type: ignore[misc]
+@pytest.mark.slow  # type: ignore[misc]
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_real_llm_conversion(
-    pricing_info: Dict[str, Dict[str, float]],
+    pricing_info: dict[str, dict[str, float]],
     simple_html_content: str,
 ) -> None:
-    """Test the full HTML to XML conversion with real API."""
-    if not has_openai_api_key():
-        pytest.skip("OPENAI_API_KEY not set")
+    """Test the full HTML to XML conversion with real API.
 
+    Note: This test runs with mock when --real-api is not passed.
+    The mock=False is still passed but make_openai_request is patched.
+    """
     result = await call_llm_to_convert_html_to_xml(
         html_content=simple_html_content,
         additional_content={},
         pricing_info=pricing_info,
         no_tui=True,
-        mock=False,  # Use real API
+        mock=False,  # WHY False: mock arg controls high-level mock, not API patching
     )
 
     assert result is not None, "Should return a result"
@@ -320,10 +328,10 @@ async def test_real_llm_conversion(
 # ============================================================================
 
 
-@pytest.mark.asyncio
+@pytest.mark.asyncio  # type: ignore[misc]
 async def test_asyncio_gather_parallelism() -> None:
     """Test that asyncio.gather actually runs tasks in parallel."""
-    execution_times: List[Tuple[int, float, float]] = []
+    execution_times: list[tuple[int, float, float]] = []
 
     async def timed_task(task_id: int, delay: float) -> int:
         """Task that records execution time."""
