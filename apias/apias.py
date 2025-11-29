@@ -135,6 +135,7 @@ import subprocess
 import threading
 import defusedxml.ElementTree as DefusedET  # Use defusedxml to prevent XXE attacks
 import xml.etree.ElementTree as ET  # For Element class and tree manipulation
+import signal as signal_module
 from signal import SIGINT, SIGTERM, signal
 import json
 
@@ -5100,6 +5101,13 @@ def check_for_running_apias_instances() -> None:
 
 def main() -> None:
     """Main entry point for APIAS CLI."""
+    # CRITICAL: Handle SIGPIPE gracefully when output is piped to head/less/etc.
+    # WHY: Without this, piping to "head -N" causes [Errno 32] Broken pipe errors
+    # after the pipe closes but the program continues writing to stdout.
+    # SIG_DFL tells Python to use default OS behavior (terminate silently).
+    if hasattr(signal_module, "SIGPIPE"):
+        signal_module.signal(signal_module.SIGPIPE, signal_module.SIG_DFL)
+
     # Check for running APIAS instances to prevent multiple simultaneous API calls
     check_for_running_apias_instances()
 
