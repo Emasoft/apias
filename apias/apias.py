@@ -139,64 +139,67 @@ from signal import SIGINT, SIGTERM, signal
 import json
 
 # Import TUI and mock API modules
-from .tui import RichTUIManager, ChunkState, ChunkStatus, ProcessingStep
+# RichTUIManager removed - now using unified BatchTUIManager for both single-page and batch modes
 from .mock_api import MockAPIClient, mock_call_openai_api
 from .batch_tui import BatchTUIManager, URLState
 from .error_handler import (
-    ErrorCategory,
-    ErrorEvent,
     classify_openai_error,
-    get_error_description,
-    is_recoverable_error,  # Use centralized check instead of hardcoding categories
+    get_error_description,  # Use centralized check instead of hardcoding categories
 )
 
 # WHY: New event-driven error handling and status update system (Week 2 integration)
 # These modules replace SessionErrorTracker and direct BatchTUI updates with
 # a decoupled event bus architecture for better thread safety and responsiveness
 from .event_system import (
-    EventBus,
-    StatusEvent,
-    ErrorEvent as NewErrorEvent,  # Renamed to avoid conflict with error_handler.ErrorEvent
-    CircuitBreakerEvent,
-    DialogEvent,
-    URLState as EventURLState,  # Will replace batch_tui.URLState once integration complete
+    EventBus,  # Will replace batch_tui.URLState once integration complete
 )
 from .error_collector import (
     ErrorCollector,
     load_error_config,
     ErrorCategory as NewErrorCategory,  # Renamed to avoid conflict
 )
-from .status_pipeline import StatusPipeline, TaskSnapshot
+from .status_pipeline import StatusPipeline
 from .dialog_manager import DialogManager
 from .logger_interceptor import LoggerInterceptor
 
 from .config import (
     # Network timeouts - DO NOT hardcode these values elsewhere
     HTTP_REQUEST_TIMEOUT,
-    BROWSER_NAVIGATION_TIMEOUT,
     BROWSER_NETWORK_IDLE_TIMEOUT,
     SUBPROCESS_TIMEOUT,
     # API configuration
     OPENAI_MAX_RETRIES,
     XML_VALIDATION_MAX_RETRIES,
     # Batch processing - DO NOT hardcode polling intervals
-    BATCH_TUI_POLL_INTERVAL,
+    BATCH_TUI_POLL_INTERVAL,  # For hybrid polling in batch mode
     SINGLE_PAGE_TUI_POLL_INTERVAL,
     SPINNER_ANIMATION_INTERVAL,
     FINAL_STATE_PAUSE,
     BATCH_FINAL_STATE_PAUSE,
+    # Thread cleanup - DO NOT hardcode thread timeouts
+    KEYBOARD_THREAD_TIMEOUT,  # For thread.join() timeouts
     # File system
     TEMP_FOLDER_PREFIX,
     ERROR_LOG_FILE_NAME,
     get_system_temp_dir,
+    # Progress percentages - DO NOT hardcode progress values elsewhere
+    # Use ProgressPercent.SCRAPING, ProgressPercent.SENDING, etc.
+    ProgressPercent,
 )
 
 
 def validate_xml(xml_string: str) -> bool:
+    """
+    Validate that a string is well-formed XML.
+
+    Returns True if valid, False otherwise. Logs parse errors in debug mode.
+    """
     try:
         DefusedET.fromstring(xml_string)
         return True
-    except (ET.ParseError, ValueError):
+    except (ET.ParseError, ValueError) as e:
+        # Log in debug mode so users can see WHY validation failed if needed
+        logger.debug(f"XML validation failed: {type(e).__name__}: {e}")
         return False
 
 
@@ -285,11 +288,22 @@ def update_batch_status(
 
 
 # Global variables for cost tracking
+# CRITICAL: cost_lock protects ONLY total_cost (cumulative session cost)
+# DO NOT use cost_lock for progress_tracker - use progress_lock instead!
 total_cost = 0.0
-cost_lock = threading.Lock()
+cost_lock = threading.Lock()  # Protects total_cost only
 
 # Global variable for progress tracking
+# CRITICAL: progress_tracker is accessed from multiple worker threads
+# ALWAYS use progress_lock when reading or modifying progress_tracker
+# WHY: Without locking, concurrent dict access causes race conditions and data corruption
 progress_tracker: Dict[str, Dict[str, Union[str, float]]] = {}
+# CRITICAL: progress_lock is an RLock (reentrant) because:
+# 1. process_url() acquires lock, then calls update_progress_file() which also needs lock
+# 2. Signal handlers may call update_progress_file() without knowing if lock is held
+# 3. RLock allows same thread to acquire multiple times without deadlock
+# DO NOT change to Lock() - it WILL cause deadlocks!
+progress_lock = threading.RLock()
 progress_file = "progress.json"
 
 # JSON Schema for structured XML output from GPT-5 Nano
@@ -2057,12 +2071,11 @@ async def call_llm_to_convert_html_to_xml(
     pricing_info: Dict[str, Dict[str, float]],
     no_tui: bool = False,
     mock: bool = False,
-    tui_manager: Optional[RichTUIManager] = None,
-    status_pipeline: Optional[StatusPipeline] = None,
+    status_handler: Optional[Union[BatchTUIManager, StatusPipeline]] = None,
     task_id: Optional[int] = None,
     error_collector: Optional[ErrorCollector] = None,
     url: Optional[str] = None,
-) -> Tuple[Optional[str], float, Optional[RichTUIManager]]:
+) -> Tuple[Optional[str], float]:
     """
     Uses OpenAI's API to convert HTML content to structured XML asynchronously.
     Implements chunking for large content that exceeds safe token limits.
@@ -2073,34 +2086,19 @@ async def call_llm_to_convert_html_to_xml(
         pricing_info: Model pricing information
         no_tui: If True, disable Rich TUI output
         mock: If True, use mock API instead of real OpenAI
-        status_pipeline: Optional StatusPipeline for event-driven status updates
-        task_id: Optional task ID for status pipeline updates
+        status_handler: Optional BatchTUIManager OR StatusPipeline for status updates
+                        - BatchTUIManager: Direct TUI updates (single-page mode)
+                        - StatusPipeline: Event-based updates (batch mode)
+                        WHY: Supports both old and new TUI systems during migration
+        task_id: Optional task ID for status updates
         error_collector: Optional ErrorCollector for comprehensive error tracking
         url: Optional URL being processed (for error reporting)
     """
     # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
     chunks = chunk_html_by_size(html_content, max_chars=80000)
-
-    # Use provided TUI manager or create new one
-    if tui_manager is None and not no_tui:
-        tui_manager = RichTUIManager(total_chunks=len(chunks), no_tui=no_tui)
-    elif tui_manager is not None:
-        # CRITICAL: Do NOT reset chunks if they already exist!
-        # Resetting would lose all progress tracking (steps go back to QUEUED)
-        # Only add new chunks if the chunk count increased
-        current_chunk_count = len(tui_manager.chunks)
-        new_chunk_count = len(chunks)
-
-        if new_chunk_count > current_chunk_count:
-            # Add new chunks for increased count (preserve existing chunks)
-            logger.info(
-                f"[TUI] Adding {new_chunk_count - current_chunk_count} new chunks to TUI manager"
-            )
-            for i in range(current_chunk_count + 1, new_chunk_count + 1):
-                tui_manager.chunks[i] = ChunkStatus(chunk_id=i)
-            tui_manager.stats.total_chunks = new_chunk_count
-        # If count is same or decreased, keep existing chunks (preserve progress)
+    num_chunks = len(chunks)
+    logger.info(f"Processing content in {num_chunks} chunk(s)")
 
     # Create mock client if mock mode is enabled
     mock_client: Optional[MockAPIClient] = None
@@ -2111,17 +2109,13 @@ async def call_llm_to_convert_html_to_xml(
     # Note: wait_for_start() is called earlier in process_single_page() before scraping
     # So TUI is already displayed and user has already pressed SPACE by the time we get here
 
-    if len(chunks) == 1:
-        # Single chunk - process with TUI
-        if tui_manager:
-            # TUI already started by wait_for_start(), just update status
-            # Update chunk as processing
-            tui_manager.update_chunk_status(
-                chunk_id=1,
-                state=ChunkState.PROCESSING,
-                size_in=len(html_content),
-                attempt=1,
-            )
+    if num_chunks == 1:
+        # Single chunk - process and update status via handler
+        # Progress: 40% (sending) -> 70% (receiving) for LLM phase
+        update_batch_status(
+            status_handler, task_id, URLState.PROCESSING,
+            "📤 Sending to AI model", progress_pct=ProgressPercent.SENDING
+        )
 
         result = await _process_single_chunk(
             html_content,
@@ -2129,54 +2123,48 @@ async def call_llm_to_convert_html_to_xml(
             chunk_num=1,
             mock=mock,
             mock_client=mock_client,
-            status_pipeline=status_pipeline,
+            status_handler=status_handler,
             task_id=task_id,
             error_collector=error_collector,
             url=url,
         )
 
-        if tui_manager:
-            # Update final status
-            if result[0]:  # XML content
-                tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.COMPLETE,
-                    size_in=len(html_content),
-                    size_out=len(result[0]),
-                    cost=result[1],
-                    attempt=1,
-                )
-            else:
-                tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.FAILED,
-                    size_in=len(html_content),
-                    error="Processing failed",
-                    attempt=1,
-                )
-            tui_manager.stop_live_display()
+        # Update status based on result
+        if result[0]:  # XML content received successfully
+            update_batch_status(
+                status_handler, task_id, URLState.PROCESSING,
+                "📥 Received AI response", progress_pct=ProgressPercent.RECEIVING
+            )
+        else:
+            update_batch_status(
+                status_handler, task_id, URLState.PROCESSING,
+                "⚠️ AI processing failed", progress_pct=ProgressPercent.RECEIVING
+            )
 
-        return result[0], result[1], tui_manager
+        return result[0], result[1]
 
     # Multiple chunks - process in parallel using asyncio
     logger.info(
-        f"Processing {len(chunks)} chunks in parallel with true async concurrency..."
+        f"Processing {num_chunks} chunks in parallel with true async concurrency..."
     )
 
-    # TUI already started by wait_for_start(), no need to start again
+    # Track completed chunks for progress calculation
+    # Progress range: 40% (start LLM) -> 70% (received all) = 30% range for chunks
+    completed_chunks = 0
 
     async def process_chunk_wrapper(
         args: Tuple[int, str],
     ) -> Tuple[int, Optional[str], float]:
         """Async wrapper function for parallel processing"""
+        nonlocal completed_chunks
         i, chunk = args
-        logger.info(f"Processing chunk {i}/{len(chunks)}...")
+        logger.info(f"Processing chunk {i}/{num_chunks}...")
 
-        # Update TUI: mark as processing
-        if tui_manager:
-            tui_manager.update_chunk_status(
-                chunk_id=i, state=ChunkState.PROCESSING, size_in=len(chunk), attempt=1
-            )
+        # Update status: sending this chunk
+        update_batch_status(
+            status_handler, task_id, URLState.PROCESSING,
+            f"📤 Sending chunk {i}/{num_chunks} to AI", progress_pct=ProgressPercent.SENDING
+        )
 
         xml_part, cost = await _process_single_chunk(
             chunk,
@@ -2184,7 +2172,7 @@ async def call_llm_to_convert_html_to_xml(
             chunk_num=i,
             mock=mock,
             mock_client=mock_client,
-            status_pipeline=status_pipeline,
+            status_handler=status_handler,
             task_id=task_id,
             error_collector=error_collector,
             url=url,
@@ -2200,30 +2188,30 @@ async def call_llm_to_convert_html_to_xml(
                 xml_part = re.sub(r"^<XML>\s*", "", xml_part)
                 xml_part = re.sub(r"\s*</XML>$", "", xml_part)
 
-            # Update TUI: mark as complete
-            if tui_manager:
-                tui_manager.update_chunk_status(
-                    chunk_id=i,
-                    state=ChunkState.COMPLETE,
-                    size_in=len(chunk),
-                    size_out=len(xml_part),
-                    cost=cost,
-                    attempt=1,
-                )
+            # Update progress: chunk completed
+            # Progress formula: SENDING + (completed/total) * (RECEIVING - SENDING)
+            # WHY: Evenly distribute progress across all chunks in the SENDING->RECEIVING range
+            completed_chunks += 1
+            progress_range = ProgressPercent.RECEIVING - ProgressPercent.SENDING  # 70 - 40 = 30
+            chunk_progress = ProgressPercent.SENDING + (completed_chunks / num_chunks) * progress_range
+            update_batch_status(
+                status_handler, task_id, URLState.PROCESSING,
+                f"📥 Received chunk {i}/{num_chunks}", progress_pct=chunk_progress
+            )
 
             return i, xml_part, cost
         else:
-            logger.error(f"Failed to process chunk {i}/{len(chunks)}")
+            logger.error(f"Failed to process chunk {i}/{num_chunks}")
 
-            # Update TUI: mark as failed
-            if tui_manager:
-                tui_manager.update_chunk_status(
-                    chunk_id=i,
-                    state=ChunkState.FAILED,
-                    size_in=len(chunk),
-                    error="Processing failed",
-                    attempt=1,
-                )
+            # Still count as completed for progress even if failed
+            # WHY: User should see progress advancing even when chunks fail
+            completed_chunks += 1
+            progress_range = ProgressPercent.RECEIVING - ProgressPercent.SENDING
+            chunk_progress = ProgressPercent.SENDING + (completed_chunks / num_chunks) * progress_range
+            update_batch_status(
+                status_handler, task_id, URLState.PROCESSING,
+                f"⚠️ Chunk {i}/{num_chunks} failed", progress_pct=chunk_progress
+            )
 
             return i, None, cost
 
@@ -2250,7 +2238,7 @@ async def call_llm_to_convert_html_to_xml(
         total_cost += cost
 
     if not all_xml_parts:
-        return None, total_cost, tui_manager
+        return None, total_cost
 
     # Merge all XML parts into a valid XML document
     # Wrap all chunks in a root element to create valid XML structure
@@ -2262,11 +2250,7 @@ async def call_llm_to_convert_html_to_xml(
     # Intelligently merge duplicate CLASS elements that were split across chunks
     merged_xml = merge_duplicate_classes(merged_xml)
 
-    # Stop TUI live display if it was started
-    if tui_manager:
-        tui_manager.stop_live_display()
-
-    return merged_xml, total_cost, tui_manager
+    return merged_xml, total_cost
 
 
 async def _process_single_chunk(
@@ -2275,12 +2259,17 @@ async def _process_single_chunk(
     chunk_num: Optional[int] = None,
     mock: bool = False,
     mock_client: Optional[MockAPIClient] = None,
-    status_pipeline: Optional[StatusPipeline] = None,
+    status_handler: Optional[Union[BatchTUIManager, StatusPipeline]] = None,
     task_id: Optional[int] = None,
     error_collector: Optional[ErrorCollector] = None,
     url: Optional[str] = None,
 ) -> Tuple[Optional[str], float]:
-    """Process a single chunk of HTML content asynchronously with automatic XML validation retry."""
+    """Process a single chunk of HTML content asynchronously with automatic XML validation retry.
+
+    Args:
+        status_handler: Optional BatchTUIManager OR StatusPipeline for status updates
+                        WHY: Supports both direct TUI updates and event-based updates
+    """
 
     chunk_label = f" (chunk {chunk_num})" if chunk_num else ""
 
@@ -2643,9 +2632,9 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 logger.warning(
                     f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. Retrying with corrective instructions..."
                 )
-                # Show retry message (NEW SYSTEM: via status_pipeline)
+                # Show retry message via status handler (BatchTUI or StatusPipeline)
                 update_batch_status(
-                    status_pipeline,
+                    status_handler,
                     task_id,
                     URLState.PROCESSING,
                     "🔄 LLM returned invalid XML. Retrying...",
@@ -2664,9 +2653,9 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                         url=url,
                         exception=e,
                     )
-                # Show final failure message (NEW SYSTEM: via status_pipeline)
+                # Show final failure message via status handler (BatchTUI or StatusPipeline)
                 update_batch_status(
-                    status_pipeline,
+                    status_handler,
                     task_id,
                     URLState.PROCESSING,
                     "❌ XML validation failed after retries.",
@@ -2710,9 +2699,9 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 f"LLM processing failed{chunk_label}: [{old_error_category.name}] {e}"
             )
 
-            # Show API error message (NEW SYSTEM: via status_pipeline)
+            # Show API error message via status handler (BatchTUI or StatusPipeline)
             msg = f"❌ {error_desc}"
-            update_batch_status(status_pipeline, task_id, URLState.PROCESSING, msg)
+            update_batch_status(status_handler, task_id, URLState.PROCESSING, msg)
             return None, total_cost
 
     # Should never reach here, but just in case
@@ -2779,7 +2768,7 @@ def fetch_sitemap(urls: List[str], quiet: bool = False) -> Optional[str]:
         sitemap_url = base_url.rstrip("/") + "/sitemap.xml"
         logger.info(f"Fetching sitemap from {sitemap_url}")
         try:
-            with Spinner("Fetching sitemap...", quiet=quiet) as spinner:
+            with Spinner("Fetching sitemap...", quiet=quiet) as _spinner:
                 # Use centralized timeout from config - DO NOT hardcode
                 response = requests.get(sitemap_url, timeout=HTTP_REQUEST_TIMEOUT)
                 response.raise_for_status()
@@ -2823,37 +2812,61 @@ def process_single_page(
     logger.debug(f"URL: {url}")
 
     class ProcessingResult:
+        """Container for single-page processing results and TUI state.
+
+        Attributes:
+            html_content: Scraped HTML content (None if scraping failed)
+            xml_content: Converted XML content (None if conversion failed)
+            error: Error message if processing failed (None on success)
+            batch_tui: TUI manager for progress display (None in no_tui/scrape_only mode)
+
+        NOTE: status_pipeline and event_bus were REMOVED as dead code.
+        WHY: Single-page mode uses BatchTUIManager directly via update_task().
+             StatusPipeline is only needed for batch mode's hybrid polling.
+        AVOID: Don't add StatusPipeline/EventBus here - it won't be used.
+        """
         def __init__(self) -> None:
             self.html_content: Optional[str] = None
             self.xml_content: Optional[str] = None
             self.error: Optional[str] = None
-            self.tui_manager: Optional[RichTUIManager] = None
+            # BatchTUIManager for unified TUI (single page = batch with 1 task)
+            # NOTE: StatusPipeline/EventBus removed - they're not used in single-page mode
+            self.batch_tui: Optional[BatchTUIManager] = None
 
     result = ProcessingResult()
 
-    # Create TUI manager FIRST (before any processing)
-    # We'll use 1 chunk as placeholder since we don't know yet how many chunks there will be
+    # Create BatchTUIManager with 1 task (single page mode uses same TUI as batch)
+    # This unifies the TUI for both single-page and batch modes
     if not no_tui and not scrape_only:
-        result.tui_manager = RichTUIManager(total_chunks=1, no_tui=no_tui)
+        # NOTE: In single-page mode, we use BatchTUIManager directly without StatusPipeline
+        # WHY: BatchTUIManager has its own internal state that update_task() updates.
+        #      StatusPipeline + EventBus is only needed for batch mode's hybrid polling.
+        #      Creating them here would be DEAD CODE (they'd never be used).
+        # AVOID: Don't create EventBus/StatusPipeline in single-page mode - it's wasteful.
+
+        # Create BatchTUIManager with 1 task (the URL)
+        result.batch_tui = BatchTUIManager(urls=[url], no_tui=no_tui)
 
         # Display waiting screen and wait for SPACE press
-        result.tui_manager.wait_for_start()
+        result.batch_tui.wait_for_start()
 
         # Check if user cancelled before starting
-        if result.tui_manager.should_stop:
+        if result.batch_tui.should_stop:
             logger.info("Processing cancelled by user before start")
-            result.tui_manager.stop_live_display()
+            result.batch_tui.stop_live_display()
             return None
 
     async def process_in_background_async() -> None:
         try:
-            # Update step: Scraping
-            if result.tui_manager:
-                result.tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.PROCESSING,
-                    step=ProcessingStep.SCRAPING,
-                )
+            # Update step: Scraping (10% progress)
+            # CRITICAL: Pass batch_tui directly, NOT status_pipeline
+            # WHY: BatchTUIManager has its own internal state that update_task() updates.
+            #      StatusPipeline is a separate system that BatchTUIManager doesn't read from.
+            #      If we pass status_pipeline, the TUI won't show progress updates!
+            update_batch_status(
+                result.batch_tui, 1, URLState.PROCESSING,
+                "🌐 Scraping HTML content", progress_pct=10.0
+            )
 
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
             # Run the synchronous web_scraper in a separate thread to avoid Playwright sync/async conflicts
@@ -2863,18 +2876,26 @@ def process_single_page(
                     "Failed to retrieve HTML content for single page processing."
                 )
                 logger.debug("Step 1 FAILED: No HTML content retrieved")
+                # CRITICAL: Update TUI to show FAILED status for scraping failure
+                # WHY: User needs visual feedback that scraping failed, not stuck on "Processing"
+                update_batch_status(
+                    result.batch_tui, 1, URLState.FAILED,
+                    "❌ Scraping failed: No content retrieved", progress_pct=0.0
+                )
                 return
             logger.debug(
                 f"Step 1 SUCCESS: Retrieved {len(result.html_content)} characters (already slimmed)"
             )
 
-            # Update step: Cleaning (already done by scraper, but mark as complete)
-            if result.tui_manager:
-                result.tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.PROCESSING,
-                    step=ProcessingStep.CLEANING,
-                )
+            # Update step: Cleaning (20% progress)
+            # Already done by scraper, but mark as complete for progress display
+            # CRITICAL: Must use batch_tui, NOT status_pipeline
+            # WHY: BatchTUIManager renders from its internal state, NOT from StatusPipeline events
+            # AVOID: Passing status_pipeline here - events go to void, TUI never updates
+            update_batch_status(
+                result.batch_tui, 1, URLState.PROCESSING,
+                "🧹 Cleaning HTML content", progress_pct=ProgressPercent.CLEANING
+            )
 
             # Note: slimdown_html was already called in Scraper.scrape()
             # The content is already cleaned, so we use it directly
@@ -2931,60 +2952,68 @@ def process_single_page(
                 f"Step 2: Extracted metadata - Title: {page_title}, Code: {len(code_examples)}, Links: {len(links)}"
             )
 
-            # Update step: Chunking (for single page, this is trivial but marks progress)
-            if result.tui_manager:
-                result.tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.PROCESSING,
-                    step=ProcessingStep.CHUNKING,
-                )
+            # Update step: Chunking (30% progress)
+            # For single page, this is trivial but marks progress for consistency
+            # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+            update_batch_status(
+                result.batch_tui, 1, URLState.PROCESSING,
+                "📦 Preparing content for AI", progress_pct=ProgressPercent.CHUNKING
+            )
 
-            # Update step: Sending to AI
-            if result.tui_manager:
-                result.tui_manager.update_chunk_status(
-                    chunk_id=1, state=ChunkState.PROCESSING, step=ProcessingStep.SENDING
-                )
+            # NOTE: Removed duplicate "Sending to AI" update here
+            # WHY: call_llm_to_convert_html_to_xml() sends its own 40% update
+            # AVOID: Sending duplicate status updates for same step (DRY violation)
 
             logger.debug("Step 3: Converting HTML to XML via LLM (GPT-5 Nano)...")
+            # Pass batch_tui for status updates during LLM processing
+            # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+            # WHY: BatchTUIManager renders from its internal state, StatusPipeline events go to void
             llm_result = await call_llm_to_convert_html_to_xml(
                 slimmed_html,
                 additional_content,
                 pricing_info,
                 no_tui=no_tui,
                 mock=mock,
-                tui_manager=result.tui_manager,
+                status_handler=result.batch_tui,
+                task_id=1,
             )
             if llm_result is None:
                 result.error = "Failed to convert HTML to XML."  # type: ignore[unreachable]
                 logger.debug("Step 3 FAILED: LLM conversion returned None")
+                # CRITICAL: Update TUI to show FAILED status for LLM failure
+                # WHY: User needs to know AI processing failed, not stuck waiting
+                # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+                update_batch_status(
+                    result.batch_tui, 1, URLState.FAILED,
+                    "❌ AI conversion failed", progress_pct=ProgressPercent.FAILED
+                )
                 return
 
-            # Don't replace tui_manager - keep using the same one the main thread references
-            xml_content, _, _ = llm_result
+            # Unpack result (now returns Tuple[Optional[str], float] without tui_manager)
+            # IMPORTANT: Don't discard cost - user should see their API spending
+            xml_content, llm_cost = llm_result
+            logger.info(f"LLM API cost for this page: ${llm_cost:.6f}")  # Log cost for user visibility
             logger.debug(
                 f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)"
             )
 
-            # Update step: Receiving from AI
-            if result.tui_manager:
-                result.tui_manager.update_chunk_status(
-                    chunk_id=1,
-                    state=ChunkState.PROCESSING,
-                    step=ProcessingStep.RECEIVING,
-                )
+            # Update step: Receiving from AI (70% progress)
+            # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+            update_batch_status(
+                result.batch_tui, 1, URLState.PROCESSING,
+                "📥 Received AI response", progress_pct=ProgressPercent.RECEIVING
+            )
 
             if xml_content:
-                # Update step: Validating XML
-                if result.tui_manager:
-                    result.tui_manager.update_chunk_status(
-                        chunk_id=1,
-                        state=ChunkState.PROCESSING,
-                        step=ProcessingStep.VALIDATING,
-                    )
+                # Update step: Validating XML (85% progress)
+                # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+                update_batch_status(
+                    result.batch_tui, 1, URLState.PROCESSING,
+                    "✓ Validating XML output", progress_pct=ProgressPercent.VALIDATING
+                )
 
                 # Strip any XML declaration and root <XML> tag from LLM output (we'll add our own)
-                import re
-
+                # NOTE: 're' module is imported at module level (line 131) - DO NOT reimport here
                 xml_content = re.sub(
                     r'<\?xml\s+version="[^"]+"\s+encoding="[^"]+"\?>\s*',
                     "",
@@ -3000,13 +3029,12 @@ def process_single_page(
                 # Wrap XML content with proper declaration and source URL
                 result.xml_content = f'<?xml version="1.0" encoding="UTF-8"?>\n<XML>\n<SOURCE_URL>{url}</SOURCE_URL>\n{xml_content}\n</XML>'
 
-                # Update step: Saving XML
-                if result.tui_manager:
-                    result.tui_manager.update_chunk_status(
-                        chunk_id=1,
-                        state=ChunkState.PROCESSING,
-                        step=ProcessingStep.SAVING,
-                    )
+                # Update step: Saving XML (95% progress)
+                # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+                update_batch_status(
+                    result.batch_tui, 1, URLState.PROCESSING,
+                    "💾 Saving XML files", progress_pct=ProgressPercent.SAVING
+                )
 
                 logger.debug("Step 4: Saving XML to file...")
 
@@ -3016,8 +3044,20 @@ def process_single_page(
                     f.write(result.xml_content)
                 logger.debug(f"Step 4 SUCCESS: Saved XML to {xml_file}")
         except Exception as e:
+            # CRITICAL: Capture full traceback for debugging - str(e) alone loses stack info
+            import traceback
+            full_traceback = traceback.format_exc()
             result.error = f"Error processing page: {str(e)}"
-            logger.debug(f"Background processing FAILED with exception: {str(e)}")
+            # Log both short message and full traceback for debugging
+            logger.error(f"Background processing FAILED with exception: {str(e)}")
+            logger.debug(f"Full traceback:\n{full_traceback}")
+            # CRITICAL: Update TUI to show FAILED status so user sees the failure
+            # WHY: Without this, TUI shows "Processing" forever on failure
+            # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+            update_batch_status(
+                result.batch_tui, 1, URLState.FAILED,
+                f"❌ Error: {str(e)[:50]}", progress_pct=ProgressPercent.FAILED  # Truncate long errors
+            )
 
     def process_in_background() -> None:
         """Wrapper to run async function in sync context"""
@@ -3029,49 +3069,105 @@ def process_single_page(
         with Spinner("Processing page...") as spinner:
             thread = threading.Thread(target=process_in_background)
             thread.start()
-            while thread.is_alive():
+            # CRITICAL: Check shutdown_flag so Ctrl+C works even in spinner mode
+            # WHY: Without this, user cannot interrupt processing with Ctrl+C
+            while thread.is_alive() and not shutdown_flag:
                 spinner.step()
                 # Use centralized spinner animation interval - DO NOT hardcode timing values
                 time.sleep(SPINNER_ANIMATION_INTERVAL)
-            thread.join()
+            # SAFETY: Add timeout to thread.join() to prevent hanging
+            # WHY: Even though we exit the loop when thread.is_alive() is False,
+            # a small timeout protects against edge cases where thread cleanup hangs
+            # CRITICAL: Use config constant, not hardcoded timeout
+            # 5x multiplier gives threads more time to finish gracefully
+            thread.join(timeout=KEYBOARD_THREAD_TIMEOUT * 5)
+            if thread.is_alive():
+                logger.warning("Background thread did not terminate cleanly - may have hung")
     else:
         # TUI mode - run thread and keep updating TUI while it's alive
         thread = threading.Thread(target=process_in_background)
         thread.start()
 
         logger.debug(
-            f"TUI update loop starting. TUI manager exists: {result.tui_manager is not None}, Live widget exists: {result.tui_manager.live is not None if result.tui_manager else False}"
+            f"TUI update loop starting. BatchTUI exists: {result.batch_tui is not None}, "
+            f"Live widget exists: {result.batch_tui.live is not None if result.batch_tui else False}"
         )
 
         update_count = 0
-        while thread.is_alive():
+        # CRITICAL: Check both thread.is_alive() AND shutdown_flag/should_stop
+        # WHY: User pressing Ctrl+C sets shutdown_flag, batch_tui 'q' key sets should_stop
+        # Without this check, TUI loop continues forever even after user requests shutdown
+        while thread.is_alive() and not shutdown_flag:
+            # Also check if user pressed 'q' in TUI to stop
+            if result.batch_tui and result.batch_tui.should_stop:
+                logger.info("User requested stop via TUI")
+                break
             # Update TUI display while background thread is working
-            if result.tui_manager and result.tui_manager.live:
-                result.tui_manager.live.update(result.tui_manager._create_dashboard())
+            # BatchTUIManager handles its own rendering via update_display()
+            if result.batch_tui and result.batch_tui.live:
+                result.batch_tui.update_display()
                 update_count += 1
                 if update_count % 50 == 0:  # Log every 5 seconds
                     logger.debug(f"TUI updated {update_count} times")
             # Use centralized TUI polling interval - DO NOT hardcode timing values
             time.sleep(SINGLE_PAGE_TUI_POLL_INTERVAL)
-        thread.join()
+        # SAFETY: Add timeout to thread.join() to prevent hanging
+        # WHY: Protects against edge cases where thread cleanup hangs
+        # CRITICAL: Use config constant, not hardcoded timeout
+        # 5x multiplier gives threads more time to finish gracefully
+        thread.join(timeout=KEYBOARD_THREAD_TIMEOUT * 5)
+        if thread.is_alive():
+            logger.warning("Background thread did not terminate cleanly - may have hung")
 
         logger.debug(f"Thread finished. Total TUI updates: {update_count}")
 
-        # Final update to show completed state
-        if result.tui_manager and result.tui_manager.live:
+        # Check if we exited due to user interrupt (Ctrl+C or 'q' key)
+        # CRITICAL: Handle user cancellation differently from successful completion
+        user_cancelled = shutdown_flag or (result.batch_tui and result.batch_tui.should_stop)
+
+        if user_cancelled:
+            # User requested stop - don't mark as completed
+            logger.info("Processing cancelled by user")
+            if result.batch_tui and result.batch_tui.live:
+                # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+                update_batch_status(
+                    result.batch_tui, 1, URLState.FAILED,
+                    "⚠️ Cancelled by user", progress_pct=ProgressPercent.FAILED
+                )
+                result.batch_tui.update_display()
+                time.sleep(FINAL_STATE_PAUSE)
+            # Set error so main flow handles cleanup
+            if not result.error:
+                result.error = "Processing cancelled by user"
+        elif result.batch_tui and result.batch_tui.live:
+            # Normal completion - show completed state (100% progress)
             logger.debug("Performing final TUI update")
-            result.tui_manager.live.update(result.tui_manager._create_dashboard())
+            # Mark task as completed before final display update
+            # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
+            update_batch_status(
+                result.batch_tui, 1, URLState.COMPLETED,
+                "✅ Complete", progress_pct=ProgressPercent.COMPLETE
+            )
+            result.batch_tui.update_display()
             # Use centralized pause duration - DO NOT hardcode timing values
             time.sleep(FINAL_STATE_PAUSE)
         else:
             logger.debug(
-                f"No final TUI update - TUI manager exists: {result.tui_manager is not None}, Live exists: {result.tui_manager.live is not None if result.tui_manager else False}"
+                f"No final TUI update - BatchTUI exists: {result.batch_tui is not None}, "
+                f"Live exists: {result.batch_tui.live is not None if result.batch_tui else False}"
             )
     logger.debug("Background processing thread completed")
 
     if result.error:
         logger.error(result.error)
         logger.debug("=== process_single_page FAILED ===")
+        # CRITICAL: Stop TUI on failure to release terminal
+        # WHY: Without this, TUI continues running forever after failure
+        # The FAILED status was already set in process_in_background_async()
+        if result.batch_tui:
+            # Give user time to see the FAILED status before stopping
+            time.sleep(FINAL_STATE_PAUSE)
+            result.batch_tui.stop_live_display()
         return None
 
     # In scrape-only mode, return success without XML
@@ -3090,10 +3186,12 @@ def process_single_page(
             f"Step 5 SUCCESS: Merged XML file created ({len(merged_xml)} characters)"
         )
 
-        # Show final TUI summary if TUI manager exists
-        if result.tui_manager:
+        # Show final TUI summary if BatchTUIManager exists
+        if result.batch_tui:
             xml_file = temp_folder / "processed_single_page.xml"
-            result.tui_manager.show_final_summary(
+            # Stop live display before showing summary
+            result.batch_tui.stop_live_display()
+            result.batch_tui.show_final_summary(
                 xml_files=[str(xml_file), str(merged_xml_file)],
                 output_dir=str(temp_folder),
             )
@@ -3115,10 +3213,15 @@ def process_url(
     status_pipeline: Optional[StatusPipeline] = None,
     error_collector: Optional[ErrorCollector] = None,
 ) -> Optional[str]:
-    global progress_tracker
     """
     Process a single URL: scrape, convert to XML, and save temp files.
+
+    This function is called by worker threads in ThreadPoolExecutor.
+    It reads and writes to progress_tracker (protected by progress_lock).
     """
+    # CRITICAL: Only declare globals ONCE, before any code
+    # shutdown_flag is read to check for user interrupt
+    # progress_tracker is modified to track URL processing state
     global shutdown_flag, progress_tracker
     logger.info(f"Processing URL {idx}/{total}: {url}")
     if scrape_only:
@@ -3128,11 +3231,15 @@ def process_url(
             logger.info(f"Shutdown requested. Skipping URL {url}")
             return None
 
-        if url not in progress_tracker:
-            progress_tracker[url] = {"status": "pending", "cost": 0.0}
-        elif progress_tracker[url].get("status") == "successful":
-            logger.info(f"URL {url} already processed successfully. Skipping.")
-            return None
+        # CRITICAL: All progress_tracker access must be protected by progress_lock
+        # because this dict is accessed from multiple worker threads concurrently.
+        # Without lock: read-modify-write race conditions can corrupt data.
+        with progress_lock:
+            if url not in progress_tracker:
+                progress_tracker[url] = {"status": "pending", "cost": 0.0}
+            elif progress_tracker[url].get("status") == "successful":
+                logger.info(f"URL {url} already processed successfully. Skipping.")
+                return None
 
         update_progress_file()
 
@@ -3142,15 +3249,20 @@ def process_url(
         )
 
         logger.info(f"Scraping HTML content for URL: {url}")
-        # Suppress spinner output when batch TUI is active
-        html_content = web_scraper(url, no_tui=True, quiet=bool(batch_tui))
+        # CRITICAL FIX: batch_tui was undefined here after TUI unification
+        # Use status_pipeline presence as indicator of batch mode (TUI active)
+        # WHY: In batch mode, status_pipeline is set; in single-page mode, it's None
+        # When TUI is active, suppress web_scraper output to avoid TUI corruption
+        is_tui_active = status_pipeline is not None
+        html_content = web_scraper(url, no_tui=True, quiet=is_tui_active)
         if not html_content:
             logger.warning(f"Failed to retrieve HTML content for {url}")
-            progress_tracker[url] = {
-                "status": "failed",
-                "cost": progress_tracker[url].get("cost", 0.0),
-            }
-            with cost_lock:
+            # CRITICAL: Lock progress_tracker for thread-safe read-modify-write
+            with progress_lock:
+                progress_tracker[url] = {
+                    "status": "failed",
+                    "cost": progress_tracker[url].get("cost", 0.0),
+                }
                 update_progress_file()
             # NEW SYSTEM: Record error in error_collector for circuit breaker
             if error_collector:
@@ -3180,11 +3292,13 @@ def process_url(
             logger.info(
                 f"Scrape-only mode: HTML saved for URL {url}, skipping XML generation"
             )
-            progress_tracker[url] = {
-                "status": "successful",
-                "cost": 0.0,
-            }
-            update_progress_file()
+            # CRITICAL: Lock for thread-safe progress_tracker write
+            with progress_lock:
+                progress_tracker[url] = {
+                    "status": "successful",
+                    "cost": 0.0,
+                }
+                update_progress_file()
             # NEW SYSTEM: Update status via status_pipeline
             if status_pipeline:
                 status_pipeline.update_status(
@@ -3198,8 +3312,10 @@ def process_url(
 
         if shutdown_flag:
             logger.info(f"Shutdown requested. Skipping LLM processing for URL {url}")  # type: ignore[unreachable]
-            progress_tracker[url]["status"] = "pending"
-            update_progress_file()
+            # CRITICAL: Lock for thread-safe progress_tracker modification
+            with progress_lock:
+                progress_tracker[url]["status"] = "pending"
+                update_progress_file()
             return None
 
         # Update TUI: Starting LLM processing
@@ -3220,7 +3336,7 @@ def process_url(
                 html_content,
                 additional_content,
                 pricing_info,
-                status_pipeline=status_pipeline,
+                status_handler=status_pipeline,  # Batch mode: use StatusPipeline for event-based updates
                 task_id=idx,
                 error_collector=error_collector,
                 url=url,
@@ -3228,11 +3344,13 @@ def process_url(
         )
         if result is None:
             logger.warning(f"Failed to convert HTML to XML for {url}")  # type: ignore[unreachable]
-            progress_tracker[url] = {
-                "status": "failed",
-                "cost": progress_tracker[url].get("cost", 0.0),
-            }
-            update_progress_file()
+            # CRITICAL: Lock for thread-safe read-modify-write
+            with progress_lock:
+                progress_tracker[url] = {
+                    "status": "failed",
+                    "cost": progress_tracker[url].get("cost", 0.0),
+                }
+                update_progress_file()
             # NEW SYSTEM: Error already recorded by call_llm_to_convert_html_to_xml()
             # via error_collector.record_error() for specific API errors
             update_batch_status(
@@ -3245,11 +3363,11 @@ def process_url(
             )
             return None
 
-        xml_content, request_cost, _ = (
-            result  # Unpack all 3 values (tui_manager not used in batch mode)
-        )
+        # Unpack result (now returns only 2 values: xml_content and cost)
+        xml_content, request_cost = result
 
-        with cost_lock:
+        # CRITICAL: Lock for thread-safe cost accumulation (read-modify-write)
+        with progress_lock:
             progress_tracker[url] = {
                 "status": progress_tracker[url].get("status", "pending"),
                 "cost": float(progress_tracker[url].get("cost", 0.0)) + request_cost,
@@ -3267,11 +3385,13 @@ def process_url(
                 f.write(xml_content)
         else:
             logger.warning(f"No XML content generated for URL: {url}")
-            progress_tracker[url] = {
-                "status": "failed",
-                "cost": progress_tracker[url].get("cost", 0.0),
-            }
-            update_progress_file()
+            # CRITICAL: Lock for thread-safe read-modify-write
+            with progress_lock:
+                progress_tracker[url] = {
+                    "status": "failed",
+                    "cost": progress_tracker[url].get("cost", 0.0),
+                }
+                update_progress_file()
             # NEW SYSTEM: Record invalid response error
             if error_collector:
                 error_collector.record_error(
@@ -3300,15 +3420,20 @@ def process_url(
 
         logger.info(f"Successfully processed URL {idx}/{total}: {url}")
         is_valid_xml = validate_xml(xml_content)
-        progress_tracker[url] = {
-            "status": "successful",
-            "cost": progress_tracker[url].get("cost", 0.0),
-            "valid_xml": is_valid_xml,
-        }
-        update_progress_file()
+        # CRITICAL: Lock for thread-safe read-modify-write and cost capture
+        # We capture final_cost inside the lock to avoid a second read outside the lock
+        with progress_lock:
+            final_cost = float(progress_tracker[url].get("cost", 0.0))
+            progress_tracker[url] = {
+                "status": "successful",
+                "cost": final_cost,
+                "valid_xml": is_valid_xml,
+            }
+            update_progress_file()
 
         # Update TUI: Processing complete (final state update in process_multiple_pages)
         # NEW SYSTEM: Update status via status_pipeline
+        # NOTE: final_cost was captured inside the lock above - no race condition
         if status_pipeline:
             status_pipeline.update_status(
                 task_id=idx,
@@ -3317,7 +3442,7 @@ def process_url(
                 progress_pct=100.0,
                 size_in=len(html_content),
                 size_out=len(xml_content),
-                cost=float(progress_tracker[url].get("cost", 0.0)),
+                cost=final_cost,
             )
 
         return xml_content
@@ -3326,11 +3451,13 @@ def process_url(
         logger.error(error_message)
         with open(error_log_file, "a", encoding="utf-8") as f:
             f.write(f"{error_message}\n")
-        progress_tracker[url] = {
-            "status": "failed",
-            "cost": progress_tracker[url].get("cost", 0.0),
-        }
-        update_progress_file()
+        # CRITICAL: Lock for thread-safe read-modify-write
+        with progress_lock:
+            progress_tracker[url] = {
+                "status": "failed",
+                "cost": progress_tracker[url].get("cost", 0.0),
+            }
+            update_progress_file()
         # NEW SYSTEM: Record connection error for circuit breaker
         if error_collector:
             error_collector.record_error(
@@ -3354,11 +3481,13 @@ def process_url(
         logger.error(error_message)
         with open(error_log_file, "a", encoding="utf-8") as f:
             f.write(f"{error_message}\n")
-        progress_tracker[url] = {
-            "status": "failed",
-            "cost": progress_tracker[url].get("cost", 0.0),
-        }
-        update_progress_file()
+        # CRITICAL: Lock for thread-safe read-modify-write
+        with progress_lock:
+            progress_tracker[url] = {
+                "status": "failed",
+                "cost": progress_tracker[url].get("cost", 0.0),
+            }
+            update_progress_file()
         # NEW SYSTEM: Record unknown error for circuit breaker
         if error_collector:
             error_collector.record_error(
@@ -3383,6 +3512,10 @@ def update_progress_file(atomic: bool = True) -> None:
     """
     Update the progress file with current scraping state.
 
+    Thread-safety: Uses progress_lock internally. Can be called with or without
+    the lock already held (RLock is reentrant). If called from worker threads,
+    ensure no long operations are done after calling this while holding the lock.
+
     Args:
         atomic: If True, use atomic write (temp file + rename) to prevent corruption.
                 If False, write directly to the file (faster but less safe).
@@ -3392,7 +3525,9 @@ def update_progress_file(atomic: bool = True) -> None:
         logger.warning("Progress file path not set. Unable to update progress.")
         return
 
-    with cost_lock:
+    # CRITICAL: Use progress_lock (not cost_lock) to protect progress_tracker reads
+    # progress_lock is an RLock, so callers can already hold it without deadlock
+    with progress_lock:
         data = {
             "output_folder": str(temp_folder),
             "urls": [
@@ -3569,7 +3704,8 @@ def process_multiple_pages(
                 # HYBRID POLLING: 50ms baseline + instant wake-up for critical events
                 # WHY: StatusPipeline.wait_for_update() returns immediately if
                 # CircuitBreakerEvent is published, otherwise times out after 50ms
-                critical = status_pipeline.wait_for_update(timeout=0.05)
+                # CRITICAL: Use config constant for consistent polling interval
+                critical = status_pipeline.wait_for_update(timeout=BATCH_TUI_POLL_INTERVAL)
 
                 # PROCESS EVENTS: Dispatch all pending events from worker threads
                 # WHY: EventBus.dispatch() processes StatusEvent, ErrorEvent, etc.
@@ -3998,7 +4134,9 @@ def main_workflow(
     # This happens BEFORE suppressing console, so all errors go to file even if not shown in TUI
     # The session log provides complete error details for troubleshooting and resume operations
     session_log_path = temp_folder / "session.log"
-    session_file_handler = setup_session_log_file(session_log_path)
+    # NOTE: Handler is added to root logger, stays active via logging system
+    # We don't need to store the return value unless we want to remove it later
+    _session_file_handler = setup_session_log_file(session_log_path)
     logger.info(f"Session log file: {session_log_path}")
 
     # Suppress console logging IMMEDIATELY in batch mode with TUI
@@ -4458,7 +4596,10 @@ def _find_auto_resume_session() -> Optional[str]:
                         "mtime": os.path.getmtime(pf),
                     }
                 )
-        except (json.JSONDecodeError, OSError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            # Skip invalid/corrupted session files silently (they're not usable anyway)
+            # Log in debug mode so users CAN investigate if needed
+            logger.debug(f"Skipping invalid session file {pf}: {type(e).__name__}: {e}")
             continue
 
     if not resumable_sessions:
@@ -4514,7 +4655,10 @@ def check_for_resumable_sessions() -> Optional[str]:
                         "mtime": os.path.getmtime(pf),
                     }
                 )
-        except (json.JSONDecodeError, OSError, KeyError):
+        except (json.JSONDecodeError, OSError, KeyError) as e:
+            # Skip invalid/corrupted session files silently (they're not usable anyway)
+            # Log in debug mode so users CAN investigate if needed
+            logger.debug(f"Skipping invalid session file {pf}: {type(e).__name__}: {e}")
             continue
 
     if not resumable_sessions:
@@ -4839,7 +4983,8 @@ def check_for_running_apias_instances() -> None:
 
     except subprocess.TimeoutExpired:
         # If ps command times out, just continue (better than blocking startup)
-        pass
+        # This can happen on slow systems or when ps is blocked
+        logger.debug("Singleton check timed out - continuing anyway")
     except Exception as e:
         # If check fails for any reason, just continue
         # (better to possibly have duplicates than to block legitimate runs)

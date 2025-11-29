@@ -13,11 +13,16 @@ Provides a scrollable dashboard that shows:
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
 import threading
 import sys
 import time
+
+# TYPE_CHECKING imports to avoid circular imports at runtime
+# WHY: status_pipeline imports batch_tui, so we need conditional import
+if TYPE_CHECKING:
+    from apias.status_pipeline import TaskSnapshot
 
 from rich.console import Console
 from rich.live import Live
@@ -39,10 +44,8 @@ from apias.config import (
 # Import shared terminal utilities for cross-platform support
 from apias.terminal_utils import (
     Symbols,
-    KeyboardListener,
     ProcessState,
     BaseTUIManager,
-    detect_terminal_capabilities,
     format_duration,
     calculate_eta,
 )
@@ -607,6 +610,60 @@ class BatchTUIManager(BaseTUIManager):
         """Refresh the live display (called from main thread)"""
         if self.live:
             self.live.update(self._create_dashboard())
+
+    def render_snapshot(self, snapshot: Optional[Dict[int, "TaskSnapshot"]]) -> None:
+        """
+        Render a snapshot from StatusPipeline by updating internal state.
+
+        This method bridges the gap between the event-driven StatusPipeline
+        and the BatchTUIManager's internal state. It updates each task's
+        state from the snapshot, then refreshes the display.
+
+        Args:
+            snapshot: Dict mapping task_id -> TaskSnapshot from StatusPipeline.
+                      Can be None if get_snapshot() returns nothing.
+
+        WHY: StatusPipeline uses event-driven updates via EventBus, but
+        BatchTUIManager has its own internal task dictionary. This method
+        synchronizes them for rendering.
+
+        Thread Safety: Should only be called from main thread (same as update_display).
+
+        Edge Cases:
+        - snapshot=None: Early return (no-op)
+        - no_tui=True: Early return (TUI disabled)
+        - Empty snapshot: Still calls update_display() to refresh any pending changes
+        """
+        # CRITICAL: Early return if TUI is disabled
+        # WHY: Prevents wasted CPU cycles when running in headless/quiet mode
+        if self.no_tui:
+            return
+
+        # CRITICAL: Guard against None snapshot
+        # WHY: get_snapshot() could theoretically return None in edge cases
+        if snapshot is None:
+            logger.debug("render_snapshot called with None snapshot - skipping")
+            return
+
+        # Update each task from snapshot
+        # WHY: Synchronize StatusPipeline's event-driven state with BatchTUI's internal state
+        for task_id, task_snap in snapshot.items():
+            # Call update_task to synchronize state (handles stats updates automatically)
+            self.update_task(
+                task_id=task_id,
+                state=task_snap.state,
+                progress_pct=task_snap.progress_pct,
+                size_in=task_snap.size_in,
+                size_out=task_snap.size_out,
+                cost=task_snap.cost,
+                error=task_snap.error,
+                current_chunk=task_snap.current_chunk,
+                total_chunks=task_snap.total_chunks,
+                status_message=task_snap.status_message,
+            )
+
+        # Refresh display with updated state
+        self.update_display()
 
     def stop_live_display(self) -> None:
         """Stop the live display and keyboard listener"""

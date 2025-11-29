@@ -105,6 +105,28 @@ URL_TRUNCATE_MAX_LENGTH: Final[int] = 60  # Max chars before truncating URL
 KEYBOARD_POLL_INTERVAL: Final[float] = 0.1  # seconds for keyboard input polling
 KEYBOARD_THREAD_TIMEOUT: Final[float] = 1.0  # seconds to wait for thread cleanup
 
+# --- Progress Percentages (Single Source of Truth) ---
+# WHY: Centralize progress values to avoid DRY violations and make adjustments easy
+# USAGE: Import these constants instead of hardcoding percentages in multiple places
+# Design: Progress represents percentage of overall processing for a single URL
+class ProgressPercent:
+    """Centralized progress percentages for TUI status updates.
+
+    These values represent the overall progress through the processing pipeline.
+    Adjust these values here to change progress display across entire application.
+
+    Flow: SCRAPING -> CLEANING -> CHUNKING -> SENDING -> RECEIVING -> VALIDATING -> SAVING -> COMPLETE
+    """
+    SCRAPING: Final[float] = 10.0    # Started scraping HTML
+    CLEANING: Final[float] = 20.0    # Cleaning HTML content
+    CHUNKING: Final[float] = 30.0    # Preparing content for AI
+    SENDING: Final[float] = 40.0     # Sending to AI model
+    RECEIVING: Final[float] = 70.0   # Received AI response
+    VALIDATING: Final[float] = 85.0  # Validating XML output
+    SAVING: Final[float] = 95.0      # Saving XML files
+    COMPLETE: Final[float] = 100.0   # Processing complete
+    FAILED: Final[float] = 0.0       # Processing failed (reset to 0)
+
 
 def get_system_temp_dir() -> Path:
     """

@@ -132,9 +132,10 @@ async def test_mock_llm_conversion(
     )
 
     assert result is not None, "Should return a result"
-    assert len(result) == 3, "Should return (xml_content, cost, tui_manager) tuple"
+    # After TUI unification, returns (xml_content, cost) - no tui_manager
+    assert len(result) == 2, "Should return (xml_content, cost) tuple"
 
-    xml_content, cost, _ = result
+    xml_content, cost = result
     assert cost >= 0, "Cost should be non-negative"
     # Mock should always return XML content
     assert xml_content is not None, "Mock API should return XML content"
@@ -308,9 +309,10 @@ async def test_real_llm_conversion(
     )
 
     assert result is not None, "Should return a result"
-    assert len(result) == 3, "Should return (xml_content, cost, tui_manager) tuple"
+    # After TUI unification, returns (xml_content, cost) - no tui_manager
+    assert len(result) == 2, "Should return (xml_content, cost) tuple"
 
-    xml_content, cost, _ = result
+    xml_content, cost = result
     assert cost >= 0, "Cost should be non-negative"
 
 
