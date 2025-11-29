@@ -331,21 +331,37 @@ class DialogManager:
 
         # Build main message
         message = Text()
-        message.append("Processing has been paused to prevent further errors.\n\n", style="bold yellow")
+        message.append(
+            "Processing has been paused to prevent further errors.\n\n",
+            style="bold yellow",
+        )
         message.append(f"Reason: {reason}\n", style="red")
 
         if trigger_category:
             message.append(f"Error Category: {trigger_category.name}\n", style="dim")
 
         if affected_tasks:
-            message.append(f"\nAffected Tasks: {len(affected_tasks)} tasks were not completed\n", style="yellow")
+            message.append(
+                f"\nAffected Tasks: {len(affected_tasks)} tasks were not completed\n",
+                style="yellow",
+            )
 
         # Add next steps
         message.append("\n📋 Next Steps:\n", style="bold cyan")
-        message.append("1. Check session.log for detailed error information\n", style="dim")
-        message.append("2. Review error_thresholds.yaml to adjust circuit breaker settings\n", style="dim")
-        message.append("3. Fix the underlying issue (quota, auth, network, etc.)\n", style="dim")
-        message.append("4. Resume processing with progress.json to continue from where you left off\n", style="dim")
+        message.append(
+            "1. Check session.log for detailed error information\n", style="dim"
+        )
+        message.append(
+            "2. Review error_thresholds.yaml to adjust circuit breaker settings\n",
+            style="dim",
+        )
+        message.append(
+            "3. Fix the underlying issue (quota, auth, network, etc.)\n", style="dim"
+        )
+        message.append(
+            "4. Resume processing with progress.json to continue from where you left off\n",
+            style="dim",
+        )
 
         # Add file paths if available
         if session_log:
@@ -386,7 +402,10 @@ class DialogManager:
 
         if total_errors == 0:
             # No errors - show success message
-            self._console.print("✅ Processing completed successfully with no errors!", style="bold green")
+            self._console.print(
+                "✅ Processing completed successfully with no errors!",
+                style="bold green",
+            )
             return
 
         # Build title
@@ -398,8 +417,15 @@ class DialogManager:
         table.add_column("Count", justify="right", style="yellow")
         table.add_column("Recoverable", style="green")
 
-        for category, count in sorted(error_breakdown.items(), key=lambda x: x[1], reverse=True):
-            recoverable = "✅" if category.name.endswith("_TIMEOUT") or category.name.startswith("CONNECTION") else "❌"
+        for category, count in sorted(
+            error_breakdown.items(), key=lambda x: x[1], reverse=True
+        ):
+            recoverable = (
+                "✅"
+                if category.name.endswith("_TIMEOUT")
+                or category.name.startswith("CONNECTION")
+                else "❌"
+            )
             table.add_row(category.name, str(count), recoverable)
 
         # Create panel
@@ -419,7 +445,10 @@ class DialogManager:
         if recent_errors and len(recent_errors) > 0:
             self._console.print("Recent Errors (last 5):", style="bold")
             for error_event in recent_errors[:5]:
-                self._console.print(f"  • {error_event.category.name}: {error_event.message}", style="dim")
+                self._console.print(
+                    f"  • {error_event.category.name}: {error_event.message}",
+                    style="dim",
+                )
             self._console.print()
 
     def _render_confirmation(self, context: Dict[str, Any]) -> None:
@@ -440,7 +469,11 @@ class DialogManager:
         self._console.print(f"\n{message}", style="bold yellow")
 
         # Get user input
-        response = self._console.input(f"Continue? (yes/no) [default: {default}]: ").strip().lower()
+        response = (
+            self._console.input(f"Continue? (yes/no) [default: {default}]: ")
+            .strip()
+            .lower()
+        )
 
         if not response:
             response = default

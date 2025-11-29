@@ -23,7 +23,6 @@ from apias.logger_interceptor import (
     create_interceptor_with_session_log,
 )
 
-
 # ============================================================================
 # NOTE: Pytest hooks for logging restoration are in conftest.py
 # ============================================================================
@@ -100,19 +99,29 @@ def test_install_monkey_patches_logger_addhandler(cleanup_interceptor):
 
     # Verify not installed initially
     assert not interceptor._installed, "Interceptor should not be installed initially"
-    assert interceptor._original_addHandler is None, "Original method should not be saved initially"
+    assert (
+        interceptor._original_addHandler is None
+    ), "Original method should not be saved initially"
 
     # Install interceptor
     interceptor.install()
 
     # Verify installation
     assert interceptor._installed, "Interceptor should be marked as installed"
-    assert interceptor._original_addHandler is not None, "Original method should be saved"
-    assert interceptor._original_addHandler == original_method, "Saved method should match original"
-    assert logging.Logger.addHandler != original_method, "Logger.addHandler should be replaced with wrapper function"
+    assert (
+        interceptor._original_addHandler is not None
+    ), "Original method should be saved"
+    assert (
+        interceptor._original_addHandler == original_method
+    ), "Saved method should match original"
+    assert (
+        logging.Logger.addHandler != original_method
+    ), "Logger.addHandler should be replaced with wrapper function"
     # Note: Logger.addHandler is now an unbound wrapper function, not _intercepted_addHandler
     # The wrapper delegates to _intercepted_addHandler, but they are not the same object
-    assert callable(logging.Logger.addHandler), "Logger.addHandler should be callable (wrapper function)"
+    assert callable(
+        logging.Logger.addHandler
+    ), "Logger.addHandler should be callable (wrapper function)"
 
 
 def test_uninstall_restores_original_method(cleanup_interceptor):
@@ -126,7 +135,9 @@ def test_uninstall_restores_original_method(cleanup_interceptor):
 
     # Verify installed
     assert interceptor._installed, "Interceptor should be installed"
-    assert logging.Logger.addHandler != original_method, "Logger.addHandler should be monkey-patched"
+    assert (
+        logging.Logger.addHandler != original_method
+    ), "Logger.addHandler should be monkey-patched"
 
     # Block a handler to test stats logging
     test_logger = logging.getLogger("test_uninstall")
@@ -137,8 +148,12 @@ def test_uninstall_restores_original_method(cleanup_interceptor):
 
     # Verify restoration
     assert not interceptor._installed, "Interceptor should be marked as not installed"
-    assert interceptor._original_addHandler is None, "Original method reference should be cleared"
-    assert logging.Logger.addHandler == original_method, "Logger.addHandler should be restored to original"
+    assert (
+        interceptor._original_addHandler is None
+    ), "Original method reference should be cleared"
+    assert (
+        logging.Logger.addHandler == original_method
+    ), "Logger.addHandler should be restored to original"
     assert interceptor._blocked_attempts == 1, "Should have logged 1 blocked attempt"
 
 
@@ -155,11 +170,15 @@ def test_install_idempotency(cleanup_interceptor):
     # Second install (should be no-op)
     interceptor.install()
     assert interceptor._installed, "Should still be installed"
-    assert interceptor._original_addHandler == saved_method, "Original method should not change"
+    assert (
+        interceptor._original_addHandler == saved_method
+    ), "Original method should not change"
 
     # Verify only one level of monkey-patching (not nested)
     # The wrapper function should be the same object (no new wrapper created)
-    assert logging.Logger.addHandler is first_wrapper, "Should still point to the same wrapper function (no nested wrapping)"
+    assert (
+        logging.Logger.addHandler is first_wrapper
+    ), "Should still point to the same wrapper function (no nested wrapping)"
 
 
 # ============================================================================
@@ -181,8 +200,12 @@ def test_blocks_streamhandler_to_stdout(cleanup_interceptor):
     test_logger.addHandler(stdout_handler)
 
     # Verify handler was NOT added
-    assert len(test_logger.handlers) == initial_handler_count, "StreamHandler to stdout should be blocked"
-    assert stdout_handler not in test_logger.handlers, "stdout handler should not be in handlers list"
+    assert (
+        len(test_logger.handlers) == initial_handler_count
+    ), "StreamHandler to stdout should be blocked"
+    assert (
+        stdout_handler not in test_logger.handlers
+    ), "stdout handler should not be in handlers list"
     assert interceptor._blocked_attempts == 1, "Should have blocked 1 attempt"
 
 
@@ -200,8 +223,12 @@ def test_blocks_streamhandler_to_stderr(cleanup_interceptor):
     test_logger.addHandler(stderr_handler)
 
     # Verify handler was NOT added
-    assert len(test_logger.handlers) == initial_handler_count, "StreamHandler to stderr should be blocked"
-    assert stderr_handler not in test_logger.handlers, "stderr handler should not be in handlers list"
+    assert (
+        len(test_logger.handlers) == initial_handler_count
+    ), "StreamHandler to stderr should be blocked"
+    assert (
+        stderr_handler not in test_logger.handlers
+    ), "stderr handler should not be in handlers list"
     assert interceptor._blocked_attempts == 1, "Should have blocked 1 attempt"
 
 
@@ -219,8 +246,12 @@ def test_allows_filehandler(cleanup_interceptor, temp_log_file):
     test_logger.addHandler(file_handler)
 
     # Verify handler WAS added
-    assert len(test_logger.handlers) == initial_handler_count + 1, "FileHandler should be allowed"
-    assert file_handler in test_logger.handlers, "FileHandler should be in handlers list"
+    assert (
+        len(test_logger.handlers) == initial_handler_count + 1
+    ), "FileHandler should be allowed"
+    assert (
+        file_handler in test_logger.handlers
+    ), "FileHandler should be in handlers list"
     assert interceptor._blocked_attempts == 0, "Should have blocked 0 attempts"
 
     # Cleanup: remove handler
@@ -243,8 +274,12 @@ def test_allows_streamhandler_to_custom_stream(cleanup_interceptor):
     test_logger.addHandler(custom_handler)
 
     # Verify handler WAS added (custom streams are allowed)
-    assert len(test_logger.handlers) == initial_handler_count + 1, "StreamHandler to custom stream should be allowed"
-    assert custom_handler in test_logger.handlers, "Custom stream handler should be in handlers list"
+    assert (
+        len(test_logger.handlers) == initial_handler_count + 1
+    ), "StreamHandler to custom stream should be allowed"
+    assert (
+        custom_handler in test_logger.handlers
+    ), "Custom stream handler should be in handlers list"
     assert interceptor._blocked_attempts == 0, "Should have blocked 0 attempts"
 
     # Cleanup: remove handler
@@ -269,7 +304,9 @@ def test_logs_blocked_attempts_to_session_log(cleanup_interceptor, temp_log_file
     )
 
     # Create interceptor with session log
-    interceptor = cleanup_interceptor(LoggerInterceptor(session_log_handler=session_handler))
+    interceptor = cleanup_interceptor(
+        LoggerInterceptor(session_log_handler=session_handler)
+    )
     interceptor.install()
 
     # Block 3 handlers from different loggers
@@ -288,8 +325,12 @@ def test_logs_blocked_attempts_to_session_log(cleanup_interceptor, temp_log_file
     log_content = temp_log_file.read_text()
 
     # Verify 3 blocked attempts logged
-    blocked_lines = [line for line in log_content.split("\n") if "🚫 Blocked StreamHandler" in line]
-    assert len(blocked_lines) == 3, f"Should have 3 blocked attempt log entries, got {len(blocked_lines)}"
+    blocked_lines = [
+        line for line in log_content.split("\n") if "🚫 Blocked StreamHandler" in line
+    ]
+    assert (
+        len(blocked_lines) == 3
+    ), f"Should have 3 blocked attempt log entries, got {len(blocked_lines)}"
     assert "test_logger_1" in log_content, "Should log logger name for logger1"
     assert "test_logger_2" in log_content, "Should log logger name for logger2"
     assert "test_logger_3" in log_content, "Should log logger name for logger3"
@@ -339,16 +380,22 @@ def test_context_manager_installs_and_uninstalls(cleanup_interceptor):
         # Verify installed inside context
         assert ctx is interceptor, "Context manager should return self"
         assert interceptor._installed, "Should be installed inside context"
-        assert logging.Logger.addHandler != original_method, "Logger.addHandler should be monkey-patched"
+        assert (
+            logging.Logger.addHandler != original_method
+        ), "Logger.addHandler should be monkey-patched"
 
         # Test blocking works
         test_logger = logging.getLogger("test_context_manager")
         test_logger.addHandler(logging.StreamHandler(sys.stdout))
-        assert interceptor._blocked_attempts == 1, "Should block handlers inside context"
+        assert (
+            interceptor._blocked_attempts == 1
+        ), "Should block handlers inside context"
 
     # Verify uninstalled after context
     assert not interceptor._installed, "Should be uninstalled after context exit"
-    assert logging.Logger.addHandler == original_method, "Logger.addHandler should be restored"
+    assert (
+        logging.Logger.addHandler == original_method
+    ), "Logger.addHandler should be restored"
 
 
 def test_context_manager_uninstalls_on_exception(cleanup_interceptor):
@@ -368,7 +415,9 @@ def test_context_manager_uninstalls_on_exception(cleanup_interceptor):
 
     # Verify uninstalled even after exception
     assert not interceptor._installed, "Should be uninstalled after exception"
-    assert logging.Logger.addHandler == original_method, "Logger.addHandler should be restored after exception"
+    assert (
+        logging.Logger.addHandler == original_method
+    ), "Logger.addHandler should be restored after exception"
 
 
 # ============================================================================
@@ -379,18 +428,26 @@ def test_context_manager_uninstalls_on_exception(cleanup_interceptor):
 def test_create_interceptor_with_session_log(cleanup_interceptor, temp_log_file):
     """Test create_interceptor_with_session_log() creates configured interceptor."""
     # Create interceptor using utility function
-    interceptor = cleanup_interceptor(create_interceptor_with_session_log(str(temp_log_file)))
+    interceptor = cleanup_interceptor(
+        create_interceptor_with_session_log(str(temp_log_file))
+    )
 
     # Verify interceptor created
-    assert isinstance(interceptor, LoggerInterceptor), "Should return LoggerInterceptor instance"
-    assert interceptor._session_log_handler is not None, "Should have session log handler configured"
+    assert isinstance(
+        interceptor, LoggerInterceptor
+    ), "Should return LoggerInterceptor instance"
+    assert (
+        interceptor._session_log_handler is not None
+    ), "Should have session log handler configured"
     assert not interceptor._installed, "Should not be installed automatically"
 
     # Verify session log handler configured correctly
     session_handler = interceptor._session_log_handler
     assert isinstance(session_handler, logging.FileHandler), "Should be FileHandler"
     assert session_handler.level == logging.DEBUG, "Should be set to DEBUG level"
-    assert session_handler.baseFilename == str(temp_log_file), "Should use correct log file path"
+    assert session_handler.baseFilename == str(
+        temp_log_file
+    ), "Should use correct log file path"
 
     # Install and test blocking with logging
     interceptor.install()
@@ -400,7 +457,9 @@ def test_create_interceptor_with_session_log(cleanup_interceptor, temp_log_file)
     # Flush and verify log
     session_handler.flush()
     log_content = temp_log_file.read_text()
-    assert "🚫 Blocked StreamHandler" in log_content, "Should log blocked attempt to session log"
+    assert (
+        "🚫 Blocked StreamHandler" in log_content
+    ), "Should log blocked attempt to session log"
     assert "test_utility_function" in log_content, "Should include logger name in log"
 
     # Cleanup

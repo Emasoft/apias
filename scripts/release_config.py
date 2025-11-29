@@ -23,6 +23,7 @@ from typing import Any
 
 try:
     import yaml
+
     HAS_YAML = True
 except ImportError:
     HAS_YAML = False
@@ -135,7 +136,7 @@ def resolve_branch_to_channel(config: dict, branch: str) -> str | None:
     """Find which channel a branch belongs to."""
     pipeline = config.get("pipeline", {})
 
-    for stage_name, stage_config in pipeline.items():
+    for _stage_name, stage_config in pipeline.items():
         stage_branch = stage_config.get("branch", "")
 
         if stage_branch == branch:
@@ -182,7 +183,11 @@ def get_build_command(config: dict, channel: str) -> str:
         parts.append("--wheel")
 
     if channel_build.get("dev", False):
-        return build_config.get("artifacts", {}).get("dev", {}).get("command", "uv build --dev")
+        return (
+            build_config.get("artifacts", {})
+            .get("dev", {})
+            .get("command", "uv build --dev")
+        )
 
     return " ".join(parts)
 
@@ -271,7 +276,7 @@ def validate_config(config: dict) -> list[str]:
         errors.append("No channels are enabled - at least one must be enabled")
 
     # Verify that pipeline channels reference enabled channels
-    for stage_name, stage_config in pipeline.items():
+    for _stage_name, stage_config in pipeline.items():
         channel = stage_config.get("channel")
         if channel and channel not in enabled_channels:
             # This is a warning, not an error - stage may be disabled
@@ -290,12 +295,20 @@ def export_shell_env(config: dict) -> str:
 
     build = config.get("build", {})
     lines.append(f'export BUILD_COMMAND="{build.get("command", "uv build")}"')
-    lines.append(f'export BUILD_CLEAN="{format_value(build.get("clean_before", True))}"')
+    lines.append(
+        f'export BUILD_CLEAN="{format_value(build.get("clean_before", True))}"'
+    )
 
     safety = config.get("safety", {})
-    lines.append(f'export REQUIRE_CLEAN="{format_value(safety.get("require_clean", True))}"')
-    lines.append(f'export REQUIRE_SYNCED="{format_value(safety.get("require_synced", True))}"')
-    lines.append(f'export BLOCK_PRERELEASE_PYPI="{format_value(safety.get("block_prerelease_pypi", True))}"')
+    lines.append(
+        f'export REQUIRE_CLEAN="{format_value(safety.get("require_clean", True))}"'
+    )
+    lines.append(
+        f'export REQUIRE_SYNCED="{format_value(safety.get("require_synced", True))}"'
+    )
+    lines.append(
+        f'export BLOCK_PRERELEASE_PYPI="{format_value(safety.get("block_prerelease_pypi", True))}"'
+    )
 
     hotfix = config.get("hotfix", {})
     lines.append(f'export HOTFIX_ENABLED="{format_value(hotfix.get("enabled", True))}"')

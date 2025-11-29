@@ -99,94 +99,86 @@ APP_NAME = "APIAS - API AUTO SCRAPER"
 APP_FILENAME = "apias.py"
 VERSION = __version__
 
-import os
-import sys
-import time
-import shutil
-import logging
 import argparse
 import asyncio
 import concurrent.futures
-from typing import Dict, List, Optional, Tuple, Union, Any, Callable, Type, cast
-from bs4 import BeautifulSoup, Comment
-from types import TracebackType
-from pathlib import Path
+import fnmatch
+import itertools
+import json
+import logging
+import os
+import platform
+import re
+import shlex
+import shutil
+import signal as signal_module
+import subprocess
+import sys
+import threading
+import time
+import xml.etree.ElementTree as ET  # For Element class and tree manipulation
 from datetime import datetime
+from pathlib import Path
+from signal import SIGINT, SIGTERM, signal
+from types import FrameType, TracebackType
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union, cast
 from urllib.parse import urlparse
+
+import defusedxml.ElementTree as DefusedET  # Use defusedxml to prevent XXE attacks
 import requests
-from openai import AsyncOpenAI
+from bs4 import BeautifulSoup, Comment
 from openai import (
-    OpenAIError,
     APIConnectionError,
-    APITimeoutError,
-    RateLimitError,
     APIStatusError,
+    APITimeoutError,
+    AsyncOpenAI,
+    OpenAIError,
+    RateLimitError,
 )
 
 # tenacity import removed - AsyncOpenAI handles retries internally
 from requests.exceptions import RequestException
-import fnmatch
-import itertools
-import platform
-import re
-import shlex
-from types import FrameType
-import subprocess
-import threading
-import defusedxml.ElementTree as DefusedET  # Use defusedxml to prevent XXE attacks
-import xml.etree.ElementTree as ET  # For Element class and tree manipulation
-import signal as signal_module
-from signal import SIGINT, SIGTERM, signal
-import json
 
-# Import TUI and mock API modules
-# RichTUIManager removed - now using unified BatchTUIManager for both single-page and batch modes
-from .mock_api import MockAPIClient, mock_call_openai_api
 from .batch_tui import BatchTUIManager, URLState
-from .error_handler import (
+from .config import BATCH_TUI_POLL_INTERVAL  # For hybrid polling in batch mode
+from .config import KEYBOARD_THREAD_TIMEOUT  # For thread.join() timeouts
+from .config import (  # Network timeouts - DO NOT hardcode these values elsewhere; API configuration; Batch processing - DO NOT hardcode polling intervals; Thread cleanup - DO NOT hardcode thread timeouts; File system; Progress percentages - DO NOT hardcode progress values elsewhere; Use ProgressPercent.SCRAPING, ProgressPercent.SENDING, etc.
+    BATCH_FINAL_STATE_PAUSE,
+    BROWSER_NETWORK_IDLE_TIMEOUT,
+    ERROR_LOG_FILE_NAME,
+    FINAL_STATE_PAUSE,
+    HTTP_REQUEST_TIMEOUT,
+    OPENAI_MAX_RETRIES,
+    SINGLE_PAGE_TUI_POLL_INTERVAL,
+    SPINNER_ANIMATION_INTERVAL,
+    SUBPROCESS_TIMEOUT,
+    TEMP_FOLDER_PREFIX,
+    XML_VALIDATION_MAX_RETRIES,
+    ProgressPercent,
+    get_system_temp_dir,
+)
+from .dialog_manager import DialogManager
+from .error_collector import (
+    ErrorCategory as NewErrorCategory,  # Renamed to avoid conflict
+)
+from .error_collector import ErrorCollector, load_error_config
+from .error_handler import (  # Use centralized check instead of hardcoding categories
     classify_openai_error,
-    get_error_description,  # Use centralized check instead of hardcoding categories
+    get_error_description,
 )
 
 # WHY: New event-driven error handling and status update system (Week 2 integration)
 # These modules replace SessionErrorTracker and direct BatchTUI updates with
 # a decoupled event bus architecture for better thread safety and responsiveness
-from .event_system import (
-    EventBus,  # Will replace batch_tui.URLState once integration complete
+from .event_system import (  # Will replace batch_tui.URLState once integration complete
+    EventBus,
 )
-from .error_collector import (
-    ErrorCollector,
-    load_error_config,
-    ErrorCategory as NewErrorCategory,  # Renamed to avoid conflict
-)
-from .status_pipeline import StatusPipeline
-from .dialog_manager import DialogManager
 from .logger_interceptor import LoggerInterceptor
 
-from .config import (
-    # Network timeouts - DO NOT hardcode these values elsewhere
-    HTTP_REQUEST_TIMEOUT,
-    BROWSER_NETWORK_IDLE_TIMEOUT,
-    SUBPROCESS_TIMEOUT,
-    # API configuration
-    OPENAI_MAX_RETRIES,
-    XML_VALIDATION_MAX_RETRIES,
-    # Batch processing - DO NOT hardcode polling intervals
-    BATCH_TUI_POLL_INTERVAL,  # For hybrid polling in batch mode
-    SINGLE_PAGE_TUI_POLL_INTERVAL,
-    SPINNER_ANIMATION_INTERVAL,
-    FINAL_STATE_PAUSE,
-    BATCH_FINAL_STATE_PAUSE,
-    # Thread cleanup - DO NOT hardcode thread timeouts
-    KEYBOARD_THREAD_TIMEOUT,  # For thread.join() timeouts
-    # File system
-    TEMP_FOLDER_PREFIX,
-    ERROR_LOG_FILE_NAME,
-    get_system_temp_dir,
-    # Progress percentages - DO NOT hardcode progress values elsewhere
-    # Use ProgressPercent.SCRAPING, ProgressPercent.SENDING, etc.
-    ProgressPercent,
-)
+# Import TUI and mock API modules
+# RichTUIManager removed - now using unified BatchTUIManager for both single-page and batch modes
+from .mock_api import MockAPIClient, mock_call_openai_api
+from .status_pipeline import StatusPipeline
 
 
 def validate_xml(xml_string: str) -> bool:
@@ -2260,7 +2252,7 @@ async def call_llm_to_convert_html_to_xml(
             return i, None, cost
 
     # Prepare chunks with their indices (no delays - truly parallel)
-    chunk_args = [(i, chunk) for i, chunk in enumerate(chunks, 1)]
+    chunk_args = list(enumerate(chunks, 1))
 
     # Process chunks in parallel using asyncio.gather for true async concurrency
     tasks = [process_chunk_wrapper(args) for args in chunk_args]
@@ -3683,10 +3675,10 @@ def process_multiple_pages(
         handlers_and_level: Tuple of (handlers, level) from suppress_console_logging() for restoration
         session_log_path: Optional path to session.log file for summary display
     """
-    from rich.console import Console
-    from rich.text import Text
-    from rich.panel import Panel
     from rich import box
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
 
     global shutdown_flag
     logger.info(
@@ -3864,9 +3856,9 @@ def process_multiple_pages(
                         # This prevents dialog corruption and ensures clean user experience
                         dialog_manager.show_pending_dialogs(
                             output_dir=temp_folder,
-                            session_log=Path(session_log_path)
-                            if session_log_path
-                            else None,
+                            session_log=(
+                                Path(session_log_path) if session_log_path else None
+                            ),
                         )
 
                         # NOTE: Do NOT restore logging here! Worker threads are still running
@@ -5118,18 +5110,18 @@ def main() -> None:
 EXAMPLES:
   Single page mode (default):
     apias --url "https://api.example.com/docs"
-    
+
   Batch mode (scrape multiple pages from sitemap):
     apias --url "https://example.com" --mode batch
     apias --url "https://example.com" --mode batch --whitelist patterns.txt
     apias --url "https://example.com" --mode batch --limit 50
-    
+
   Resume interrupted session:
     apias --resume "./temp_20240101_120000/progress.json"
-    
+
   Headless/CI mode (no TUI, quiet output):
     apias --url "https://example.com" --mode batch --quiet --auto-resume
-    
+
   Using configuration file:
     apias --url "https://example.com" --config apias_config.yaml
 

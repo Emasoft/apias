@@ -119,7 +119,9 @@ class LoggerInterceptor:
         # doesn't know to pass the logger instance as the first argument.
         # We need an unbound function that receives logger_instance and delegates
         # to our interceptor method.
-        def interceptor_wrapper(logger_instance: logging.Logger, handler: logging.Handler) -> None:
+        def interceptor_wrapper(
+            logger_instance: logging.Logger, handler: logging.Handler
+        ) -> None:
             """Unbound wrapper that delegates to _intercepted_addHandler"""
             self._intercepted_addHandler(logger_instance, handler)
 
@@ -129,7 +131,9 @@ class LoggerInterceptor:
         logging.Logger.addHandler = interceptor_wrapper
 
         self._installed = True
-        logger.info("LoggerInterceptor installed - StreamHandlers to stdout/stderr will be blocked")
+        logger.info(
+            "LoggerInterceptor installed - StreamHandlers to stdout/stderr will be blocked"
+        )
 
     def uninstall(self) -> None:
         """
@@ -148,7 +152,9 @@ class LoggerInterceptor:
             return
 
         if not self._original_addHandler:
-            logger.error("LoggerInterceptor in invalid state: installed but no original method saved")
+            logger.error(
+                "LoggerInterceptor in invalid state: installed but no original method saved"
+            )
             return
 
         # Restore original method
@@ -161,7 +167,9 @@ class LoggerInterceptor:
             f"StreamHandler attempts during session"
         )
 
-    def _intercepted_addHandler(self, logger_instance: logging.Logger, handler: logging.Handler) -> None:
+    def _intercepted_addHandler(
+        self, logger_instance: logging.Logger, handler: logging.Handler
+    ) -> None:
         """
         Intercept addHandler() calls and block StreamHandlers.
 
@@ -199,7 +207,9 @@ class LoggerInterceptor:
         if self._original_addHandler:
             self._original_addHandler(logger_instance, handler)
         else:
-            logger.error("LoggerInterceptor in invalid state: no original addHandler method")
+            logger.error(
+                "LoggerInterceptor in invalid state: no original addHandler method"
+            )
 
     def _log_blocked_attempt(self, logger_name: str, handler: logging.Handler) -> None:
         """
@@ -218,7 +228,11 @@ class LoggerInterceptor:
 
         # Get stream name (stdout or stderr)
         stream = getattr(handler, "stream", None)
-        stream_name = "stdout" if stream is sys.stdout else "stderr" if stream is sys.stderr else "unknown"
+        stream_name = (
+            "stdout"
+            if stream is sys.stdout
+            else "stderr" if stream is sys.stderr else "unknown"
+        )
 
         # Create log record manually to avoid recursion
         # WHY makeLogRecord: Bypasses normal logging flow which might

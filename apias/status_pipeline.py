@@ -349,9 +349,7 @@ class StatusPipeline:
                     total_chunks=task.total_chunks,
                     status_message=task.status_message,
                     # Deep copy history to ensure immutability
-                    status_history=copy.deepcopy(
-                        getattr(task, "status_history", [])
-                    ),
+                    status_history=copy.deepcopy(getattr(task, "status_history", [])),
                 )
 
         logger.debug(f"Created snapshot of {len(snapshot)} tasks")
@@ -442,14 +440,20 @@ class StatusPipeline:
         with self._task_lock:
             stats = {
                 "total": len(self._tasks),
-                "pending": sum(1 for t in self._tasks.values() if t.state == URLState.PENDING),
+                "pending": sum(
+                    1 for t in self._tasks.values() if t.state == URLState.PENDING
+                ),
                 "active": sum(
                     1
                     for t in self._tasks.values()
                     if t.state in (URLState.SCRAPING, URLState.PROCESSING)
                 ),
-                "complete": sum(1 for t in self._tasks.values() if t.state == URLState.COMPLETE),
-                "failed": sum(1 for t in self._tasks.values() if t.state == URLState.FAILED),
+                "complete": sum(
+                    1 for t in self._tasks.values() if t.state == URLState.COMPLETE
+                ),
+                "failed": sum(
+                    1 for t in self._tasks.values() if t.state == URLState.FAILED
+                ),
             }
 
         return stats

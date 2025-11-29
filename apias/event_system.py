@@ -57,6 +57,7 @@ class Event(ABC):
     Subclasses should be dataclasses with specific fields for their context.
 
     Design Note: Using dataclass for immutability and automatic __repr__.
+    Note: ABC is used for type hierarchy even without abstract methods.
     Events should be created once and never modified after publishing.
     """
 
@@ -198,7 +199,9 @@ class CircuitBreakerEvent(Event):
     reason: str = field(kw_only=True)
     affected_tasks: List[int] = field(default_factory=list, kw_only=True)
     trigger_category: Optional[ErrorCategory] = field(default=None, kw_only=True)
-    consecutive_counts: Dict[ErrorCategory, int] = field(default_factory=dict, kw_only=True)
+    consecutive_counts: Dict[ErrorCategory, int] = field(
+        default_factory=dict, kw_only=True
+    )
 
 
 # ============================================================================
@@ -291,7 +294,9 @@ class EventBus:
                            If reached, publish() will raise queue.Full.
         """
         # Subscriber registry: EventType -> List[handler_function]
-        self._subscribers: Dict[Type[Event], List[Callable[[Event], None]]] = defaultdict(list)
+        self._subscribers: Dict[Type[Event], List[Callable[[Event], None]]] = (
+            defaultdict(list)
+        )
 
         # Thread-safe event queue (FIFO)
         # WHY queue.Queue: Lock-free for publishers, thread-safe, bounded
@@ -328,16 +333,22 @@ class EventBus:
             self._published_count += 1
 
             # Log at TRACE level (only if DEBUG enabled)
-            logger.debug(f"Published {type(event).__name__} (id={event.event_id[:8]}..., queue_size={self._event_queue.qsize()})")
+            logger.debug(
+                f"Published {type(event).__name__} (id={event.event_id[:8]}..., queue_size={self._event_queue.qsize()})"
+            )
 
         except queue.Full:
             # Queue full - this should NEVER happen with 10k limit
             # If it does, we're publishing faster than we can process
             self._dropped_count += 1
-            logger.error(f"Event queue FULL! Dropped {type(event).__name__}. Published={self._published_count}, Dropped={self._dropped_count}")
+            logger.error(
+                f"Event queue FULL! Dropped {type(event).__name__}. Published={self._published_count}, Dropped={self._dropped_count}"
+            )
             raise
 
-    def subscribe(self, event_type: Type[Event], handler: Callable[[Event], None]) -> None:
+    def subscribe(
+        self, event_type: Type[Event], handler: Callable[[Event], None]
+    ) -> None:
         """
         Subscribe to an event type.
 
@@ -400,7 +411,9 @@ class EventBus:
                 break
 
         if count > 0:
-            logger.debug(f"Dispatched {count} events (total={self._dispatched_count}, queue_remaining={self._event_queue.qsize()})")
+            logger.debug(
+                f"Dispatched {count} events (total={self._dispatched_count}, queue_remaining={self._event_queue.qsize()})"
+            )
 
         return count
 
@@ -422,7 +435,9 @@ class EventBus:
         handlers = self._subscribers.get(event_type, [])
 
         if not handlers:
-            logger.debug(f"No subscribers for {event_type.__name__} (id={event.event_id[:8]}...)")
+            logger.debug(
+                f"No subscribers for {event_type.__name__} (id={event.event_id[:8]}...)"
+            )
             return
 
         # Call each handler

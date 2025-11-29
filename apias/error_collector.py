@@ -130,8 +130,12 @@ class ErrorConfig:
         max_total_errors: Maximum total errors before rejecting new ones
     """
 
-    thresholds: Dict[ErrorCategory, int] = field(default_factory=lambda: DEFAULT_THRESHOLDS.copy())
-    immediate_trip: Set[ErrorCategory] = field(default_factory=lambda: IMMEDIATE_TRIP_CATEGORIES.copy())
+    thresholds: Dict[ErrorCategory, int] = field(
+        default_factory=lambda: DEFAULT_THRESHOLDS.copy()
+    )
+    immediate_trip: Set[ErrorCategory] = field(
+        default_factory=lambda: IMMEDIATE_TRIP_CATEGORIES.copy()
+    )
     max_recent_errors: int = 100
     max_total_errors: int = 50000
 
@@ -222,7 +226,9 @@ class SmartErrorStorage:
         self._recent_errors: deque[ErrorEvent] = deque(maxlen=max_recent)
 
         # Statistical summary per category
-        self._category_stats: Dict[ErrorCategory, CategoryStats] = defaultdict(CategoryStats)
+        self._category_stats: Dict[ErrorCategory, CategoryStats] = defaultdict(
+            CategoryStats
+        )
 
         # First occurrence of each category (for debugging)
         self._first_occurrences: Dict[ErrorCategory, ErrorEvent] = {}
@@ -292,7 +298,9 @@ class SmartErrorStorage:
             return recent[:limit]
         return recent
 
-    def get_stats(self, category: Optional[ErrorCategory] = None) -> Dict[ErrorCategory, CategoryStats]:
+    def get_stats(
+        self, category: Optional[ErrorCategory] = None
+    ) -> Dict[ErrorCategory, CategoryStats]:
         """
         Get category statistics.
 
@@ -378,7 +386,9 @@ class CircuitBreakerV2:
         # Consecutive error count per category
         self._consecutive_count: Dict[ErrorCategory, int] = defaultdict(int)
 
-        logger.debug(f"CircuitBreakerV2 initialized with {len(config.thresholds)} category thresholds")
+        logger.debug(
+            f"CircuitBreakerV2 initialized with {len(config.thresholds)} category thresholds"
+        )
 
     def record(self, error_event: ErrorEvent) -> CircuitResult:
         """
@@ -435,7 +445,9 @@ class CircuitBreakerV2:
         Thread Safety: Caller must hold lock.
         """
         if self._consecutive_count:
-            logger.debug(f"Circuit breaker: Success recorded, resetting consecutive counts")
+            logger.debug(
+                "Circuit breaker: Success recorded, resetting consecutive counts"
+            )
             self._consecutive_count.clear()
 
     def _trip(self, error_event: ErrorEvent, reason: str) -> None:
@@ -632,10 +644,13 @@ class ErrorCollector:
 
                     self._event_bus.publish(
                         CircuitBreakerEvent(
-                            reason=circuit_result.trigger_reason or "Circuit breaker tripped",
+                            reason=circuit_result.trigger_reason
+                            or "Circuit breaker tripped",
                             affected_tasks=affected_tasks,
                             trigger_category=category,
-                            consecutive_counts=dict(self._circuit_breaker._consecutive_count),
+                            consecutive_counts=dict(
+                                self._circuit_breaker._consecutive_count
+                            ),
                         )
                     )
 
@@ -648,7 +663,9 @@ class ErrorCollector:
             except Exception as e:
                 # Error in error recording - this is bad
                 logger.error(f"CRITICAL: Failed to record error: {e}", exc_info=True)
-                return ErrorRecordResult(recorded=False, circuit_tripped=False, trigger_reason=None)
+                return ErrorRecordResult(
+                    recorded=False, circuit_tripped=False, trigger_reason=None
+                )
 
     def record_success(self, task_id: Optional[int] = None) -> None:
         """
@@ -667,7 +684,9 @@ class ErrorCollector:
             self._success_count += 1
 
             if task_id:
-                logger.debug(f"Task #{task_id}: Success recorded, circuit breaker reset")
+                logger.debug(
+                    f"Task #{task_id}: Success recorded, circuit breaker reset"
+                )
 
     @property
     def is_tripped(self) -> bool:
@@ -847,5 +866,7 @@ def load_error_config(config_path: Optional[Path] = None) -> ErrorConfig:
         )
 
     except Exception as e:
-        logger.error(f"Failed to load error config from {config_path}: {e}, using defaults")
+        logger.error(
+            f"Failed to load error config from {config_path}: {e}, using defaults"
+        )
         return ErrorConfig()

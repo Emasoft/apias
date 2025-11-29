@@ -1,5 +1,7 @@
-import pytest
 from pathlib import Path
+
+import pytest
+
 from apias.apias import APIDocument, parse_documentation, validate_config
 
 

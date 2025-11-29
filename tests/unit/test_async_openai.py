@@ -18,15 +18,14 @@ from typing import Any, Dict, List, Tuple
 import pytest
 
 from apias.apias import (
+    _process_single_chunk,
     call_llm_to_convert_html_to_xml,
     call_openai_api,
     get_openai_api_key,
     load_model_pricing,
     make_openai_request,
-    _process_single_chunk,
 )
 from apias.mock_api import MockAPIClient, mock_call_openai_api
-
 
 # ============================================================================
 # Fixtures
@@ -165,9 +164,9 @@ async def test_mock_api_response_varies_by_size(
     assert small_result is not None
     assert large_result is not None
     # Large prompt should return larger/different XML
-    assert len(large_result) > len(small_result), (
-        "Large prompt should yield larger response"
-    )
+    assert len(large_result) > len(
+        small_result
+    ), "Large prompt should yield larger response"
 
 
 # ============================================================================

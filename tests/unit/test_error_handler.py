@@ -108,7 +108,9 @@ class TestCircuitBreaker:
 
     def test_no_immediate_rate_limit_stop_when_disabled(self) -> None:
         """Circuit breaker doesn't trigger immediately on rate limit when disabled."""
-        breaker = CircuitBreaker(rate_limit_immediate_stop=False, consecutive_threshold=3)
+        breaker = CircuitBreaker(
+            rate_limit_immediate_stop=False, consecutive_threshold=3
+        )
         result = breaker.record_error(ErrorCategory.RATE_LIMIT)
         assert result is False
         assert breaker.is_triggered is False

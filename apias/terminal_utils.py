@@ -9,27 +9,28 @@ Provides:
 - Process state management (waiting, running, paused, stopped)
 """
 
-import sys
-import os
 import locale
 import logging
+import os
+import sys
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from datetime import datetime as DatetimeType
-from dataclasses import dataclass
-from enum import Enum, auto
+
 import threading
 import time
+from dataclasses import dataclass
+from enum import Enum, auto
 
 # Import centralized constants - single source of truth for configuration values
 # DO NOT hardcode terminal/timing values here - add new constants to config.py
 from apias.config import (
-    DEFAULT_TERMINAL_WIDTH,
     DEFAULT_TERMINAL_HEIGHT,
-    URL_TRUNCATE_MAX_LENGTH,
+    DEFAULT_TERMINAL_WIDTH,
     KEYBOARD_POLL_INTERVAL,
     KEYBOARD_THREAD_TIMEOUT,
+    URL_TRUNCATE_MAX_LENGTH,
 )
 
 logger = logging.getLogger(__name__)
@@ -64,9 +65,9 @@ if IS_WINDOWS:
     HAS_TERMIOS = False
 else:
     try:
+        import select
         import termios
         import tty
-        import select
 
         HAS_TERMIOS = True
     except ImportError:

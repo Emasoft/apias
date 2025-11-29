@@ -11,43 +11,43 @@ Provides a scrollable dashboard that shows:
 """
 
 import logging
+import sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, TYPE_CHECKING
 from enum import Enum
-import threading
-import sys
-import time
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 # TYPE_CHECKING imports to avoid circular imports at runtime
 # WHY: status_pipeline imports batch_tui, so we need conditional import
 if TYPE_CHECKING:
     from apias.status_pipeline import TaskSnapshot
 
-from rich.console import Console
-from rich.live import Live
-from rich.table import Table
-from rich.panel import Panel
-from rich.layout import Layout
-from rich.text import Text
 from rich import box
+from rich.console import Console
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
+from rich.table import Table
+from rich.text import Text
 
 # Import centralized constants - single source of truth for configuration values
 # DO NOT hardcode values here - add new constants to config.py instead
 from apias.config import (
-    TUI_REFRESH_FPS,
-    MAX_FAILED_URLS_TO_SHOW,
     FALLBACK_VERSION,
     KEYBOARD_POLL_INTERVAL,
+    MAX_FAILED_URLS_TO_SHOW,
+    TUI_REFRESH_FPS,
 )
 
 # Import shared terminal utilities for cross-platform support
 from apias.terminal_utils import (
-    Symbols,
-    ProcessState,
     BaseTUIManager,
-    format_duration,
+    ProcessState,
+    Symbols,
     calculate_eta,
+    format_duration,
 )
 
 # Module-level logger for tracing TUI operations and debugging
@@ -355,9 +355,11 @@ class BatchTUIManager(BaseTUIManager):
         table.add_row("Completed", f"[green]{self.stats.completed}[/green]")
         table.add_row(
             "Failed",
-            f"[red]{self.stats.failed}[/red]"
-            if self.stats.failed > 0
-            else f"{self.stats.failed}",
+            (
+                f"[red]{self.stats.failed}[/red]"
+                if self.stats.failed > 0
+                else f"{self.stats.failed}"
+            ),
         )
         table.add_row(
             "Total Cost",

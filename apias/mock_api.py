@@ -11,7 +11,7 @@ Simulates realistic API behavior with:
 import asyncio
 import json
 import random
-from typing import Tuple, Optional, Any
+from typing import Any, Optional, Tuple
 
 
 class MockAPIClient:

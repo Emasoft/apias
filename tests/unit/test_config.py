@@ -12,9 +12,9 @@ from pathlib import Path
 import pytest
 
 from apias.config import (
-    APIASConfig,
     DEFAULT_MODEL,
     SUPPORTED_MODELS,
+    APIASConfig,
     generate_example_config,
     load_config,
     validate_url,
