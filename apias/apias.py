@@ -2666,9 +2666,11 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
             if error_collector:
                 error_collector.record_success()
 
+            # REPRODUCIBILITY: Include attempt number for retry debugging
+            retry_info = f" (attempt={attempt})" if attempt > 0 else ""
             logger.info(
-                f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, cost ${total_cost:.6f}"
-                + (" (succeeded on retry)" if attempt > 0 else "")
+                f"Completed{chunk_label}: {len(xml_output) if xml_output else 0} chars XML, "
+                f"cost ${total_cost:.6f}{retry_info}"
             )
             return xml_output, total_cost
 
@@ -2682,9 +2684,11 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                     RETRY_BASE_DELAY_SECONDS * (2**attempt), RETRY_MAX_DELAY_SECONDS
                 )
 
+                # REPRODUCIBILITY: Log all info needed to reproduce this failure
+                # task_id identifies the URL, attempt is 0-indexed (matches code)
                 logger.warning(
-                    f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. "
-                    f"Retrying in {delay:.1f}s with corrective instructions..."
+                    f"[RETRY] task_id={task_id} attempt={attempt} delay={delay:.1f}s "
+                    f"error='{e}'{chunk_label}"
                 )
                 # Show retry countdown via status handler (BatchTUI or StatusPipeline)
                 update_batch_status(
@@ -2698,8 +2702,10 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
                 await asyncio.sleep(delay)
                 continue  # Try again with validation instructions
             else:
+                # REPRODUCIBILITY: Log final failure with all context
                 logger.error(
-                    f"XML validation failed{chunk_label} after {max_retries + 1} attempts: {e}"
+                    f"[RETRY_EXHAUSTED] task_id={task_id} attempts={max_retries + 1} "
+                    f"error='{e}'{chunk_label}"
                 )
                 # NEW SYSTEM: Record XML validation error
                 if error_collector:
