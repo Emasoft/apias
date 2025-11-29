@@ -48,6 +48,9 @@ import yaml
 
 from apias.event_system import CircuitBreakerEvent, ErrorCategory, ErrorEvent, EventBus
 
+# Explicitly re-export ErrorCategory for type-safe imports
+__all__ = ["ErrorCategory", "ErrorCollector", "load_error_config"]
+
 logger = logging.getLogger(__name__)
 
 

@@ -264,7 +264,7 @@ def update_batch_status(
                 task_id=task_id,
                 state=state,
                 message=message,
-                **kwargs  # Pass through: progress_pct, size_in, size_out, cost, etc.
+                **kwargs,  # Pass through: progress_pct, size_in, size_out, cost, etc.
             )
         else:
             # OLD SYSTEM: Direct BatchTUIManager update
@@ -280,7 +280,9 @@ def update_batch_status(
             escaped_msg = escaped_msg.replace(f"\\[{timestamp}\\]", f"[{timestamp}]")
 
             # Update the batch TUI
-            batch_tui_or_pipeline.update_task(task_id, state, status_message=escaped_msg, **kwargs)
+            batch_tui_or_pipeline.update_task(
+                task_id, state, status_message=escaped_msg, **kwargs
+            )
 
     except Exception as e:
         # Fail gracefully if status update fails - log the error to session.log
@@ -2128,8 +2130,11 @@ async def call_llm_to_convert_html_to_xml(
         # Single chunk - process and update status via handler
         # Progress: 40% (sending) -> 70% (receiving) for LLM phase
         update_batch_status(
-            status_handler, task_id, URLState.PROCESSING,
-            "📤 Sending to AI model", progress_pct=ProgressPercent.SENDING
+            status_handler,
+            task_id,
+            URLState.PROCESSING,
+            "📤 Sending to AI model",
+            progress_pct=ProgressPercent.SENDING,
         )
 
         result = await _process_single_chunk(
@@ -2147,13 +2152,19 @@ async def call_llm_to_convert_html_to_xml(
         # Update status based on result
         if result[0]:  # XML content received successfully
             update_batch_status(
-                status_handler, task_id, URLState.PROCESSING,
-                "📥 Received AI response", progress_pct=ProgressPercent.RECEIVING
+                status_handler,
+                task_id,
+                URLState.PROCESSING,
+                "📥 Received AI response",
+                progress_pct=ProgressPercent.RECEIVING,
             )
         else:
             update_batch_status(
-                status_handler, task_id, URLState.PROCESSING,
-                "⚠️ AI processing failed", progress_pct=ProgressPercent.RECEIVING
+                status_handler,
+                task_id,
+                URLState.PROCESSING,
+                "⚠️ AI processing failed",
+                progress_pct=ProgressPercent.RECEIVING,
             )
 
         return result[0], result[1]
@@ -2177,8 +2188,11 @@ async def call_llm_to_convert_html_to_xml(
 
         # Update status: sending this chunk
         update_batch_status(
-            status_handler, task_id, URLState.PROCESSING,
-            f"📤 Sending chunk {i}/{num_chunks} to AI", progress_pct=ProgressPercent.SENDING
+            status_handler,
+            task_id,
+            URLState.PROCESSING,
+            f"📤 Sending chunk {i}/{num_chunks} to AI",
+            progress_pct=ProgressPercent.SENDING,
         )
 
         xml_part, cost = await _process_single_chunk(
@@ -2207,11 +2221,19 @@ async def call_llm_to_convert_html_to_xml(
             # Progress formula: SENDING + (completed/total) * (RECEIVING - SENDING)
             # WHY: Evenly distribute progress across all chunks in the SENDING->RECEIVING range
             completed_chunks += 1
-            progress_range = ProgressPercent.RECEIVING - ProgressPercent.SENDING  # 70 - 40 = 30
-            chunk_progress = ProgressPercent.SENDING + (completed_chunks / num_chunks) * progress_range
+            progress_range = (
+                ProgressPercent.RECEIVING - ProgressPercent.SENDING
+            )  # 70 - 40 = 30
+            chunk_progress = (
+                ProgressPercent.SENDING
+                + (completed_chunks / num_chunks) * progress_range
+            )
             update_batch_status(
-                status_handler, task_id, URLState.PROCESSING,
-                f"📥 Received chunk {i}/{num_chunks}", progress_pct=chunk_progress
+                status_handler,
+                task_id,
+                URLState.PROCESSING,
+                f"📥 Received chunk {i}/{num_chunks}",
+                progress_pct=chunk_progress,
             )
 
             return i, xml_part, cost
@@ -2222,10 +2244,16 @@ async def call_llm_to_convert_html_to_xml(
             # WHY: User should see progress advancing even when chunks fail
             completed_chunks += 1
             progress_range = ProgressPercent.RECEIVING - ProgressPercent.SENDING
-            chunk_progress = ProgressPercent.SENDING + (completed_chunks / num_chunks) * progress_range
+            chunk_progress = (
+                ProgressPercent.SENDING
+                + (completed_chunks / num_chunks) * progress_range
+            )
             update_batch_status(
-                status_handler, task_id, URLState.PROCESSING,
-                f"⚠️ Chunk {i}/{num_chunks} failed", progress_pct=chunk_progress
+                status_handler,
+                task_id,
+                URLState.PROCESSING,
+                f"⚠️ Chunk {i}/{num_chunks} failed",
+                progress_pct=chunk_progress,
             )
 
             return i, None, cost
@@ -2840,6 +2868,7 @@ def process_single_page(
              StatusPipeline is only needed for batch mode's hybrid polling.
         AVOID: Don't add StatusPipeline/EventBus here - it won't be used.
         """
+
         def __init__(self) -> None:
             self.html_content: Optional[str] = None
             self.xml_content: Optional[str] = None
@@ -2879,8 +2908,11 @@ def process_single_page(
             #      StatusPipeline is a separate system that BatchTUIManager doesn't read from.
             #      If we pass status_pipeline, the TUI won't show progress updates!
             update_batch_status(
-                result.batch_tui, 1, URLState.PROCESSING,
-                "🌐 Scraping HTML content", progress_pct=10.0
+                result.batch_tui,
+                1,
+                URLState.PROCESSING,
+                "🌐 Scraping HTML content",
+                progress_pct=10.0,
             )
 
             logger.debug("Step 1: Scraping HTML content (includes slimdown)...")
@@ -2894,8 +2926,11 @@ def process_single_page(
                 # CRITICAL: Update TUI to show FAILED status for scraping failure
                 # WHY: User needs visual feedback that scraping failed, not stuck on "Processing"
                 update_batch_status(
-                    result.batch_tui, 1, URLState.FAILED,
-                    "❌ Scraping failed: No content retrieved", progress_pct=0.0
+                    result.batch_tui,
+                    1,
+                    URLState.FAILED,
+                    "❌ Scraping failed: No content retrieved",
+                    progress_pct=0.0,
                 )
                 return
             logger.debug(
@@ -2908,8 +2943,11 @@ def process_single_page(
             # WHY: BatchTUIManager renders from its internal state, NOT from StatusPipeline events
             # AVOID: Passing status_pipeline here - events go to void, TUI never updates
             update_batch_status(
-                result.batch_tui, 1, URLState.PROCESSING,
-                "🧹 Cleaning HTML content", progress_pct=ProgressPercent.CLEANING
+                result.batch_tui,
+                1,
+                URLState.PROCESSING,
+                "🧹 Cleaning HTML content",
+                progress_pct=ProgressPercent.CLEANING,
             )
 
             # Note: slimdown_html was already called in Scraper.scrape()
@@ -2971,8 +3009,11 @@ def process_single_page(
             # For single page, this is trivial but marks progress for consistency
             # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
             update_batch_status(
-                result.batch_tui, 1, URLState.PROCESSING,
-                "📦 Preparing content for AI", progress_pct=ProgressPercent.CHUNKING
+                result.batch_tui,
+                1,
+                URLState.PROCESSING,
+                "📦 Preparing content for AI",
+                progress_pct=ProgressPercent.CHUNKING,
             )
 
             # NOTE: Removed duplicate "Sending to AI" update here
@@ -2999,15 +3040,20 @@ def process_single_page(
                 # WHY: User needs to know AI processing failed, not stuck waiting
                 # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
                 update_batch_status(
-                    result.batch_tui, 1, URLState.FAILED,
-                    "❌ AI conversion failed", progress_pct=ProgressPercent.FAILED
+                    result.batch_tui,
+                    1,
+                    URLState.FAILED,
+                    "❌ AI conversion failed",
+                    progress_pct=ProgressPercent.FAILED,
                 )
                 return
 
             # Unpack result (now returns Tuple[Optional[str], float] without tui_manager)
             # IMPORTANT: Don't discard cost - user should see their API spending
             xml_content, llm_cost = llm_result
-            logger.info(f"LLM API cost for this page: ${llm_cost:.6f}")  # Log cost for user visibility
+            logger.info(
+                f"LLM API cost for this page: ${llm_cost:.6f}"
+            )  # Log cost for user visibility
             logger.debug(
                 f"Step 3 SUCCESS: Generated XML content ({len(xml_content) if xml_content else 0} characters)"
             )
@@ -3015,16 +3061,22 @@ def process_single_page(
             # Update step: Receiving from AI (70% progress)
             # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
             update_batch_status(
-                result.batch_tui, 1, URLState.PROCESSING,
-                "📥 Received AI response", progress_pct=ProgressPercent.RECEIVING
+                result.batch_tui,
+                1,
+                URLState.PROCESSING,
+                "📥 Received AI response",
+                progress_pct=ProgressPercent.RECEIVING,
             )
 
             if xml_content:
                 # Update step: Validating XML (85% progress)
                 # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
                 update_batch_status(
-                    result.batch_tui, 1, URLState.PROCESSING,
-                    "✓ Validating XML output", progress_pct=ProgressPercent.VALIDATING
+                    result.batch_tui,
+                    1,
+                    URLState.PROCESSING,
+                    "✓ Validating XML output",
+                    progress_pct=ProgressPercent.VALIDATING,
                 )
 
                 # Strip any XML declaration and root <XML> tag from LLM output (we'll add our own)
@@ -3047,8 +3099,11 @@ def process_single_page(
                 # Update step: Saving XML (95% progress)
                 # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
                 update_batch_status(
-                    result.batch_tui, 1, URLState.PROCESSING,
-                    "💾 Saving XML files", progress_pct=ProgressPercent.SAVING
+                    result.batch_tui,
+                    1,
+                    URLState.PROCESSING,
+                    "💾 Saving XML files",
+                    progress_pct=ProgressPercent.SAVING,
                 )
 
                 logger.debug("Step 4: Saving XML to file...")
@@ -3061,6 +3116,7 @@ def process_single_page(
         except Exception as e:
             # CRITICAL: Capture full traceback for debugging - str(e) alone loses stack info
             import traceback
+
             full_traceback = traceback.format_exc()
             result.error = f"Error processing page: {str(e)}"
             # Log both short message and full traceback for debugging
@@ -3070,8 +3126,11 @@ def process_single_page(
             # WHY: Without this, TUI shows "Processing" forever on failure
             # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
             update_batch_status(
-                result.batch_tui, 1, URLState.FAILED,
-                f"❌ Error: {str(e)[:50]}", progress_pct=ProgressPercent.FAILED  # Truncate long errors
+                result.batch_tui,
+                1,
+                URLState.FAILED,
+                f"❌ Error: {str(e)[:50]}",
+                progress_pct=ProgressPercent.FAILED,  # Truncate long errors
             )
 
     def process_in_background() -> None:
@@ -3097,7 +3156,9 @@ def process_single_page(
             # 5x multiplier gives threads more time to finish gracefully
             thread.join(timeout=KEYBOARD_THREAD_TIMEOUT * 5)
             if thread.is_alive():
-                logger.warning("Background thread did not terminate cleanly - may have hung")
+                logger.warning(
+                    "Background thread did not terminate cleanly - may have hung"
+                )
     else:
         # TUI mode - run thread and keep updating TUI while it's alive
         thread = threading.Thread(target=process_in_background)
@@ -3132,13 +3193,17 @@ def process_single_page(
         # 5x multiplier gives threads more time to finish gracefully
         thread.join(timeout=KEYBOARD_THREAD_TIMEOUT * 5)
         if thread.is_alive():
-            logger.warning("Background thread did not terminate cleanly - may have hung")
+            logger.warning(
+                "Background thread did not terminate cleanly - may have hung"
+            )
 
         logger.debug(f"Thread finished. Total TUI updates: {update_count}")
 
         # Check if we exited due to user interrupt (Ctrl+C or 'q' key)
         # CRITICAL: Handle user cancellation differently from successful completion
-        user_cancelled = shutdown_flag or (result.batch_tui and result.batch_tui.should_stop)
+        user_cancelled = shutdown_flag or (
+            result.batch_tui and result.batch_tui.should_stop
+        )
 
         if user_cancelled:
             # User requested stop - don't mark as completed
@@ -3146,8 +3211,11 @@ def process_single_page(
             if result.batch_tui and result.batch_tui.live:
                 # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
                 update_batch_status(
-                    result.batch_tui, 1, URLState.FAILED,
-                    "⚠️ Cancelled by user", progress_pct=ProgressPercent.FAILED
+                    result.batch_tui,
+                    1,
+                    URLState.FAILED,
+                    "⚠️ Cancelled by user",
+                    progress_pct=ProgressPercent.FAILED,
                 )
                 result.batch_tui.update_display()
                 time.sleep(FINAL_STATE_PAUSE)
@@ -3160,8 +3228,11 @@ def process_single_page(
             # Mark task as completed before final display update
             # CRITICAL: Must use batch_tui, NOT status_pipeline (see comment at line 2861)
             update_batch_status(
-                result.batch_tui, 1, URLState.COMPLETED,
-                "✅ Complete", progress_pct=ProgressPercent.COMPLETE
+                result.batch_tui,
+                1,
+                URLState.COMPLETE,
+                "✅ Complete",
+                progress_pct=ProgressPercent.COMPLETE,
             )
             result.batch_tui.update_display()
             # Use centralized pause duration - DO NOT hardcode timing values
@@ -3207,7 +3278,6 @@ def process_single_page(
             # Stop live display before showing summary
             result.batch_tui.stop_live_display()
             result.batch_tui.show_final_summary(
-                xml_files=[str(xml_file), str(merged_xml_file)],
                 output_dir=str(temp_folder),
             )
 
@@ -3227,6 +3297,7 @@ def process_url(
     scrape_only: bool = False,
     status_pipeline: Optional[StatusPipeline] = None,
     error_collector: Optional[ErrorCollector] = None,
+    mock: bool = False,  # CRITICAL FIX: Added mock parameter to use mock API instead of real OpenAI
 ) -> Optional[str]:
     """
     Process a single URL: scrape, convert to XML, and save temp files.
@@ -3260,7 +3331,11 @@ def process_url(
 
         # Update TUI: Starting scraping
         update_batch_status(
-            status_pipeline, idx, URLState.SCRAPING, "🌐 Scraping HTML content", progress_pct=10.0
+            status_pipeline,
+            idx,
+            URLState.SCRAPING,
+            "🌐 Scraping HTML content",
+            progress_pct=10.0,
         )
 
         logger.info(f"Scraping HTML content for URL: {url}")
@@ -3351,6 +3426,7 @@ def process_url(
                 html_content,
                 additional_content,
                 pricing_info,
+                mock=mock,  # CRITICAL FIX: Pass mock to use mock API instead of real OpenAI
                 status_handler=status_pipeline,  # Batch mode: use StatusPipeline for event-based updates
                 task_id=idx,
                 error_collector=error_collector,
@@ -3592,6 +3668,7 @@ def process_multiple_pages(
     no_tui: bool = False,
     handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
     session_log_path: Optional[str] = None,
+    mock: bool = False,  # CRITICAL FIX: Added mock parameter to enable mock API in batch mode
 ) -> Tuple[Optional[str], Optional[ErrorCollector]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
@@ -3644,6 +3721,7 @@ def process_multiple_pages(
 
     # Create dialog manager for post-TUI user dialogs
     from rich.console import Console as RichConsole
+
     console = RichConsole()
     dialog_manager = DialogManager(event_bus, console)
 
@@ -3655,16 +3733,22 @@ def process_multiple_pages(
         root_logger = logging.getLogger()
         session_file_handler = None
         for handler in root_logger.handlers:
-            if isinstance(handler, logging.FileHandler) and str(session_log_path) in str(handler.baseFilename):
+            if isinstance(handler, logging.FileHandler) and str(
+                session_log_path
+            ) in str(handler.baseFilename):
                 session_file_handler = handler
                 break
 
         if session_file_handler:
             logger_interceptor = LoggerInterceptor(session_file_handler)
             logger_interceptor.install()
-            logger.debug("LoggerInterceptor installed for bulletproof console suppression")
+            logger.debug(
+                "LoggerInterceptor installed for bulletproof console suppression"
+            )
         else:
-            logger.warning("Session log FileHandler not found - LoggerInterceptor not installed")
+            logger.warning(
+                "Session log FileHandler not found - LoggerInterceptor not installed"
+            )
 
     # NOTE: Logging is already suppressed in main_workflow before this function is called
     # Do NOT suppress again here or it will create conflicts with handler restoration
@@ -3704,6 +3788,7 @@ def process_multiple_pages(
                     scrape_only,
                     status_pipeline,
                     error_collector,
+                    mock,  # CRITICAL FIX: Pass mock to worker threads for API bypass
                 ): url
                 for idx, url in enumerate(urls)
             }
@@ -3720,7 +3805,9 @@ def process_multiple_pages(
                 # WHY: StatusPipeline.wait_for_update() returns immediately if
                 # CircuitBreakerEvent is published, otherwise times out after 50ms
                 # CRITICAL: Use config constant for consistent polling interval
-                critical = status_pipeline.wait_for_update(timeout=BATCH_TUI_POLL_INTERVAL)
+                critical = status_pipeline.wait_for_update(
+                    timeout=BATCH_TUI_POLL_INTERVAL
+                )
 
                 # PROCESS EVENTS: Dispatch all pending events from worker threads
                 # WHY: EventBus.dispatch() processes StatusEvent, ErrorEvent, etc.
@@ -3776,7 +3863,9 @@ def process_multiple_pages(
                         # This prevents dialog corruption and ensures clean user experience
                         dialog_manager.show_pending_dialogs(
                             output_dir=temp_folder,
-                            session_log=Path(session_log_path) if session_log_path else None
+                            session_log=Path(session_log_path)
+                            if session_log_path
+                            else None,
                         )
 
                         # NOTE: Do NOT restore logging here! Worker threads are still running
@@ -3811,7 +3900,7 @@ def process_multiple_pages(
                                     task_id=task_id,
                                     state=URLState.COMPLETE,
                                     message="Completed successfully",
-                                    progress_pct=100.0
+                                    progress_pct=100.0,
                                 )
                             else:
                                 spinner.update_text(
@@ -3825,7 +3914,7 @@ def process_multiple_pages(
                                     state=URLState.FAILED,
                                     message="Processing failed",
                                     progress_pct=0.0,
-                                    error="Processing failed"
+                                    error="Processing failed",
                                 )
                     except Exception as e:
                         logger.error(f"Unhandled exception for URL {url}: {str(e)}")
@@ -3836,7 +3925,7 @@ def process_multiple_pages(
                                 state=URLState.FAILED,
                                 message=f"Exception: {str(e)}",
                                 progress_pct=0.0,
-                                error=str(e)
+                                error=str(e),
                             )
 
                     # Remove from map
@@ -3863,7 +3952,7 @@ def process_multiple_pages(
             # critical dialogs (circuit breaker) shown before normal dialogs.
             dialog_manager.show_pending_dialogs(
                 output_dir=temp_folder,
-                session_log=Path(session_log_path) if session_log_path else None
+                session_log=Path(session_log_path) if session_log_path else None,
             )
 
             # Show session summary with log location
@@ -4066,12 +4155,16 @@ def display_scraping_summary(
             for category, count in sorted(
                 error_summary.items(), key=lambda x: x[1], reverse=True
             ):
-                desc = get_error_description(category)
+                # WHY: event_system.ErrorCategory and error_handler.ErrorCategory are separate enums
+                # Use the category name as a human-readable description
+                desc = category.name.replace("_", " ").title()
                 root_cause_section += f"   • {desc}: {count} occurrence(s)\n"
 
         # Circuit breaker status
         if error_collector.is_tripped:
-            root_cause_section += f"\n🛑 Processing stopped: {error_collector.trigger_reason}\n"
+            root_cause_section += (
+                f"\n🛑 Processing stopped: {error_collector.trigger_reason}\n"
+            )
 
         root_cause_section += "=" * 60 + "\n"
 
@@ -4180,9 +4273,7 @@ def main_workflow(
             logger.info("TUI disabled: Using plain text output")
         print(INFO_SEPARATOR)
 
-    result: Dict[
-        str, Union[Optional[str], float, int, Optional[ErrorCollector]]
-    ] = {
+    result: Dict[str, Union[Optional[str], float, int, Optional[ErrorCollector]]] = {
         "result": None,
         "total_cost": 0.0,
         "total_urls": 0,
@@ -4432,6 +4523,7 @@ def main_workflow(
                 no_tui,
                 handlers_and_level,
                 str(session_log_path),
+                mock,  # CRITICAL FIX: Pass mock to batch processing for API bypass
             )
             # NEW SYSTEM: Store error_collector in result for summary display
             result["error_collector"] = batch_error_collector
