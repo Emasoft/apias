@@ -61,16 +61,14 @@ OPENAI_MAX_RETRIES: Final[int] = 0  # NO internal retries - circuit breaker hand
 XML_VALIDATION_MAX_RETRIES: Final[int] = 1  # Retries for XML validation failures
 
 # --- Retry Backoff Configuration ---
-# WHY exponential backoff: Prevents thundering herd when multiple threads retry simultaneously
-# WHY deterministic jitter: Provides variation between retries while remaining reproducible
-# NOTE: Random jitter was removed because it makes bugs hard to reproduce and tests flaky
+# WHY exponential backoff: Prevents API hammering with doubling delays
+# WHY no jitter: APIAS is a single-client scraper, not a distributed system
+# Jitter spreads retries for multiple competing clients - we don't have that
+# Pure exponential backoff is 100% reproducible: attempt 0=1s, 1=2s, 2=4s, 3=8s...
 # Base delay in seconds for first retry (doubles each attempt: 1s, 2s, 4s, 8s...)
 RETRY_BASE_DELAY_SECONDS: Final[float] = 1.0
 # Maximum delay cap to prevent excessively long waits
 RETRY_MAX_DELAY_SECONDS: Final[float] = 30.0
-# Deterministic jitter sequence: cycles through these multipliers (0.8x to 1.2x)
-# WHY tuple: Immutable sequence ensures consistent behavior across the codebase
-RETRY_JITTER_SEQUENCE: Final[tuple[float, ...]] = (0.80, 0.90, 1.00, 1.10, 1.20)
 
 # --- Batch Processing ---
 DEFAULT_NUM_THREADS: Final[int] = 5  # Default concurrent threads for batch mode

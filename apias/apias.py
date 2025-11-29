@@ -152,7 +152,6 @@ from .config import (  # Network timeouts - DO NOT hardcode these values elsewhe
     HTTP_REQUEST_TIMEOUT,
     OPENAI_MAX_RETRIES,
     RETRY_BASE_DELAY_SECONDS,
-    RETRY_JITTER_SEQUENCE,
     RETRY_MAX_DELAY_SECONDS,
     SINGLE_PAGE_TUI_POLL_INTERVAL,
     SPINNER_ANIMATION_INTERVAL,
@@ -2676,13 +2675,12 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
         except ValueError as e:
             # XML validation error
             if attempt < max_retries:
-                # WHY exponential backoff: Prevents thundering herd when all threads retry
-                # WHY deterministic jitter: Cycles through fixed multipliers for reproducibility
-                # NOTE: Random jitter removed - makes bugs hard to reproduce and tests flaky
-                # Formula: delay = min(base * 2^attempt * jitter, max_delay)
-                base_delay = RETRY_BASE_DELAY_SECONDS * (2**attempt)
-                jitter = RETRY_JITTER_SEQUENCE[attempt % len(RETRY_JITTER_SEQUENCE)]
-                delay = min(base_delay * jitter, RETRY_MAX_DELAY_SECONDS)
+                # WHY exponential backoff: Prevents API hammering with doubling delays
+                # WHY no jitter: APIAS is single-client, not distributed - no competing clients
+                # 100% reproducible: attempt 0=1s, 1=2s, 2=4s, 3=8s, 4=16s, 5+=30s (capped)
+                delay = min(
+                    RETRY_BASE_DELAY_SECONDS * (2**attempt), RETRY_MAX_DELAY_SECONDS
+                )
 
                 logger.warning(
                     f"XML validation failed{chunk_label} (attempt {attempt + 1}): {e}. "
