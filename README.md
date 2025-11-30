@@ -22,6 +22,20 @@ APIAS (AI Powered API Documentation Scraper) is a powerful tool that helps you e
 
 ## Installation
 
+### Using uv (Recommended)
+
+The fastest way to install APIAS is using [uv](https://docs.astral.sh/uv/):
+
+```bash
+# Install as a tool (recommended for CLI usage)
+uv tool install apias --python=3.10
+
+# Or install in a project
+uv add apias
+```
+
+### Using pip
+
 ```bash
 pip install apias
 ```
