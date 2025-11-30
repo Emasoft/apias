@@ -2091,6 +2091,7 @@ async def call_llm_to_convert_html_to_xml(
     pricing_info: Dict[str, Dict[str, float]],
     no_tui: bool = False,
     mock: bool = False,
+    force_retry_count: int = 0,
     status_handler: Optional[Union[BatchTUIManager, StatusPipeline]] = None,
     task_id: Optional[int] = None,
     error_collector: Optional[ErrorCollector] = None,
@@ -2123,8 +2124,14 @@ async def call_llm_to_convert_html_to_xml(
     # Create mock client if mock mode is enabled
     mock_client: Optional[MockAPIClient] = None
     if mock:
-        mock_client = MockAPIClient()
-        logger.info("Using mock API client for testing")
+        mock_client = MockAPIClient(force_retry_count=force_retry_count)
+        if force_retry_count > 0:
+            logger.info(
+                f"Using mock API client with force_retry_count={force_retry_count} "
+                f"(will fail {force_retry_count} times before success)"
+            )
+        else:
+            logger.info("Using mock API client for testing")
 
     # Note: wait_for_start() is called earlier in process_single_page() before scraping
     # So TUI is already displayed and user has already pressed SPACE by the time we get here
@@ -2855,6 +2862,7 @@ def process_single_page(
     scrape_only: bool = False,
     no_tui: bool = False,
     mock: bool = False,
+    force_retry_count: int = 0,
 ) -> Optional[str]:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
@@ -3050,6 +3058,7 @@ def process_single_page(
                 pricing_info,
                 no_tui=no_tui,
                 mock=mock,
+                force_retry_count=force_retry_count,
                 status_handler=result.batch_tui,
                 task_id=1,
             )
@@ -3318,6 +3327,7 @@ def process_url(
     status_pipeline: Optional[StatusPipeline] = None,
     error_collector: Optional[ErrorCollector] = None,
     mock: bool = False,  # CRITICAL FIX: Added mock parameter to use mock API instead of real OpenAI
+    force_retry_count: int = 0,  # REPRODUCIBILITY: Force N failures before success
 ) -> Optional[str]:
     """
     Process a single URL: scrape, convert to XML, and save temp files.
@@ -3447,6 +3457,7 @@ def process_url(
                 additional_content,
                 pricing_info,
                 mock=mock,  # CRITICAL FIX: Pass mock to use mock API instead of real OpenAI
+                force_retry_count=force_retry_count,  # REPRODUCIBILITY: Force N failures
                 status_handler=status_pipeline,  # Batch mode: use StatusPipeline for event-based updates
                 task_id=idx,
                 error_collector=error_collector,
@@ -3689,6 +3700,7 @@ def process_multiple_pages(
     handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
     session_log_path: Optional[str] = None,
     mock: bool = False,  # CRITICAL FIX: Added mock parameter to enable mock API in batch mode
+    force_retry_count: int = 0,  # REPRODUCIBILITY: Force N failures before success
 ) -> Tuple[Optional[str], Optional[ErrorCollector]]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
@@ -3809,6 +3821,7 @@ def process_multiple_pages(
                     status_pipeline,
                     error_collector,
                     mock,  # CRITICAL FIX: Pass mock to worker threads for API bypass
+                    force_retry_count,  # REPRODUCIBILITY: Force N failures before success
                 ): url
                 for idx, url in enumerate(urls)
             }
@@ -4247,6 +4260,7 @@ def main_workflow(
     no_tui: bool = False,
     mock: bool = False,
     limit: Optional[int] = None,
+    force_retry_count: int = 0,
 ) -> Dict[str, Union[Optional[str], float, int, Optional[ErrorCollector]]]:
     global progress_tracker, total_cost
     """
@@ -4497,7 +4511,7 @@ def main_workflow(
         if mode == "single":
             logger.info("Workflow Type: Single Page Processing")
             xml_result = process_single_page(
-                urls[0], pricing_info, scrape_only, no_tui, mock
+                urls[0], pricing_info, scrape_only, no_tui, mock, force_retry_count
             )
             if xml_result:
                 is_valid = validate_xml(xml_result)
@@ -4555,6 +4569,7 @@ def main_workflow(
                 handlers_and_level,
                 str(session_log_path),
                 mock,  # CRITICAL FIX: Pass mock to batch processing for API bypass
+                force_retry_count,  # REPRODUCIBILITY: Force N failures before success
             )
             # NEW SYSTEM: Store error_collector in result for summary display
             result["error_collector"] = batch_error_collector
@@ -4846,7 +4861,11 @@ def check_for_resumable_sessions() -> Optional[str]:
 
 
 def start_single_scrape(
-    url: str, scrape_only: bool = False, no_tui: bool = False, mock: bool = False
+    url: str,
+    scrape_only: bool = False,
+    no_tui: bool = False,
+    mock: bool = False,
+    force_retry_count: int = 0,
 ) -> None:
     """Start scraping a single URL."""
     from apias.config import validate_url
@@ -4863,6 +4882,7 @@ def start_single_scrape(
         scrape_only=scrape_only,
         no_tui=no_tui,
         mock=mock,
+        force_retry_count=force_retry_count,
     )
     display_scraping_summary(
         result,
@@ -4913,6 +4933,7 @@ def start_batch_scrape(
     no_tui: bool = False,
     mock: bool = False,
     limit: Optional[int] = None,
+    force_retry_count: int = 0,
 ) -> None:
     """Start batch scraping from a sitemap URL."""
     from apias.config import validate_url
@@ -4932,6 +4953,7 @@ def start_batch_scrape(
         no_tui=no_tui,
         mock=mock,
         limit=limit,
+        force_retry_count=force_retry_count,
     )
     display_scraping_summary(
         result,
@@ -5278,6 +5300,14 @@ For more information, visit: https://github.com/Emasoft/apias
         help="Use mock API for TUI testing (development only)",
     )
     parser.add_argument(
+        "--force-retry-count",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Force N XML validation failures before success (requires --mock). "
+        "Use to reproduce retry scenarios: N=2 means fail on attempt 0,1 then succeed on 2",
+    )
+    parser.add_argument(
         "--version",
         action="version",
         version=f"APIAS - API AUTO SCRAPER version {VERSION}",
@@ -5341,7 +5371,9 @@ For more information, visit: https://github.com/Emasoft/apias
             print("Warning: When using --resume, other parameters are ignored.")
         start_resume_mode(args.resume)
     elif args.url and args.mode == "single":
-        start_single_scrape(args.url, args.scrape_only, args.no_tui, args.mock)
+        start_single_scrape(
+            args.url, args.scrape_only, args.no_tui, args.mock, args.force_retry_count
+        )
     elif args.url and args.mode == "batch":
         # Auto-resume: check for existing sessions without prompting
         if args.auto_resume:
@@ -5369,6 +5401,7 @@ For more information, visit: https://github.com/Emasoft/apias
             args.no_tui,
             args.mock,
             args.limit,
+            args.force_retry_count,
         )
     else:
         parser.print_help()

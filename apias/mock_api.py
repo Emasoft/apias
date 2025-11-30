@@ -22,12 +22,16 @@ Thread Safety:
 import asyncio
 import hashlib
 import json
+import logging
 import random
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Dict, Optional, Tuple
+
+# WHY module-level logger: Consistent with rest of codebase
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Constants - Centralized source of truth for all tunable parameters
@@ -178,6 +182,7 @@ class MockAPIClient:
         self,
         deterministic: bool = False,
         random_seed: Optional[int] = None,
+        force_retry_count: int = 0,
     ) -> None:
         """
         Initialize mock client.
@@ -187,10 +192,16 @@ class MockAPIClient:
             random_seed: If provided, seeds the random number generator for reproducible
                         non-deterministic behavior. Useful for debugging flaky tests.
                         WHY: Allows reproducing specific random scenarios for debugging.
+            force_retry_count: Force N XML validation failures before success.
+                        WHY: Allows reproducing exact retry scenarios for debugging.
+                        Example: force_retry_count=2 → fail on call 1,2 then succeed on call 3
         """
         self.total_cost = 0.0
         self.call_count = 0
         self.deterministic = deterministic
+        # REPRODUCIBILITY: Track forced failures
+        self.force_retry_count = force_retry_count
+        self._forced_failure_count = 0
         # WHY instance-specific RNG: Isolates randomness per client, prevents cross-test interference
         self._rng = random.Random(random_seed)
 
@@ -232,6 +243,20 @@ class MockAPIClient:
             )
 
         await asyncio.sleep(delay)
+
+        # REPRODUCIBILITY: Force exactly N failures before success
+        # WHY explicit logging: Makes it clear in logs exactly which attempt triggered failure
+        if (
+            self.force_retry_count > 0
+            and self._forced_failure_count < self.force_retry_count
+        ):
+            self._forced_failure_count += 1
+            logger.debug(
+                f"[MOCK] force_retry_count={self.force_retry_count} "
+                f"failure={self._forced_failure_count} → returning INVALID_XML"
+            )
+            # Return invalid XML that will fail validation, triggering retry
+            return MockResponse(xml_content="<invalid><unclosed>", cost=0.0001)
 
         # Simulate occasional failures unless deterministic
         # WHY FAILURE_RATE: Tests retry logic without requiring real API failures
@@ -350,6 +375,7 @@ class MockOpenAIConfig:
         delay_seconds: Simulated API latency (0 for instant)
         model: Model name to return in response
         custom_responses: Dict mapping prompt hashes to custom XML responses
+        force_retry_count: Force N failures before success (for retry reproduction)
     """
 
     deterministic: bool = True
@@ -357,6 +383,15 @@ class MockOpenAIConfig:
     delay_seconds: float = 0.0
     model: str = "gpt-5-nano-2025-08-07"
     custom_responses: Dict[str, str] = field(default_factory=dict)
+    # REPRODUCIBILITY: Force exactly N XML validation failures before success
+    # Example: force_retry_count=2 → fail on attempt 0, 1, succeed on attempt 2
+    force_retry_count: int = 0
+
+
+# WHY global counter: Track request attempts for force_retry_count feature
+# WHY dict keyed by prompt_hash: Each unique request has its own attempt counter
+_request_attempt_counter: Dict[str, int] = {}
+_counter_lock = threading.Lock()
 
 
 # WHY global: Allows tests to configure mock behavior before running
@@ -390,13 +425,15 @@ def configure_mock_openai(config: MockOpenAIConfig) -> None:
 
 def reset_mock_openai() -> None:
     """
-    Reset mock configuration to defaults.
+    Reset mock configuration to defaults and clear attempt counters.
 
-    Thread-safe: Uses lock to prevent race conditions.
+    Thread-safe: Uses locks to prevent race conditions.
     """
-    global _mock_config
+    global _mock_config, _request_attempt_counter
     with _config_lock:
         _mock_config = MockOpenAIConfig()
+    with _counter_lock:
+        _request_attempt_counter.clear()
 
 
 def _generate_deterministic_xml(prompt: str) -> str:
@@ -519,6 +556,53 @@ async def mock_make_openai_request(
     # Simulate delay if configured (outside lock - delay can be long)
     if config.delay_seconds > 0:
         await asyncio.sleep(config.delay_seconds)
+
+    # REPRODUCIBILITY: Force N failures before success for retry testing
+    # WHY prompt_hash key: Each unique request has its own attempt counter
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()[:PROMPT_HASH_LENGTH]
+    if config.force_retry_count > 0:
+        with _counter_lock:
+            current_attempt = _request_attempt_counter.get(prompt_hash, 0)
+            _request_attempt_counter[prompt_hash] = current_attempt + 1
+
+        if current_attempt < config.force_retry_count:
+            # Return INVALID_XML to trigger retry logic
+            # Log the forced failure for debugging
+            import logging
+
+            logging.getLogger(__name__).debug(
+                f"[MOCK] force_retry_count={config.force_retry_count} "
+                f"current_attempt={current_attempt} → returning INVALID_XML"
+            )
+            return {
+                "id": f"chatcmpl-mock-{prompt_hash}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": config.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": json.dumps(
+                                {
+                                    "xml_content": "<invalid><unclosed>",
+                                    "document_type": "MODULE",
+                                    "completeness_check": True,
+                                }
+                            ),
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 50,
+                    "total_tokens": 150,
+                },
+                "request_cost": 0.0001,
+                "finish_reason": "stop",
+            }
 
     # Handle error scenarios - use config snapshot for thread-safety
     # WHY imports inside conditionals: Avoid circular imports, only load when needed
