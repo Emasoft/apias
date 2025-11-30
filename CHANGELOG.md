@@ -5,78 +5,98 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.16] - 2024-11-30
-
-### Breaking Changes
-- **Python 3.10+ is now required** - Dropped Python 3.9 support due to use of `dataclass(kw_only=True)` which was introduced in Python 3.10
+## [0.1.17] - 2025-11-30
 
 ### Bug Fixes
-- Fix 7 critical TUI bugs (stats accumulation, live timer, navigation, retry prompt, XML file size, timeout messages)
-- Fix formatter consistency between local pre-commit and CI (unified on ruff v0.14.7)
-- Replace black with ruff-format for code formatting
+- Critical CI/CD and publishing infrastructure audit by @Emasoft
 
-### CI/CD
-- Update CI matrix to test Python 3.10, 3.11, 3.12
-- Make mypy step non-fatal (known type issues to be fixed)
-- Add mock OPENAI_API_KEY for CI tests
-
-### Features
-- Add `--force-retry-count` flag for reproducible retry testing
-- Add PageUp/PageDown/Home/End keyboard navigation in batch TUI
-- Add "Data Scraped" and "XML Generated" to final stats
-
-## [Unreleased]
+### Documentation
+- Update documentation for Python 3.10+ requirement by @Emasoft
+- Add uv installation recommendation and update PyPI workflow to Python 3.10 by @Emasoft
+## [0.1.16] - 2025-11-30
 
 ### Bug Fixes
-- Remove double slimdown_html call and double-escaping bug
-- Critical fixes for singleton detection, timeouts, and retry limits
-- Correct GPT-5 Nano model identifier
-- Revert model name to correct format without openai/ prefix
-- Remove sequential delays from parallel chunk processing
-- Remove all remaining @retry decorator references
-- Fix Spinner thread RuntimeError in Playwright installation
-- Dramatically increase API timeout to account for retries
-- Resolve critical XML quality issues for production readiness
-- Resolve Python class detection ambiguity in HTML parsing
-- Suppress DEBUG logs when TUI is active for clean display
-- Move TUI creation before scraping to show waiting screen first
-- Suppress scraper print statements when TUI is active
-- Enable real-time TUI updates during background processing
-- Remove thread-unsafe live.update() call from background thread
-- Add final TUI update and enable full-screen mode
-- Make TUI use full terminal height and adapt to window resize
-- Fix progress regression, add spinners, improve screen filling
-- Stop resetting chunks dictionary in call_llm_to_convert_html_to_xml
-- Correct return value unpacking in batch mode processing
-- Prevent TUI jumping by suppressing console logging during batch mode
-- Comprehensive project audit fixes
+
+- **ci:** Use ruff format consistently instead of black by @Emasoft
+- **ci:** Update ruff to v0.14.7 for consistent formatting by @Emasoft
+- **ci:** Make mypy step non-fatal due to known type issues by @Emasoft
+- **ci:** Drop Python 3.9 support, fix CI test requirements by @Emasoft- Remove double slimdown_html call and double-escaping bug by @Emasoft
+- Critical fixes for singleton detection, timeouts, and retry limits by @Emasoft
+- Correct GPT-5 Nano model identifier by @Emasoft
+- Revert model name to correct format without openai/ prefix by @Emasoft
+- Remove sequential delays from parallel chunk processing by @Emasoft
+- Remove all remaining @retry decorator references by @Emasoft
+- Fix Spinner thread RuntimeError in Playwright installation by @Emasoft
+- Dramatically increase API timeout to account for retries by @Emasoft
+- Resolve critical XML quality issues for production readiness by @Emasoft
+- Resolve Python class detection ambiguity in HTML parsing by @Emasoft
+- Suppress DEBUG logs when TUI is active for clean display by @Emasoft
+- Move TUI creation before scraping to show waiting screen first by @Emasoft
+- Suppress scraper print statements when TUI is active by @Emasoft
+- Enable real-time TUI updates during background processing by @Emasoft
+- Remove thread-unsafe live.update() call from background thread by @Emasoft
+- Add final TUI update and enable full-screen mode by @Emasoft
+- Make TUI use full terminal height and adapt to window resize by @Emasoft
+- Fix progress regression, add spinners, improve screen filling by @Emasoft
+- Stop resetting chunks dictionary in call_llm_to_convert_html_to_xml by @Emasoft
+- Correct return value unpacking in batch mode processing by @Emasoft
+- Prevent TUI jumping by suppressing console logging during batch mode by @Emasoft
+- Comprehensive project audit fixes by @Emasoft
+- Critical TUI stability and error handling improvements by @Emasoft
+- Remove NullWriter that blocked Rich TUI rendering by @Emasoft
+- Suppress ALL output during batch TUI rendering by @Emasoft
+- Circuit breaker dialog now appears cleanly and program exits immediately by @Emasoft
+- Complete TUI corruption fix - eliminate ALL output before and after TUI by @Emasoft
+- Additional TUI corruption fixes - suppress earlier + fix print statements by @Emasoft
+- CRITICAL - Remove duplicate suppress_console_logging() causing logger leaks by @Emasoft
+- Prevent worker thread logging after circuit breaker dialog by @Emasoft
+- Suppress all error messages during batch TUI operation by @Emasoft
+- Critical race conditions and undefined variable bugs by @Emasoft
+- Handle non-numeric filenames in XML merge sort by @Emasoft
+- Propagate --mock flag to batch mode processing by @Emasoft
+- Handle SIGPIPE gracefully when output is piped by @Emasoft
+- Add thread-safety, atexit cleanup, deterministic jitter, dead code removal by @Emasoft
+- Resolve 7 critical TUI bugs affecting stats, navigation, and error handling by @Emasoft
 
 ### Features
-- Optimize GPT-5 Nano chunking and add singleton protection
-- Implement parallel chunk processing with ThreadPoolExecutor
-- Migrate to OpenAI Python library for better error handling
-- Convert to AsyncOpenAI for true parallel processing and remove tenacity
-- Enhance XML quality with improved LLM prompt and smart class merging
-- Add --scrape-only mode to scrape websites without AI processing
-- Implement XML validation retry for 100% success rate
-- Add Rich TUI infrastructure with mock API support
-- Integrate Rich TUI with real-time chunk monitoring and final summary
-- Display TUI for single chunks too
-- Add keyboard controls to TUI - Press SPACE to start/stop
-- Implement step-based progress tracking for granular TUI updates
-- Add --limit option to control maximum pages scraped
-- Implement complete batch TUI for multi-URL processing
-- Improve batch TUI with version display, adaptive bars, and fluid updates
-- Add clean merge progress animation and remove messy output
-- Add chunk tracking infrastructure for large page processing
+
+- **integration:** Add event system imports to apias.py by @Emasoft
+- **integration:** Update update_batch_status() to support both old and new systems by @Emasoft
+- **integration:** Initialize event system components in process_multiple_pages() by @Emasoft- Optimize GPT-5 Nano chunking and add singleton protection by @Emasoft
+- Implement parallel chunk processing with ThreadPoolExecutor by @Emasoft
+- Migrate to OpenAI Python library for better error handling by @Emasoft
+- Convert to AsyncOpenAI for true parallel processing and remove tenacity by @Emasoft
+- Enhance XML quality with improved LLM prompt and smart class merging by @Emasoft
+- Add --scrape-only mode to scrape websites without AI processing by @Emasoft
+- Implement XML validation retry for 100% success rate by @Emasoft
+- Add Rich TUI infrastructure with mock API support by @Emasoft
+- Integrate Rich TUI with real-time chunk monitoring and final summary by @Emasoft
+- Display TUI for single chunks too by @Emasoft
+- Add keyboard controls to TUI - Press SPACE to start/stop by @Emasoft
+- Implement step-based progress tracking for granular TUI updates by @Emasoft
+- Add --limit option to control maximum pages scraped by @Emasoft
+- Implement complete batch TUI for multi-URL processing by @Emasoft
+- Improve batch TUI with version display, adaptive bars, and fluid updates by @Emasoft
+- Add clean merge progress animation and remove messy output by @Emasoft
+- Add chunk tracking infrastructure for large page processing by @Emasoft
+- Implement comprehensive error handling and user feedback system by @Emasoft
+- Implement comprehensive mock OpenAI server for 100% test pass rate by @Emasoft
+- Add structured retry logging for bug reproduction by @Emasoft
+- Add --force-retry-count flag for 100% reproducible retry testing by @Emasoft
 
 ### Miscellaneous Tasks
-- Remove debug logging and display from TUI
+- Remove debug logging and display from TUI by @Emasoft
+- Remove unused tui.py after TUI unification by @Emasoft
+- Update pre-commit hooks and fix code formatting by @Emasoft
+- Bump version to 0.1.15 for release by @Emasoft
+- Bump version to 0.1.16 for release by @Emasoft
 
 ### Refactoring
-- Simplify OpenAI client to use built-in retry and timeout
-- Replace CSS-based classification with semantic content analysis
-- Comprehensive code quality improvements for batch TUI status messages
+- Simplify OpenAI client to use built-in retry and timeout by @Emasoft
+- Replace CSS-based classification with semantic content analysis by @Emasoft
+- Comprehensive code quality improvements for batch TUI status messages by @Emasoft
+- Comprehensive code quality improvements for batch TUI status messages by @Emasoft
+- Remove jitter entirely for 100% reproducible retry delays by @Emasoft
 ## [0.1.4] - 2024-10-26
 
 ### Bug Fixes
