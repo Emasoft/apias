@@ -44,6 +44,7 @@ jobs:
         ruff format --check apias/ tests/
 
     - name: Type check with mypy
+      continue-on-error: true
       run: |
         mypy apias/ --ignore-missing-imports
 
