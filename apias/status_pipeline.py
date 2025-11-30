@@ -40,7 +40,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from apias.batch_tui import URLState, URLTask
 from apias.event_system import CircuitBreakerEvent, ErrorEvent, EventBus, StatusEvent
@@ -159,7 +159,7 @@ class StatusPipeline:
         state: URLState,
         message: str = "",
         progress_pct: float = 0.0,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
         """
         Update task status (called by worker threads).

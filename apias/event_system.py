@@ -38,7 +38,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
-from typing import Any, Callable, Dict, List, Optional, Type
+from typing import Any, Callable, Dict, List, Optional, Type, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -65,27 +65,19 @@ class Event(ABC):
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
+# TypeVar for generic event handling in subscribe()
+E = TypeVar("E", bound=Event)
+
+
 # ============================================================================
 # Status Events
 # ============================================================================
 
 
-class URLState(Enum):
-    """Task/URL processing states (mirrors existing enum in batch_tui.py).
-
-    WHY string values: Must match batch_tui.URLState values exactly for compatibility.
-    The status_pipeline.py assigns event.state to task.state, so values must be identical.
-    DO NOT use auto() - that creates integer values which break compatibility.
-    """
-
-    PENDING = "pending"
-    SCRAPING = "scraping"
-    PROCESSING = "processing"
-    MERGING_CHUNKS = (
-        "merging"  # WHY: batch_tui has this state, must include for completeness
-    )
-    COMPLETE = "complete"
-    FAILED = "failed"
+# Import URLState from batch_tui to avoid duplicate enum definitions
+# WHY: Having two URLState enums caused mypy type errors in status_pipeline.py
+# where batch_tui.URLState was assigned to StatusEvent.state (event_system.URLState)
+from apias.batch_tui import URLState
 
 
 @dataclass
@@ -363,9 +355,7 @@ class EventBus:
             )
             raise
 
-    def subscribe(
-        self, event_type: Type[Event], handler: Callable[[Event], None]
-    ) -> None:
+    def subscribe(self, event_type: Type[E], handler: Callable[[E], None]) -> None:
         """
         Subscribe to an event type.
 
@@ -374,7 +364,7 @@ class EventBus:
 
         Args:
             event_type: Event class to subscribe to (e.g., ErrorEvent)
-            handler: Function to call: handler(event: Event) -> None
+            handler: Function to call: handler(event: E) -> None
 
         Thread Safety: Uses lock to protect _subscribers dict.
         Usually called during initialization, not performance-critical.
@@ -386,7 +376,8 @@ class EventBus:
             bus.subscribe(ErrorEvent, handle_error)
         """
         with self._lock:
-            self._subscribers[event_type].append(handler)
+            # Cast handler to base type for storage (callers use specific types)
+            self._subscribers[event_type].append(handler)  # type: ignore[arg-type]
             logger.debug(f"Subscribed {handler.__name__} to {event_type.__name__}")
 
     def dispatch(self, timeout: float = 0.01) -> int:

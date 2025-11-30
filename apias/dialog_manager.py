@@ -314,7 +314,8 @@ class DialogManager:
         elif dialog.dialog_type == DialogType.INFO:
             self._render_info(dialog.context)
         else:
-            logger.warning(f"Unknown dialog type: {dialog.dialog_type}")
+            # Defensive: all DialogType cases covered above, but keep for future types
+            logger.warning(f"Unknown dialog type: {dialog.dialog_type}")  # type: ignore[unreachable]
 
     def _render_circuit_breaker(
         self,

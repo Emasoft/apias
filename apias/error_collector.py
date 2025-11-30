@@ -44,7 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from apias.event_system import CircuitBreakerEvent, ErrorCategory, ErrorEvent, EventBus
 

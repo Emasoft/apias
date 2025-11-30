@@ -40,7 +40,7 @@ Usage:
 import logging
 import sys
 import time
-from typing import Optional
+from typing import Any, Callable, Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +89,9 @@ class LoggerInterceptor:
         of all libraries that tried to add console output.
         """
         self._session_log_handler = session_log_handler
-        self._original_addHandler: callable | None = None
+        self._original_addHandler: (
+            Callable[[logging.Logger, logging.Handler], None] | None
+        ) = None
         self._blocked_attempts = 0
         self._installed = False
 
@@ -128,7 +130,7 @@ class LoggerInterceptor:
         # Replace with our wrapper
         # WHY: This affects ALL Logger instances, including those created
         # by third-party libraries that we don't control
-        logging.Logger.addHandler = interceptor_wrapper
+        logging.Logger.addHandler = interceptor_wrapper  # type: ignore[method-assign,assignment]
 
         self._installed = True
         logger.info(
@@ -158,7 +160,7 @@ class LoggerInterceptor:
             return
 
         # Restore original method
-        logging.Logger.addHandler = self._original_addHandler
+        logging.Logger.addHandler = self._original_addHandler  # type: ignore[method-assign,assignment]
         self._original_addHandler = None
         self._installed = False
 
@@ -274,12 +276,17 @@ class LoggerInterceptor:
             "blocked_attempts": self._blocked_attempts,
         }
 
-    def __enter__(self):
+    def __enter__(self) -> "LoggerInterceptor":
         """Context manager entry: install interceptor"""
         self.install()
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: Any,
+    ) -> Literal[False]:
         """Context manager exit: uninstall interceptor"""
         self.uninstall()
         return False  # Don't suppress exceptions

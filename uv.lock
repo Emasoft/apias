@@ -183,7 +183,7 @@ wheels = [
 
 [[package]]
 name = "apias"
-version = "0.1.17"
+version = "0.1.18"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
