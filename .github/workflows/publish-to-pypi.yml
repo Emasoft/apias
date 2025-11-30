@@ -37,3 +37,5 @@ jobs:
       with:
         password: ${{ secrets.PYPI_API_TOKEN }}
         verbose: true
+        # Skip if already published (e.g., manual uv publish before tag push)
+        skip-existing: true

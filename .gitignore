@@ -196,7 +196,7 @@ CLAUDE.md
 .idea/
 
 # UV package manager
-uv.lock
+# NOTE: uv.lock SHOULD be committed for reproducible builds
 
 # Logs directory (contents ignored, folder tracked)
 logs/
