@@ -61,9 +61,9 @@ def test_basic_publish_subscribe_flow():
     # Verify
     assert count == 1, "Should have dispatched exactly 1 event"
     assert len(received_events) == 1, "Handler should have been called once"
-    assert (
-        received_events[0] is error
-    ), "Handler should receive the exact event published"
+    assert received_events[0] is error, (
+        "Handler should receive the exact event published"
+    )
     assert received_events[0].category == ErrorCategory.API_TIMEOUT
     assert received_events[0].message == "Request timeout after 30s"
     assert received_events[0].task_id == 42
@@ -144,9 +144,9 @@ def test_type_safe_subscriptions():
     # Verify only status_handler called, error_handler NOT called
     assert count == 1, "Should have dispatched 1 event"
     assert len(status_handler_calls) == 1, "StatusEvent handler should be called"
-    assert (
-        len(error_handler_calls) == 0
-    ), "ErrorEvent handler should NOT be called for StatusEvent"
+    assert len(error_handler_calls) == 0, (
+        "ErrorEvent handler should NOT be called for StatusEvent"
+    )
     assert status_handler_calls[0] is status
 
 
@@ -192,9 +192,9 @@ def test_event_queuing():
     # Verify all events processed
     assert count == 10, "Should have dispatched all 10 events"
     assert len(received_events) == 10, "All 10 events should be received"
-    assert (
-        received_events == events_published
-    ), "Events should be received in FIFO order"
+    assert received_events == events_published, (
+        "Events should be received in FIFO order"
+    )
 
     stats_after = bus.get_stats()
     assert stats_after["dispatched"] == 10, "Should have dispatched 10 events"
@@ -290,9 +290,9 @@ def test_concurrent_publishing_from_worker_threads():
 
     # Verify all events published
     stats = bus.get_stats()
-    assert (
-        stats["published"] == 1000
-    ), "Should have published 1000 events from 10 workers"
+    assert stats["published"] == 1000, (
+        "Should have published 1000 events from 10 workers"
+    )
     assert stats["pending"] == 1000, "All events should be pending"
 
     # Dispatch all events
@@ -325,9 +325,9 @@ def test_queue_full_handling():
 
     # Verify queue behavior
     stats = bus.get_stats()
-    assert (
-        successful_publishes == 10
-    ), "Should successfully publish exactly 10 events (queue size)"
+    assert successful_publishes == 10, (
+        "Should successfully publish exactly 10 events (queue size)"
+    )
     assert dropped_count == 10, "Should have 10 failed publish attempts (queue full)"
     assert stats["published"] == 10, "Published count should be 10"
     assert stats["dropped"] == 10, "Dropped count should be 10"
@@ -363,9 +363,9 @@ def test_handler_exception_isolation():
     # Verify both handlers called despite handler1 exception
     assert count == 1, "Event should be dispatched successfully"
     assert len(handler1_calls) == 1, "Failing handler should be called"
-    assert (
-        len(handler2_calls) == 1
-    ), "Normal handler should still be called despite handler1 exception"
+    assert len(handler2_calls) == 1, (
+        "Normal handler should still be called despite handler1 exception"
+    )
     assert handler1_calls[0] is status
     assert handler2_calls[0] is status
 
@@ -429,12 +429,12 @@ def test_dispatch_timeout():
     assert len(received_events) == count, "Received events should match dispatch count"
 
     stats_after = bus.get_stats()
-    assert (
-        stats_after["dispatched"] == count
-    ), "Dispatched count should match events processed"
-    assert (
-        stats_after["pending"] == 1000 - count
-    ), "Pending should be reduced by dispatched count"
+    assert stats_after["dispatched"] == count, (
+        "Dispatched count should match events processed"
+    )
+    assert stats_after["pending"] == 1000 - count, (
+        "Pending should be reduced by dispatched count"
+    )
 
 
 def test_dispatch_processes_until_queue_empty():
@@ -466,9 +466,9 @@ def test_dispatch_processes_until_queue_empty():
 
     stats = bus.get_stats()
     assert stats["dispatched"] == 50, "Should have dispatched 50 events"
-    assert (
-        stats["pending"] == 0
-    ), "Queue should be empty (dispatch stopped early when queue empty)"
+    assert stats["pending"] == 0, (
+        "Queue should be empty (dispatch stopped early when queue empty)"
+    )
 
 
 def test_dispatch_returns_event_count():
@@ -574,9 +574,9 @@ def test_error_event_creation_with_all_fields_and_defaults():
     assert event_minimal.task_id is None, "task_id should default to None"
     assert event_minimal.url is None, "url should default to None"
     assert event_minimal.exception_type is None, "exception_type should default to None"
-    assert (
-        event_minimal.exception_traceback is None
-    ), "exception_traceback should default to None"
+    assert event_minimal.exception_traceback is None, (
+        "exception_traceback should default to None"
+    )
     assert event_minimal.context == {}, "context should default to empty dict"
     assert event_minimal.recoverable is True, "recoverable should default to True"
 
@@ -603,15 +603,15 @@ def test_circuit_breaker_and_dialog_event_creation():
     # CircuitBreakerEvent with defaults
     circuit_minimal = CircuitBreakerEvent(reason="System overload")
     assert circuit_minimal.reason == "System overload"
-    assert (
-        circuit_minimal.affected_tasks == []
-    ), "affected_tasks should default to empty list"
-    assert (
-        circuit_minimal.trigger_category is None
-    ), "trigger_category should default to None"
-    assert (
-        circuit_minimal.consecutive_counts == {}
-    ), "consecutive_counts should default to empty dict"
+    assert circuit_minimal.affected_tasks == [], (
+        "affected_tasks should default to empty list"
+    )
+    assert circuit_minimal.trigger_category is None, (
+        "trigger_category should default to None"
+    )
+    assert circuit_minimal.consecutive_counts == {}, (
+        "consecutive_counts should default to empty dict"
+    )
 
     # DialogEvent
     dialog_event = DialogEvent(

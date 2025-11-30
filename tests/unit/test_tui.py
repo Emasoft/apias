@@ -138,9 +138,9 @@ class TestCalculateEta:
         for progress, elapsed in test_cases:
             result = calculate_eta(progress, elapsed)
             if result is not None:
-                assert (
-                    result >= 0
-                ), f"calculate_eta({progress}, {elapsed}) returned negative: {result}"
+                assert result >= 0, (
+                    f"calculate_eta({progress}, {elapsed}) returned negative: {result}"
+                )
 
     def test_eta_with_edge_case_values(self) -> None:
         """ETA handles edge cases without producing negatives."""

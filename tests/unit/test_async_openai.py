@@ -165,9 +165,9 @@ async def test_mock_api_response_varies_by_size(
     assert small_result is not None
     assert large_result is not None
     # Large prompt should return larger/different XML
-    assert len(large_result) > len(
-        small_result
-    ), "Large prompt should yield larger response"
+    assert len(large_result) > len(small_result), (
+        "Large prompt should yield larger response"
+    )
 
 
 # ============================================================================

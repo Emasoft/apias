@@ -58,12 +58,12 @@ def test_status_pipeline_initialization():
     assert pipeline._task_lock is not None, "Task lock should not be None"
 
     # Verify critical event flag exists and is not set
-    assert isinstance(
-        pipeline._critical_event, threading.Event
-    ), "Should have critical event flag"
-    assert (
-        not pipeline._critical_event.is_set()
-    ), "Critical event flag should start unset"
+    assert isinstance(pipeline._critical_event, threading.Event), (
+        "Should have critical event flag"
+    )
+    assert not pipeline._critical_event.is_set(), (
+        "Critical event flag should start unset"
+    )
 
 
 def test_initialize_tasks_creates_url_task_objects():
@@ -91,9 +91,9 @@ def test_initialize_tasks_creates_url_task_objects():
         assert isinstance(task, URLTask), f"Task {task_id} should be URLTask instance"
         assert task.task_id == task_id, f"Task {task_id} should have correct task_id"
         assert task.url == expected_url, f"Task {task_id} should have correct URL"
-        assert (
-            task.state == URLState.PENDING
-        ), f"Task {task_id} should start in PENDING state"
+        assert task.state == URLState.PENDING, (
+            f"Task {task_id} should start in PENDING state"
+        )
         assert task.progress_pct == 0.0, f"Task {task_id} should start with 0% progress"
 
 
@@ -149,9 +149,9 @@ def test_on_status_event_updates_task_state():
     # Verify task was updated
     task = pipeline._tasks[1]
     assert task.state == URLState.PROCESSING, "Task state should be updated"
-    assert (
-        task.status_message == "Processing chunk 2/5"
-    ), "Status message should be updated"
+    assert task.status_message == "Processing chunk 2/5", (
+        "Status message should be updated"
+    )
     assert task.progress_pct == 40.0, "Progress should be updated"
 
 
@@ -226,18 +226,18 @@ def test_on_status_event_maintains_status_history():
 
     # Verify it's the last 5 messages (first 2 should be removed)
     history_messages = [msg for timestamp, msg in task.status_history]
-    assert (
-        history_messages == messages[-5:]
-    ), "Should keep last 5 messages in FIFO order"
+    assert history_messages == messages[-5:], (
+        "Should keep last 5 messages in FIFO order"
+    )
 
     # Verify timestamps are present and increasing
     timestamps = [ts for ts, msg in task.status_history]
-    assert all(
-        isinstance(ts, datetime) for ts in timestamps
-    ), "All timestamps should be datetime objects"
-    assert timestamps == sorted(
-        timestamps
-    ), "Timestamps should be in chronological order"
+    assert all(isinstance(ts, datetime) for ts in timestamps), (
+        "All timestamps should be datetime objects"
+    )
+    assert timestamps == sorted(timestamps), (
+        "Timestamps should be in chronological order"
+    )
 
 
 def test_on_status_event_ignores_unknown_task_id():
@@ -359,9 +359,9 @@ def test_on_circuit_breaker_sets_critical_event_flag():
     bus.dispatch(timeout=1.0)
 
     # Verify critical flag is now set
-    assert (
-        pipeline._critical_event.is_set()
-    ), "Critical event flag should be set after circuit breaker"
+    assert pipeline._critical_event.is_set(), (
+        "Critical event flag should be set after circuit breaker"
+    )
 
 
 def test_wait_for_update_returns_false_on_timeout():
@@ -407,9 +407,9 @@ def test_wait_for_update_returns_true_on_critical_event():
 
     # Verify it woke up early on critical event
     assert critical, "Should return True when critical event occurs"
-    assert (
-        elapsed < 0.2
-    ), f"Should wake up quickly (got {elapsed:.3f}s), not wait full timeout"
+    assert elapsed < 0.2, (
+        f"Should wake up quickly (got {elapsed:.3f}s), not wait full timeout"
+    )
 
     # Clean up
     t.join(timeout=1.0)
@@ -451,12 +451,12 @@ def test_get_snapshot_returns_task_snapshot_dict():
 
     # Verify all entries are TaskSnapshot, not URLTask
     for task_id, task_snap in snapshot.items():
-        assert isinstance(
-            task_snap, TaskSnapshot
-        ), f"Task {task_id} should be TaskSnapshot"
-        assert not isinstance(
-            task_snap, URLTask
-        ), f"Task {task_id} should NOT be URLTask"
+        assert isinstance(task_snap, TaskSnapshot), (
+            f"Task {task_id} should be TaskSnapshot"
+        )
+        assert not isinstance(task_snap, URLTask), (
+            f"Task {task_id} should NOT be URLTask"
+        )
         assert task_snap.task_id == task_id, "task_id should match dict key"
         assert task_snap.url == urls[task_id - 1], "URL should match"
 
@@ -488,15 +488,15 @@ def test_get_snapshot_returns_deep_copy():
 
     # Verify original task unchanged
     original_task = pipeline._tasks[1]
-    assert (
-        original_task.progress_pct != 999.0
-    ), "Original task should not be affected by snapshot modification"
+    assert original_task.progress_pct != 999.0, (
+        "Original task should not be affected by snapshot modification"
+    )
 
     # Get new snapshot and verify it still has original value
     new_snapshot = pipeline.get_snapshot()
-    assert (
-        new_snapshot[1].progress_pct != 999.0
-    ), "New snapshot should have original value, not modified value"
+    assert new_snapshot[1].progress_pct != 999.0, (
+        "New snapshot should have original value, not modified value"
+    )
 
 
 def test_get_snapshot_includes_status_history():
@@ -523,9 +523,9 @@ def test_get_snapshot_includes_status_history():
     snapshot = pipeline.get_snapshot()
 
     # Verify history is included
-    assert hasattr(
-        snapshot[1], "status_history"
-    ), "Snapshot should include status_history"
+    assert hasattr(snapshot[1], "status_history"), (
+        "Snapshot should include status_history"
+    )
     assert len(snapshot[1].status_history) == 4, "Should have 4 history entries"
 
     # Verify history has correct structure
@@ -537,9 +537,9 @@ def test_get_snapshot_includes_status_history():
     # Verify it's a deep copy (modifying snapshot history doesn't affect original)
     snapshot[1].status_history.clear()
     new_snapshot = pipeline.get_snapshot()
-    assert (
-        len(new_snapshot[1].status_history) == 4
-    ), "Original history should be unchanged"
+    assert len(new_snapshot[1].status_history) == 4, (
+        "Original history should be unchanged"
+    )
 
 
 # ============================================================================
@@ -595,19 +595,19 @@ def test_concurrent_update_status_from_multiple_threads():
         if count == 0:
             break
 
-    assert (
-        dispatched_count == 100
-    ), f"Should have dispatched all 100 events (got {dispatched_count})"
+    assert dispatched_count == 100, (
+        f"Should have dispatched all 100 events (got {dispatched_count})"
+    )
 
     # Verify all tasks were updated (at least once)
     for task_id in range(1, 11):
         task = pipeline._tasks[task_id]
-        assert (
-            task.state == URLState.PROCESSING
-        ), f"Task {task_id} should be in PROCESSING state"
-        assert (
-            "Update from thread" in task.status_message
-        ), f"Task {task_id} should have update message"
+        assert task.state == URLState.PROCESSING, (
+            f"Task {task_id} should be in PROCESSING state"
+        )
+        assert "Update from thread" in task.status_message, (
+            f"Task {task_id} should have update message"
+        )
 
 
 def test_get_snapshot_during_concurrent_updates():
@@ -668,15 +668,15 @@ def test_get_snapshot_during_concurrent_updates():
     for i, snapshot in enumerate(snapshots_taken):
         assert len(snapshot) == 20, f"Snapshot {i} should have 20 tasks"
         for task_id, task_snap in snapshot.items():
-            assert isinstance(
-                task_snap, TaskSnapshot
-            ), f"Snapshot {i} task {task_id} should be TaskSnapshot"
-            assert (
-                1 <= task_snap.task_id <= 20
-            ), f"Snapshot {i} task {task_id} should have valid task_id"
-            assert (
-                0.0 <= task_snap.progress_pct <= 100.0
-            ), f"Snapshot {i} task {task_id} should have valid progress"
+            assert isinstance(task_snap, TaskSnapshot), (
+                f"Snapshot {i} task {task_id} should be TaskSnapshot"
+            )
+            assert 1 <= task_snap.task_id <= 20, (
+                f"Snapshot {i} task {task_id} should have valid task_id"
+            )
+            assert 0.0 <= task_snap.progress_pct <= 100.0, (
+                f"Snapshot {i} task {task_id} should have valid progress"
+            )
 
 
 # ============================================================================
@@ -727,9 +727,9 @@ def test_get_stats_returns_correct_counts():
     # Verify counts
     assert stats["total"] == 10, "Should have 10 total tasks"
     assert stats["pending"] == 2, "Should have 2 pending tasks"
-    assert (
-        stats["active"] == 5
-    ), "Should have 5 active tasks (3 SCRAPING + 2 PROCESSING)"
+    assert stats["active"] == 5, (
+        "Should have 5 active tasks (3 SCRAPING + 2 PROCESSING)"
+    )
     assert stats["complete"] == 2, "Should have 2 complete tasks"
     assert stats["failed"] == 1, "Should have 1 failed task"
 
