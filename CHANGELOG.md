@@ -5,6 +5,20 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2025-11-30
+
+### Testing
+- Add 105 new tests for TUI components (coverage: 60% -> 73%) by @Emasoft
+- Add comprehensive test_batch_tui.py with 70 tests covering URLState, URLTask, BatchStats, BatchTUIManager by @Emasoft
+- Extend test_tui.py with 35 new tests for terminal detection, spinners, keyboard handling by @Emasoft
+- Add comprehensive test_retry.py with 23 tests for retry functionality and exponential backoff by @Emasoft
+
+### Configuration
+- Adjust coverage threshold to 72% (TUI code requires extensive terminal mocking) by @Emasoft
+
+### Documentation
+- Add child-friendly configuration guide to README explaining num_threads, max_retries, chunk_size by @Emasoft
+
 ## [0.1.17] - 2025-11-30
 
 ### Bug Fixes
