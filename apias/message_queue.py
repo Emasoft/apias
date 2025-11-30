@@ -63,7 +63,7 @@ class TUIMessage:
 
     level: MessageLevel
     text: str
-    task_id: Optional[int] = None
+    task_id: int | None = None
     timestamp: datetime = field(default_factory=datetime.now)
     persist: bool = False  # If True, show in deferred summary
 
@@ -256,7 +256,7 @@ class TUIMessageQueue:
 
 
 # Global instance for module-level access
-_global_queue: Optional[TUIMessageQueue] = None
+_global_queue: TUIMessageQueue | None = None
 _global_lock = threading.Lock()
 
 
@@ -292,16 +292,14 @@ def reset_message_queue() -> None:
 # Convenience functions for common message types
 
 
-def queue_info(text: str, task_id: Optional[int] = None) -> None:
+def queue_info(text: str, task_id: int | None = None) -> None:
     """Queue an info-level message."""
     get_message_queue().put(
         TUIMessage(level=MessageLevel.INFO, text=text, task_id=task_id)
     )
 
 
-def queue_warning(
-    text: str, task_id: Optional[int] = None, persist: bool = True
-) -> None:
+def queue_warning(text: str, task_id: int | None = None, persist: bool = True) -> None:
     """Queue a warning-level message (persisted by default)."""
     get_message_queue().put(
         TUIMessage(
@@ -313,7 +311,7 @@ def queue_warning(
     )
 
 
-def queue_error(text: str, task_id: Optional[int] = None, persist: bool = True) -> None:
+def queue_error(text: str, task_id: int | None = None, persist: bool = True) -> None:
     """Queue an error-level message (persisted by default)."""
     get_message_queue().put(
         TUIMessage(
@@ -325,21 +323,21 @@ def queue_error(text: str, task_id: Optional[int] = None, persist: bool = True) 
     )
 
 
-def queue_success(text: str, task_id: Optional[int] = None) -> None:
+def queue_success(text: str, task_id: int | None = None) -> None:
     """Queue a success-level message."""
     get_message_queue().put(
         TUIMessage(level=MessageLevel.SUCCESS, text=text, task_id=task_id)
     )
 
 
-def queue_status(text: str, task_id: Optional[int] = None) -> None:
+def queue_status(text: str, task_id: int | None = None) -> None:
     """Queue a status update message."""
     get_message_queue().put(
         TUIMessage(level=MessageLevel.STATUS, text=text, task_id=task_id)
     )
 
 
-def queue_progress(text: str, task_id: Optional[int] = None) -> None:
+def queue_progress(text: str, task_id: int | None = None) -> None:
     """Queue a progress update message."""
     get_message_queue().put(
         TUIMessage(level=MessageLevel.PROGRESS, text=text, task_id=task_id)

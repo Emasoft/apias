@@ -121,11 +121,11 @@ class ErrorEvent:
 
     category: ErrorCategory  # Classified error type
     message: str  # Human-readable error message
-    task_id: Optional[int]  # Task number in batch (None for single-page mode)
-    url: Optional[str]  # URL being processed when error occurred
+    task_id: int | None  # Task number in batch (None for single-page mode)
+    url: str | None  # URL being processed when error occurred
     timestamp: datetime = field(default_factory=datetime.now)  # When error happened
     recoverable: bool = True  # True if operation can be retried
-    raw_exception: Optional[str] = None  # Exception class name for debugging
+    raw_exception: str | None = None  # Exception class name for debugging
 
     def is_recoverable(self) -> bool:
         """
@@ -182,9 +182,9 @@ class CircuitBreaker:
 
         # Internal state - always access with lock held
         self._consecutive_errors = 0
-        self._last_error_category: Optional[ErrorCategory] = None
+        self._last_error_category: ErrorCategory | None = None
         self._triggered = False
-        self._trigger_reason: Optional[str] = None
+        self._trigger_reason: str | None = None
 
         # Thread safety lock - protects all mutable state
         # DO NOT remove - this code runs in concurrent batch processing
@@ -295,7 +295,7 @@ class CircuitBreaker:
             return self._triggered
 
     @property
-    def trigger_reason(self) -> Optional[str]:
+    def trigger_reason(self) -> str | None:
         """
         Get the reason why the circuit breaker was triggered.
 
@@ -403,7 +403,7 @@ class SessionErrorTracker:
             self._success_count += 1
         self.circuit_breaker.record_success()
 
-    def get_primary_failure_reason(self) -> Optional[str]:
+    def get_primary_failure_reason(self) -> str | None:
         """
         Get the most significant reason for failures.
 

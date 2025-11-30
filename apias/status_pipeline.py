@@ -73,7 +73,7 @@ class TaskSnapshot:
     size_out: int
     cost: float
     duration: float
-    start_time: Optional[float]
+    start_time: float | None
     error: str
     current_chunk: int
     total_chunks: int
@@ -404,7 +404,7 @@ class StatusPipeline:
         self._critical_event.clear()
         logger.debug("Cleared critical event flag")
 
-    def get_task(self, task_id: int) -> Optional[URLTask]:
+    def get_task(self, task_id: int) -> URLTask | None:
         """
         Get a single task by ID.
 

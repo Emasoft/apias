@@ -174,10 +174,10 @@ class ErrorEvent(Event):
     # WHY kw_only: Allows required fields after Event's default fields without ordering issues
     category: ErrorCategory = field(kw_only=True)
     message: str = field(kw_only=True)
-    task_id: Optional[int] = field(default=None, kw_only=True)
-    url: Optional[str] = field(default=None, kw_only=True)
-    exception_type: Optional[str] = field(default=None, kw_only=True)
-    exception_traceback: Optional[str] = field(default=None, kw_only=True)
+    task_id: int | None = field(default=None, kw_only=True)
+    url: str | None = field(default=None, kw_only=True)
+    exception_type: str | None = field(default=None, kw_only=True)
+    exception_traceback: str | None = field(default=None, kw_only=True)
     context: Dict[str, Any] = field(default_factory=dict, kw_only=True)
     recoverable: bool = field(default=True, kw_only=True)
 
@@ -206,7 +206,7 @@ class CircuitBreakerEvent(Event):
     # WHY kw_only: Allows required fields after Event's default fields without ordering issues
     reason: str = field(kw_only=True)
     affected_tasks: List[int] = field(default_factory=list, kw_only=True)
-    trigger_category: Optional[ErrorCategory] = field(default=None, kw_only=True)
+    trigger_category: ErrorCategory | None = field(default=None, kw_only=True)
     consecutive_counts: Dict[ErrorCategory, int] = field(
         default_factory=dict, kw_only=True
     )

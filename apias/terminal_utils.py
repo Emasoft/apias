@@ -231,15 +231,15 @@ class BaseTUIManager:
         self.quiet = quiet
         self.capabilities = detect_terminal_capabilities()
         self.console = Console(force_terminal=True, legacy_windows=False)
-        self.live: Optional[Live] = None
+        self.live: Live | None = None
 
         # Thread-safe state management
         self._state_lock = threading.Lock()
         self._process_state = ProcessState.WAITING
-        self._keyboard_listener: Optional[KeyboardListener] = None
+        self._keyboard_listener: KeyboardListener | None = None
 
         # Pause time tracking (thread-safe with _state_lock)
-        self._pause_start_time: Optional[float] = None
+        self._pause_start_time: float | None = None
         self._total_pause_duration: float = 0.0
 
     @property
@@ -535,9 +535,9 @@ class KeyboardListener:
     _atexit_registered: ClassVar[bool] = False
 
     def __init__(self) -> None:
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
-        self._old_settings: Optional[Any] = None
+        self._old_settings: Any | None = None
         self._callbacks: Dict[str, Callable[[], None]] = {}
 
         # Track this instance for cleanup
@@ -812,7 +812,7 @@ def format_size(bytes_size: int) -> str:
         return f"{bytes_size / (1024 * 1024 * 1024):.1f}GB"
 
 
-def calculate_eta(progress_pct: float, elapsed_seconds: float) -> Optional[float]:
+def calculate_eta(progress_pct: float, elapsed_seconds: float) -> float | None:
     """
     Calculate estimated time remaining.
 

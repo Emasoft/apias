@@ -181,7 +181,7 @@ class MockAPIClient:
     def __init__(
         self,
         deterministic: bool = False,
-        random_seed: Optional[int] = None,
+        random_seed: int | None = None,
         force_retry_count: int = 0,
     ) -> None:
         """
@@ -309,9 +309,9 @@ class MockAPIException(Exception):
 async def mock_call_openai_api(
     prompt: str,
     pricing_info: dict[str, Any],
-    mock_client: Optional[MockAPIClient] = None,
+    mock_client: MockAPIClient | None = None,
     deterministic: bool = False,
-) -> Tuple[Optional[str], float]:
+) -> Tuple[str | None, float]:
     """
     Mock version of call_openai_api that simulates realistic behavior.
 

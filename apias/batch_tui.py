@@ -104,7 +104,7 @@ class URLTask:
     size_out: int = 0
     cost: float = 0.0
     duration: float = 0.0
-    start_time: Optional[float] = None
+    start_time: float | None = None
     error: str = ""
     # Chunk tracking (for large pages split into multiple LLM requests)
     current_chunk: int = 0  # 0 means not chunked or not started
@@ -745,9 +745,9 @@ class BatchTUIManager(BaseTUIManager):
         task_id: int,
         state: URLState,
         progress_pct: float = 0.0,
-        size_in: Optional[int] = None,
-        size_out: Optional[int] = None,
-        cost: Optional[float] = None,
+        size_in: int | None = None,
+        size_out: int | None = None,
+        cost: float | None = None,
         error: str = "",
         current_chunk: int = 0,
         total_chunks: int = 0,
@@ -818,7 +818,7 @@ class BatchTUIManager(BaseTUIManager):
             self._update_stats(old_state, state, cost)
 
     def _update_stats(
-        self, old_state: URLState, new_state: URLState, cost: Optional[float]
+        self, old_state: URLState, new_state: URLState, cost: float | None
     ) -> None:
         """Update global statistics when task state changes.
 
@@ -864,7 +864,7 @@ class BatchTUIManager(BaseTUIManager):
         if self.live:
             self.live.update(self._create_dashboard())
 
-    def render_snapshot(self, snapshot: Optional[Dict[int, "TaskSnapshot"]]) -> None:
+    def render_snapshot(self, snapshot: Dict[int, "TaskSnapshot"] | None) -> None:
         """
         Render a snapshot from StatusPipeline by updating internal state.
 

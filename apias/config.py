@@ -198,7 +198,7 @@ class APIASConfig:
 
     # OpenAI settings
     model: str = DEFAULT_MODEL
-    api_key: Optional[str] = None  # If None, reads from OPENAI_API_KEY env var
+    api_key: str | None = None  # If None, reads from OPENAI_API_KEY env var
     max_tokens: int = 4096
     temperature: float = 0.1
 
@@ -209,13 +209,13 @@ class APIASConfig:
     retry_delay: float = 1.0
 
     # Output settings
-    output_folder: Optional[str] = None  # Auto-generated if None
+    output_folder: str | None = None  # Auto-generated if None
     output_format: str = "xml"
 
     # URL filtering
     whitelist_patterns: List[str] = field(default_factory=list)
     blacklist_patterns: List[str] = field(default_factory=list)
-    limit: Optional[int] = None  # Max URLs to process
+    limit: int | None = None  # Max URLs to process
 
     # TUI settings
     no_tui: bool = False  # Disable Rich TUI
@@ -324,7 +324,7 @@ class APIASConfig:
         return cls(**filtered)
 
     @classmethod
-    def from_yaml(cls, path: Union[str, Path]) -> "APIASConfig":
+    def from_yaml(cls, path: str | Path) -> "APIASConfig":
         """
         Load configuration from a YAML file.
 
@@ -363,7 +363,7 @@ class APIASConfig:
         return cls.from_dict(data)
 
     @classmethod
-    def from_json(cls, path: Union[str, Path]) -> "APIASConfig":
+    def from_json(cls, path: str | Path) -> "APIASConfig":
         """
         Load configuration from a JSON file.
 
@@ -382,7 +382,7 @@ class APIASConfig:
 
         return cls.from_dict(data)
 
-    def save_yaml(self, path: Union[str, Path]) -> None:
+    def save_yaml(self, path: str | Path) -> None:
         """Save configuration to a YAML file."""
         if not HAS_YAML:
             raise ImportError(
@@ -394,7 +394,7 @@ class APIASConfig:
         with open(path, "w", encoding="utf-8") as f:
             yaml.dump(self.to_dict(), f, default_flow_style=False, sort_keys=False)
 
-    def save_json(self, path: Union[str, Path]) -> None:
+    def save_json(self, path: str | Path) -> None:
         """Save configuration to a JSON file."""
         path = Path(path)
         with open(path, "w", encoding="utf-8") as f:
@@ -402,8 +402,8 @@ class APIASConfig:
 
 
 def load_config(
-    config_path: Optional[Union[str, Path]] = None,
-    cli_overrides: Optional[Dict[str, Any]] = None,
+    config_path: str | Path | None = None,
+    cli_overrides: Dict[str, Any] | None = None,
 ) -> APIASConfig:
     """
     Load configuration with precedence: CLI args > config file > defaults.
@@ -441,7 +441,7 @@ def load_config(
     return APIASConfig.from_dict(config_dict)
 
 
-def generate_example_config(path: Union[str, Path] = "apias_config.yaml") -> None:
+def generate_example_config(path: str | Path = "apias_config.yaml") -> None:
     """
     Generate an example configuration file with comments.
 

@@ -111,8 +111,8 @@ class CategoryStats:
     """
 
     count: int = 0
-    first_seen: Optional[datetime] = None
-    last_seen: Optional[datetime] = None
+    first_seen: datetime | None = None
+    last_seen: datetime | None = None
     consecutive_max: int = 0
 
 
@@ -156,7 +156,7 @@ class ErrorRecordResult:
 
     recorded: bool
     circuit_tripped: bool
-    trigger_reason: Optional[str] = None
+    trigger_reason: str | None = None
 
 
 @dataclass
@@ -184,7 +184,7 @@ class CircuitResult:
     """Result of circuit breaker check"""
 
     circuit_tripped: bool
-    trigger_reason: Optional[str] = None
+    trigger_reason: str | None = None
 
 
 # ============================================================================
@@ -281,7 +281,7 @@ class SmartErrorStorage:
         # Update total
         self._total_recorded += 1
 
-    def get_recent(self, limit: Optional[int] = None) -> List[ErrorEvent]:
+    def get_recent(self, limit: int | None = None) -> List[ErrorEvent]:
         """
         Get recent errors (most recent first).
 
@@ -299,7 +299,7 @@ class SmartErrorStorage:
         return recent
 
     def get_stats(
-        self, category: Optional[ErrorCategory] = None
+        self, category: ErrorCategory | None = None
     ) -> Dict[ErrorCategory, CategoryStats]:
         """
         Get category statistics.
@@ -316,7 +316,7 @@ class SmartErrorStorage:
             return {category: self._category_stats[category]}
         return dict(self._category_stats)
 
-    def get_first_occurrence(self, category: ErrorCategory) -> Optional[ErrorEvent]:
+    def get_first_occurrence(self, category: ErrorCategory) -> ErrorEvent | None:
         """
         Get first error of a category (for debugging).
 
@@ -381,7 +381,7 @@ class CircuitBreakerV2:
         """
         self._config = config
         self._triggered = False
-        self._trigger_context: Optional[CircuitTripContext] = None
+        self._trigger_context: CircuitTripContext | None = None
 
         # Consecutive error count per category
         self._consecutive_count: Dict[ErrorCategory, int] = defaultdict(int)
@@ -482,7 +482,7 @@ class CircuitBreakerV2:
         return self._triggered
 
     @property
-    def trigger_reason(self) -> Optional[str]:
+    def trigger_reason(self) -> str | None:
         """
         Reason why circuit tripped (None if not tripped).
 
@@ -491,7 +491,7 @@ class CircuitBreakerV2:
         return self._trigger_context.reason if self._trigger_context else None
 
     @property
-    def trigger_context(self) -> Optional[CircuitTripContext]:
+    def trigger_context(self) -> CircuitTripContext | None:
         """
         Full trip context (None if not tripped).
 
@@ -572,10 +572,10 @@ class ErrorCollector:
         self,
         category: ErrorCategory,
         message: str,
-        task_id: Optional[int] = None,
-        url: Optional[str] = None,
-        exception: Optional[Exception] = None,
-        context: Optional[Dict[str, Any]] = None,
+        task_id: int | None = None,
+        url: str | None = None,
+        exception: Exception | None = None,
+        context: Dict[str, Any] | None = None,
     ) -> ErrorRecordResult:
         """
         Record an error occurrence.
@@ -667,7 +667,7 @@ class ErrorCollector:
                     recorded=False, circuit_tripped=False, trigger_reason=None
                 )
 
-    def record_success(self, task_id: Optional[int] = None) -> None:
+    def record_success(self, task_id: int | None = None) -> None:
         """
         Record successful operation.
 
@@ -699,7 +699,7 @@ class ErrorCollector:
             return self._circuit_breaker.is_triggered
 
     @property
-    def trigger_reason(self) -> Optional[str]:
+    def trigger_reason(self) -> str | None:
         """
         Reason why circuit tripped (None if not tripped).
 
@@ -708,7 +708,7 @@ class ErrorCollector:
         with self._lock:
             return self._circuit_breaker.trigger_reason
 
-    def get_recent_errors(self, limit: Optional[int] = None) -> List[ErrorEvent]:
+    def get_recent_errors(self, limit: int | None = None) -> List[ErrorEvent]:
         """
         Get recent errors (most recent first).
 
@@ -748,7 +748,7 @@ class ErrorCollector:
         with self._lock:
             return self._storage._total_recorded
 
-    def get_primary_failure_reason(self) -> Optional[str]:
+    def get_primary_failure_reason(self) -> str | None:
         """
         Get the most significant reason for failures.
 
@@ -798,7 +798,7 @@ class ErrorCollector:
 # ============================================================================
 
 
-def load_error_config(config_path: Optional[Path] = None) -> ErrorConfig:
+def load_error_config(config_path: Path | None = None) -> ErrorConfig:
     """
     Load error configuration from YAML file.
 

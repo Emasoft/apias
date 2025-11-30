@@ -219,8 +219,8 @@ def format_timestamp() -> str:
 
 
 def update_batch_status(
-    batch_tui_or_pipeline: Optional[Union[BatchTUIManager, StatusPipeline]],
-    task_id: Optional[int],
+    batch_tui_or_pipeline: BatchTUIManager | StatusPipeline | None,
+    task_id: int | None,
     state: URLState,
     message: str,
     **kwargs: Any,
@@ -297,7 +297,7 @@ cost_lock = threading.Lock()  # Protects total_cost only
 # CRITICAL: progress_tracker is accessed from multiple worker threads
 # ALWAYS use progress_lock when reading or modifying progress_tracker
 # WHY: Without locking, concurrent dict access causes race conditions and data corruption
-progress_tracker: Dict[str, Dict[str, Union[str, float]]] = {}
+progress_tracker: Dict[str, Dict[str, str | float]] = {}
 # CRITICAL: progress_lock is an RLock (reentrant) because:
 # 1. process_url() acquires lock, then calls update_progress_file() which also needs lock
 # 2. Signal handlers may call update_progress_file() without knowing if lock is held
@@ -555,7 +555,7 @@ shutdown_flag = False
 _shutdown_handled = False
 
 
-def signal_handler(signum: int, frame: Optional[FrameType]) -> None:
+def signal_handler(signum: int, frame: FrameType | None) -> None:
     """
     Handle interrupt signals (SIGINT/Ctrl+C and SIGTERM) with graceful shutdown.
 
@@ -690,7 +690,7 @@ def extract_xml_from_input(input_data: str) -> str:
 
 def merge_xmls(
     temp_folder: Path,
-    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> str:
     """
     Merges multiple XML documents from the temp folder into a single XML API document.
@@ -868,7 +868,7 @@ def has_significant_text(element: BeautifulSoup, threshold: int = 100) -> bool:
     return text_length > threshold
 
 
-def contains_navigation_keywords(attr_values: Union[str, List[str]]) -> bool:
+def contains_navigation_keywords(attr_values: str | List[str]) -> bool:
     """Check if attribute values contain any navigation keywords."""
     if isinstance(attr_values, list):
         attr_values = " ".join(attr_values)
@@ -1009,13 +1009,13 @@ def get_best_invocation_for_this_python() -> str:
     return exe
 
 
-def safe_abs_path(res: Union[str, Path]) -> str:
+def safe_abs_path(res: str | Path) -> str:
     """Gives an abs path, which safely returns a full (not 8.3) windows path"""
     res = Path(res).resolve()
     return str(res)
 
 
-def touch_file(fname: Union[str, Path]) -> bool:
+def touch_file(fname: str | Path) -> bool:
     fname = Path(fname)
     try:
         fname.parent.mkdir(parents=True, exist_ok=True)
@@ -1122,9 +1122,9 @@ class Spinner:
 
     def __exit__(
         self,
-        exc_type: Optional[Type[BaseException]],
-        exc_value: Optional[BaseException],
-        traceback: Optional[TracebackType],
+        exc_type: Type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
     ) -> None:
         self.stop()
 
@@ -1245,12 +1245,12 @@ def install_playwright() -> bool:
 
 
 class Scraper:
-    playwright_available: Optional[bool] = None
+    playwright_available: bool | None = None
     playwright_instructions_shown: bool = False
 
     def __init__(
         self,
-        playwright_available: Optional[bool] = None,
+        playwright_available: bool | None = None,
         verify_ssl: bool = True,
         timeout: int = 30,
         quiet: bool = False,
@@ -1273,7 +1273,7 @@ class Scraper:
         self.verify_ssl = verify_ssl
         self.timeout = timeout
 
-    def scrape(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+    def scrape(self, url: str) -> Tuple[str | None, str | None]:
         """
         Scrape a url. If HTML scrape it with playwright.
         If it's plain text or non-HTML, return it as-is.
@@ -1355,7 +1355,7 @@ class Scraper:
 
         return False
 
-    def scrape_with_playwright(self, url: str) -> Tuple[Optional[str], Optional[str]]:
+    def scrape_with_playwright(self, url: str) -> Tuple[str | None, str | None]:
         import playwright  # noqa: F401
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -1436,7 +1436,7 @@ def slimdown_html(
     page_source: str,
 ) -> Tuple[
     str,
-    Optional[str],
+    str | None,
     List[str],
     List[str],
     List[str],
@@ -1548,9 +1548,7 @@ def slimdown_html(
     )
 
 
-def start_scraping(
-    url: str, no_tui: bool = False, quiet: bool = False
-) -> Optional[str]:
+def start_scraping(url: str, no_tui: bool = False, quiet: bool = False) -> str | None:
     """
     Start scraping a URL.
 
@@ -1600,17 +1598,17 @@ def start_scraping(
 
 
 def extract_urls_from_sitemap(
-    sitemap_file: Optional[str] = None,
-    sitemap_content: Optional[str] = None,
-    whitelist_str: Optional[str] = None,
-    blacklist_str: Optional[str] = None,
+    sitemap_file: str | None = None,
+    sitemap_content: str | None = None,
+    whitelist_str: str | None = None,
+    blacklist_str: str | None = None,
 ) -> List[str]:
     """
     Extracts URLs from a sitemap and filters them based on whitelist and blacklist patterns.
     """
     logger.info("Starting sitemap extraction and filtering.")
 
-    def process_pattern_list(pattern_str: Optional[str]) -> Optional[List[str]]:
+    def process_pattern_list(pattern_str: str | None) -> List[str] | None:
         if not pattern_str:
             return None
         return [
@@ -1680,7 +1678,7 @@ def extract_urls_from_sitemap(
 
 
 # Load model pricing info
-def load_model_pricing() -> Optional[Dict[str, Any]]:
+def load_model_pricing() -> Dict[str, Any] | None:
     """Attempt to extract JSON from a string."""
     pricing_urls = [
         "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
@@ -2102,11 +2100,11 @@ async def call_llm_to_convert_html_to_xml(
     no_tui: bool = False,
     mock: bool = False,
     force_retry_count: int = 0,
-    status_handler: Optional[Union[BatchTUIManager, StatusPipeline]] = None,
-    task_id: Optional[int] = None,
-    error_collector: Optional[ErrorCollector] = None,
-    url: Optional[str] = None,
-) -> Tuple[Optional[str], float]:
+    status_handler: BatchTUIManager | StatusPipeline | None = None,
+    task_id: int | None = None,
+    error_collector: ErrorCollector | None = None,
+    url: str | None = None,
+) -> Tuple[str | None, float]:
     """
     Uses OpenAI's API to convert HTML content to structured XML asynchronously.
     Implements chunking for large content that exceeds safe token limits.
@@ -2132,7 +2130,7 @@ async def call_llm_to_convert_html_to_xml(
     logger.info(f"Processing content in {num_chunks} chunk(s)")
 
     # Create mock client if mock mode is enabled
-    mock_client: Optional[MockAPIClient] = None
+    mock_client: MockAPIClient | None = None
     if mock:
         mock_client = MockAPIClient(force_retry_count=force_retry_count)
         if force_retry_count > 0:
@@ -2200,7 +2198,7 @@ async def call_llm_to_convert_html_to_xml(
 
     async def process_chunk_wrapper(
         args: Tuple[int, str],
-    ) -> Tuple[int, Optional[str], float]:
+    ) -> Tuple[int, str | None, float]:
         """Async wrapper function for parallel processing"""
         nonlocal completed_chunks
         i, chunk = args
@@ -2319,14 +2317,14 @@ async def call_llm_to_convert_html_to_xml(
 async def _process_single_chunk(
     html_content: str,
     pricing_info: Dict[str, Dict[str, float]],
-    chunk_num: Optional[int] = None,
+    chunk_num: int | None = None,
     mock: bool = False,
-    mock_client: Optional[MockAPIClient] = None,
-    status_handler: Optional[Union[BatchTUIManager, StatusPipeline]] = None,
-    task_id: Optional[int] = None,
-    error_collector: Optional[ErrorCollector] = None,
-    url: Optional[str] = None,
-) -> Tuple[Optional[str], float]:
+    mock_client: MockAPIClient | None = None,
+    status_handler: BatchTUIManager | StatusPipeline | None = None,
+    task_id: int | None = None,
+    error_collector: ErrorCollector | None = None,
+    url: str | None = None,
+) -> Tuple[str | None, float]:
     """Process a single chunk of HTML content asynchronously with automatic XML validation retry.
 
     Args:
@@ -2793,7 +2791,7 @@ PLEASE REGENERATE THE XML WITH CAREFUL ATTENTION TO TAG MATCHING."""
 # ============================
 
 
-def web_scraper(url: str, no_tui: bool = False, quiet: bool = False) -> Optional[str]:
+def web_scraper(url: str, no_tui: bool = False, quiet: bool = False) -> str | None:
     """
     Web scraper with optional output suppression.
 
@@ -2834,7 +2832,7 @@ def web_scraper(url: str, no_tui: bool = False, quiet: bool = False) -> Optional
 # ============================
 
 
-def fetch_sitemap(urls: List[str], quiet: bool = False) -> Optional[str]:
+def fetch_sitemap(urls: List[str], quiet: bool = False) -> str | None:
     """
     Fetches the sitemap.xml from the base domain of the given URLs using HTTP requests.
 
@@ -2873,7 +2871,7 @@ def process_single_page(
     no_tui: bool = False,
     mock: bool = False,
     force_retry_count: int = 0,
-) -> Optional[str]:
+) -> str | None:
     """
     Processes a single page: scrapes, converts to XML via LLM, and saves the result.
     Note: slimdown_html is already called inside web_scraper/Scraper.scrape(),
@@ -2908,12 +2906,12 @@ def process_single_page(
         """
 
         def __init__(self) -> None:
-            self.html_content: Optional[str] = None
-            self.xml_content: Optional[str] = None
-            self.error: Optional[str] = None
+            self.html_content: str | None = None
+            self.xml_content: str | None = None
+            self.error: str | None = None
             # BatchTUIManager for unified TUI (single page = batch with 1 task)
             # NOTE: StatusPipeline/EventBus removed - they're not used in single-page mode
-            self.batch_tui: Optional[BatchTUIManager] = None
+            self.batch_tui: BatchTUIManager | None = None
 
     result = ProcessingResult()
 
@@ -3334,11 +3332,11 @@ def process_url(
     total: int,
     pricing_info: Dict[str, Dict[str, float]],
     scrape_only: bool = False,
-    status_pipeline: Optional[StatusPipeline] = None,
-    error_collector: Optional[ErrorCollector] = None,
+    status_pipeline: StatusPipeline | None = None,
+    error_collector: ErrorCollector | None = None,
     mock: bool = False,  # CRITICAL FIX: Added mock parameter to use mock API instead of real OpenAI
     force_retry_count: int = 0,  # REPRODUCIBILITY: Force N failures before success
-) -> Optional[str]:
+) -> str | None:
     """
     Process a single URL: scrape, convert to XML, and save temp files.
 
@@ -3708,10 +3706,10 @@ def process_multiple_pages(
     scrape_only: bool = False,
     no_tui: bool = False,
     handlers_and_level: tuple[list[logging.Handler], int] = ([], logging.INFO),
-    session_log_path: Optional[str] = None,
+    session_log_path: str | None = None,
     mock: bool = False,  # CRITICAL FIX: Added mock parameter to enable mock API in batch mode
     force_retry_count: int = 0,  # REPRODUCIBILITY: Force N failures before success
-) -> Tuple[Optional[str], Optional[ErrorCollector]]:
+) -> Tuple[str | None, ErrorCollector | None]:
     """
     Processes multiple pages: scrapes each, converts to XML via LLM, and merges.
 
@@ -4168,7 +4166,7 @@ def process_multiple_pages(
     return merged_xml, error_collector
 
 
-def read_patterns_from_file(file_path: str) -> Optional[str]:
+def read_patterns_from_file(file_path: str) -> str | None:
     """
     Read patterns from a file and return them as a comma-separated string.
     """
@@ -4191,7 +4189,7 @@ def display_scraping_summary(
     urls: List[str],
     temp_folder: Path,
     error_log_file: Path,
-    error_collector: Optional[ErrorCollector] = None,
+    error_collector: ErrorCollector | None = None,
 ) -> None:
     summary_data = {
         "Base URL": urls[0] if urls else "N/A",
@@ -4289,16 +4287,16 @@ def display_scraping_summary(
 def main_workflow(
     urls: List[str],
     mode: str = "single",
-    whitelist: Optional[str] = None,
-    blacklist: Optional[str] = None,
+    whitelist: str | None = None,
+    blacklist: str | None = None,
     num_threads: int = 5,
-    resume_file: Optional[str] = None,
+    resume_file: str | None = None,
     scrape_only: bool = False,
     no_tui: bool = False,
     mock: bool = False,
-    limit: Optional[int] = None,
+    limit: int | None = None,
     force_retry_count: int = 0,
-) -> Dict[str, Union[Optional[str], float, int, Optional[ErrorCollector]]]:
+) -> Dict[str, str | None | float | int | ErrorCollector | None]:
     global progress_tracker, total_cost
     """
     Executes the Web API Retrieval and XML Extraction workflow.
@@ -4355,7 +4353,7 @@ def main_workflow(
             logger.info("TUI disabled: Using plain text output")
         print(INFO_SEPARATOR)
 
-    result: Dict[str, Union[Optional[str], float, int, Optional[ErrorCollector]]] = {
+    result: Dict[str, str | None | float | int | ErrorCollector | None] = {
         "result": None,
         "total_cost": 0.0,
         "total_urls": 0,
@@ -4427,7 +4425,7 @@ def main_workflow(
                             "invalid_xml_files": 0,
                         }
                     )
-                    result["result"] = cast(Optional[str], result["result"])
+                    result["result"] = cast(str | None, result["result"])
                     return result
                 elif successful_urls > 0:
                     logger.info(
@@ -4566,7 +4564,7 @@ def main_workflow(
                         "invalid_xml_files": 0 if is_valid else 1,
                     }
                 )
-                result["result"] = cast(Optional[str], result["result"])
+                result["result"] = cast(str | None, result["result"])
             elif scrape_only:
                 # In scrape-only mode, success means HTML was saved
                 logger.info(
@@ -4583,7 +4581,7 @@ def main_workflow(
                         "invalid_xml_files": 0,
                     }
                 )
-                result["result"] = cast(Optional[str], result["result"])
+                result["result"] = cast(str | None, result["result"])
             else:
                 result.update(
                     {
@@ -4627,7 +4625,7 @@ def main_workflow(
                         "invalid_xml_files": total_count - valid_count,
                     }
                 )
-                result["result"] = cast(Optional[str], result["result"])
+                result["result"] = cast(str | None, result["result"])
             elif scrape_only and xml_result:
                 # In scrape-only mode, success means HTML files were saved
                 logger.info(
@@ -4644,12 +4642,12 @@ def main_workflow(
                         "invalid_xml_files": 0,
                     }
                 )
-                result["result"] = cast(Optional[str], result["result"])
+                result["result"] = cast(str | None, result["result"])
             elif xml_result:
                 logger.warning(
                     "Temporary folder not found. Unable to count valid XML files."
                 )
-                result["result"] = cast(Optional[str], xml_result)
+                result["result"] = cast(str | None, xml_result)
             else:
                 result.update(
                     {
@@ -4745,11 +4743,11 @@ def start_resume_mode(json_file_path: str) -> None:
         urls,
         temp_folder,
         error_log_file,
-        cast(Optional[ErrorCollector], result.get("error_collector")),
+        cast(ErrorCollector | None, result.get("error_collector")),
     )
 
 
-def _find_auto_resume_session() -> Optional[str]:
+def _find_auto_resume_session() -> str | None:
     """
     Find the most recent incomplete session for auto-resume.
 
@@ -4800,7 +4798,7 @@ def _find_auto_resume_session() -> Optional[str]:
     return str(resumable_sessions[0]["path"])
 
 
-def check_for_resumable_sessions() -> Optional[str]:
+def check_for_resumable_sessions() -> str | None:
     """
     Check for existing incomplete sessions that can be resumed.
 
@@ -4926,7 +4924,7 @@ def start_single_scrape(
         [url],
         temp_folder,
         error_log_file,
-        cast(Optional[ErrorCollector], result.get("error_collector")),
+        cast(ErrorCollector | None, result.get("error_collector")),
     )
 
 
@@ -4969,7 +4967,7 @@ def start_batch_scrape(
     scrape_only: bool = False,
     no_tui: bool = False,
     mock: bool = False,
-    limit: Optional[int] = None,
+    limit: int | None = None,
     force_retry_count: int = 0,
 ) -> None:
     """Start batch scraping from a sitemap URL."""
@@ -4997,7 +4995,7 @@ def start_batch_scrape(
         [url],
         temp_folder,
         error_log_file,
-        cast(Optional[ErrorCollector], result.get("error_collector")),
+        cast(ErrorCollector | None, result.get("error_collector")),
     )
 
 
@@ -5043,7 +5041,7 @@ class APIDocument:
             "descriptions": self.descriptions,
         }
 
-    def save(self, path: Union[str, Path]) -> None:
+    def save(self, path: str | Path) -> None:
         """Save the document to a file."""
         path = Path(path)
         with open(path, "w") as f:

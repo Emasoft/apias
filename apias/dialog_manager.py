@@ -243,8 +243,8 @@ class DialogManager:
 
     def show_pending_dialogs(
         self,
-        output_dir: Optional[Path] = None,
-        session_log: Optional[Path] = None,
+        output_dir: Path | None = None,
+        session_log: Path | None = None,
     ) -> None:
         """
         Show all pending dialogs in priority order.
@@ -289,8 +289,8 @@ class DialogManager:
     def _render_dialog(
         self,
         dialog: DialogRequest,
-        output_dir: Optional[Path],
-        session_log: Optional[Path],
+        output_dir: Path | None,
+        session_log: Path | None,
     ) -> None:
         """
         Render dialog using Rich panels.
@@ -319,8 +319,8 @@ class DialogManager:
     def _render_circuit_breaker(
         self,
         context: Dict[str, Any],
-        output_dir: Optional[Path],
-        session_log: Optional[Path],
+        output_dir: Path | None,
+        session_log: Path | None,
     ) -> None:
         """
         Render circuit breaker dialog.

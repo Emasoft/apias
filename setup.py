@@ -25,11 +25,16 @@ setup(
     ],
     python_requires=">=3.10",
     install_requires=[
-        "requests",
-        "beautifulsoup4",
-        "lxml",
-        "tenacity",
-        "playwright",
+        "requests>=2.31.0",
+        "beautifulsoup4>=4.12.0",
+        "lxml>=4.9.0",
+        "playwright>=1.39.0",
+        "types-requests>=2.31.0",
+        "types-beautifulsoup4>=4.12.0",
+        "openai[aiohttp]>=2.8.1",
+        "rich>=14.2.0",
+        "defusedxml>=0.7.1",
+        "pyyaml>=6.0.3",
     ],
     entry_points={
         "console_scripts": [

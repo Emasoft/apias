@@ -75,7 +75,7 @@ class LoggerInterceptor:
     - Any library calling logger.addHandler(logging.StreamHandler())
     """
 
-    def __init__(self, session_log_handler: Optional[logging.FileHandler] = None):
+    def __init__(self, session_log_handler: logging.FileHandler | None = None):
         """
         Initialize logger interceptor.
 
@@ -89,7 +89,7 @@ class LoggerInterceptor:
         of all libraries that tried to add console output.
         """
         self._session_log_handler = session_log_handler
-        self._original_addHandler: Optional[callable] = None
+        self._original_addHandler: callable | None = None
         self._blocked_attempts = 0
         self._installed = False
 
