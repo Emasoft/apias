@@ -231,7 +231,9 @@ class LoggerInterceptor:
         stream_name = (
             "stdout"
             if stream is sys.stdout
-            else "stderr" if stream is sys.stderr else "unknown"
+            else "stderr"
+            if stream is sys.stderr
+            else "unknown"
         )
 
         # Create log record manually to avoid recursion
