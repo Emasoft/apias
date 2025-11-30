@@ -4008,22 +4008,130 @@ def process_multiple_pages(
             # FAIL-FAST: Returns empty list in non-interactive mode
             urls_to_retry = batch_tui.prompt_retry_failed()
             if urls_to_retry:
-                # Mark failed URLs as "pending" so --resume will retry them
-                # WHY: progress_tracker status determines which URLs to process on resume
-                # Setting to "pending" means they will be processed again
-                logger.info(f"Marking {len(urls_to_retry)} URLs for retry")
+                # BUG FIX: Actually retry the failed URLs instead of just marking them
+                # WHY: User expects immediate retry when they press "Y", not a manual restart
+                logger.info(f"Retrying {len(urls_to_retry)} failed URLs...")
+
+                # Reset task states for retry URLs so they show as pending in TUI
+                for url in urls_to_retry:
+                    # WHY direct access: URL exists in mapping since it came from batch_tui.prompt_retry_failed()
+                    if url not in url_to_task_id:
+                        logger.warning(f"Unknown URL in retry list: {url}")
+                        continue
+                    task_id = url_to_task_id[url]
+                    if task_id:
+                        # Reset task state in status_pipeline for fresh processing
+                        status_pipeline.update_status(
+                            task_id=task_id,
+                            state=URLState.PENDING,
+                            message="Queued for retry",
+                            progress_pct=0.0,
+                        )
+                        # Reset in batch_tui directly as well
+                        batch_tui.update_task(
+                            task_id=task_id,
+                            state=URLState.PENDING,
+                            progress_pct=0.0,
+                            status_message="Queued for retry",
+                        )
+
+                # Mark in progress tracker
                 with progress_lock:
                     for url in urls_to_retry:
                         progress_tracker[url] = {
                             "status": "pending",
                             "cost": progress_tracker.get(url, {}).get("cost", 0.0),
                         }
-                # Save to progress.json so --resume can find them
                 update_progress_file()
-                # Log the actual path for user convenience
-                logger.info(
-                    f'Progress saved. Resume with: apias --resume "{progress_file}"'
-                )
+
+                # Restart TUI display for retry round
+                batch_tui.start_live_display()
+
+                # Create new executor for retry processing
+                # WHY: Previous executor has exited, need fresh one for retry URLs
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=num_threads
+                ) as retry_executor:
+                    retry_future_to_url = {
+                        retry_executor.submit(
+                            process_url,
+                            url,
+                            url_to_task_id[url],
+                            len(urls),
+                            pricing_info,
+                            scrape_only,
+                            status_pipeline,
+                            error_collector,
+                            mock,
+                            force_retry_count,
+                        ): url
+                        for url in urls_to_retry
+                    }
+
+                    # Run retry processing loop
+                    while retry_future_to_url:
+                        # Poll for updates
+                        status_pipeline.wait_for_update(timeout=BATCH_TUI_POLL_INTERVAL)
+                        event_bus.dispatch(timeout=0.01)
+
+                        # Check completed futures
+                        done, pending = concurrent.futures.wait(
+                            retry_future_to_url.keys(),
+                            timeout=0,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+
+                        # Update TUI
+                        snapshot = status_pipeline.get_snapshot()
+                        batch_tui.render_snapshot(snapshot)
+
+                        # Check for shutdown
+                        if shutdown_flag or batch_tui.should_stop:
+                            retry_executor.shutdown(wait=True, cancel_futures=True)
+                            break
+
+                        # Process completed futures
+                        for future in done:
+                            url = retry_future_to_url[future]
+                            task_id = url_to_task_id[url]
+                            try:
+                                xml_content = future.result()
+                                if xml_content:
+                                    xml_list.append(xml_content)
+                                    status_pipeline.update_status(
+                                        task_id=task_id,
+                                        state=URLState.COMPLETE,
+                                        message="Retry completed successfully",
+                                        progress_pct=100.0,
+                                    )
+                                else:
+                                    status_pipeline.update_status(
+                                        task_id=task_id,
+                                        state=URLState.FAILED,
+                                        message="Retry failed",
+                                        progress_pct=0.0,
+                                        error="Retry processing failed",
+                                    )
+                            except Exception as e:
+                                logger.error(f"Retry exception for URL {url}: {str(e)}")
+                                status_pipeline.update_status(
+                                    task_id=task_id,
+                                    state=URLState.FAILED,
+                                    message=f"Retry exception: {str(e)}",
+                                    progress_pct=0.0,
+                                    error=str(e),
+                                )
+                            del retry_future_to_url[future]
+
+                # Final update after retry
+                snapshot = status_pipeline.get_snapshot()
+                batch_tui.render_snapshot(snapshot)
+                time.sleep(BATCH_FINAL_STATE_PAUSE)
+                batch_tui.stop_live_display()
+
+                # Show updated summary after retry
+                batch_tui.show_final_summary(output_dir=str(temp_folder))
+                logger.info(f"Retry processing completed for {len(urls_to_retry)} URLs")
 
             # Show pending dialogs (circuit breaker, error summary)
             # WHY: DialogManager queues dialogs during processing and shows them
@@ -4310,7 +4418,7 @@ def main_workflow(
         resume_file: Path to resume file for interrupted jobs (optional)
         scrape_only: If True, only scrape HTML without AI processing
         no_tui: If True, disable Rich TUI (use plain text output)
-        mock: If True, use mock API for testing (no token costs)
+        mock: If True, use mock API for testing (estimated costs shown, no real API calls)
         limit: Maximum number of pages to scrape (only applies in batch mode)
     """
     global shutdown_flag, total_cost, progress_tracker, progress_file, temp_folder
@@ -4347,7 +4455,8 @@ def main_workflow(
             logger.info("Scrape-only mode enabled: AI processing will be skipped")
         if mock:
             logger.info(
-                "MOCK MODE enabled: Using simulated API responses (no token costs)"
+                "MOCK MODE enabled: Using simulated API responses "
+                "(costs shown are ESTIMATES based on GPT-4 pricing - no actual API calls)"
             )
         if no_tui:
             logger.info("TUI disabled: Using plain text output")

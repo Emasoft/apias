@@ -5,6 +5,15 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2025-11-30
+
+### Bug Fixes
+- Fix duration timers running forever after task completion (green 100% tasks) by @Emasoft
+- Fix retry prompt not actually retrying failed tasks (now processes immediately) by @Emasoft
+- Clarify mock mode cost estimates (GPT-4 pricing simulation, no real API calls) by @Emasoft
+- Fix stats not updating correctly when retrying failed tasks by @Emasoft
+- Reset task duration/start_time when retrying for accurate tracking by @Emasoft
+
 ## [0.1.19] - 2025-11-30
 
 ### Type Safety

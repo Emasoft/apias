@@ -783,6 +783,18 @@ class BatchTUIManager(BaseTUIManager):
 
             # Track start time
             old_state = task.state
+
+            # Reset for retry: When transitioning from finished state to PENDING
+            # WHY: Retry needs fresh duration/start_time to track new processing time
+            # BUG FIX: Without this, retried tasks would keep old duration values
+            if (
+                old_state in [URLState.COMPLETE, URLState.FAILED]
+                and state == URLState.PENDING
+            ):
+                task.duration = 0.0
+                task.start_time = None
+                task.error = ""
+
             if old_state == URLState.PENDING and state in [
                 URLState.SCRAPING,
                 URLState.PROCESSING,
@@ -808,11 +820,17 @@ class BatchTUIManager(BaseTUIManager):
             if current_chunk > 0:
                 task.current_chunk = current_chunk
 
-            # Update duration
+            # Update duration - ONLY on first transition to finished state
+            # WHY: Freeze duration when task completes, don't recalculate on subsequent
+            # render_snapshot() calls that trigger update_task() with same state
+            # BUG FIX: Previously recalculated duration on every call, causing timer
+            # to keep running even after task showed as 100% complete (green bar)
             if task.start_time and state in [URLState.COMPLETE, URLState.FAILED]:
-                # WHY max(0): Clock skew could theoretically make this negative
-                # Negative duration would break display and indicate system issue
-                task.duration = max(0.0, time.time() - task.start_time)
+                # Only set duration on FIRST transition to finished state
+                if old_state not in [URLState.COMPLETE, URLState.FAILED]:
+                    # WHY max(0): Clock skew could theoretically make this negative
+                    # Negative duration would break display and indicate system issue
+                    task.duration = max(0.0, time.time() - task.start_time)
 
             # Update global stats
             self._update_stats(old_state, state, cost)
@@ -844,9 +862,20 @@ class BatchTUIManager(BaseTUIManager):
         elif old_state in [URLState.PROCESSING, URLState.MERGING_CHUNKS]:
             # WHY group: MERGING_CHUNKS is a sub-phase of processing
             self.stats.processing = max(0, self.stats.processing - 1)
+        elif old_state == URLState.COMPLETE:
+            # WHY: Retry resets completed tasks - shouldn't happen but handle gracefully
+            self.stats.completed = max(0, self.stats.completed - 1)
+        elif old_state == URLState.FAILED:
+            # WHY: Retry resets failed tasks - decrement failed count
+            # BUG FIX: Without this, retried tasks stay counted as failed
+            self.stats.failed = max(0, self.stats.failed - 1)
 
         # Increment new state count
-        if new_state == URLState.SCRAPING:
+        if new_state == URLState.PENDING:
+            # WHY: Retry resets tasks to pending - increment pending count
+            # BUG FIX: Without this, retried tasks aren't counted as pending
+            self.stats.pending += 1
+        elif new_state == URLState.SCRAPING:
             self.stats.scraping += 1
         elif new_state in [URLState.PROCESSING, URLState.MERGING_CHUNKS]:
             # WHY group: MERGING_CHUNKS is a sub-phase of processing
