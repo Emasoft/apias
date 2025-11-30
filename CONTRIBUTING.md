@@ -16,18 +16,25 @@ First off, thank you for considering contributing to APIAS! Its people like you 
 
 ## Development Setup
 
+**Requirements:** Python 3.10 or higher
+
 1. Create a virtual environment:
    ```bash
    python -m venv venv
    source venv/bin/activate  # On Windows use: venv\Scripts\activate
    ```
 
-2. Install development dependencies:
+2. Verify Python version:
+   ```bash
+   python --version  # Must be 3.10 or higher
+   ```
+
+3. Install development dependencies:
    ```bash
    pip install -e ".[dev,test]"
    ```
 
-3. Install pre-commit hooks:
+4. Install pre-commit hooks:
    ```bash
    pre-commit install
    ```
@@ -51,17 +58,16 @@ First off, thank you for considering contributing to APIAS! Its people like you 
 
 1. Update the README.md with details of changes if needed
 2. Update the documentation
-3. The PR should work for Python 3.9 and above
+3. The PR should work for Python 3.10 and above
 4. Make sure all tests pass
 5. Update the CHANGELOG.md
 
 ## Code Style
 
 We use:
-- black for code formatting
+- ruff for code formatting and linting
 - isort for import sorting
-- mypy for type checking
-- ruff for linting
+- mypy for type checking (non-fatal, known issues exist)
 
 ## Questions?
 

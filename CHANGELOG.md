@@ -5,6 +5,26 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2024-11-30
+
+### Breaking Changes
+- **Python 3.10+ is now required** - Dropped Python 3.9 support due to use of `dataclass(kw_only=True)` which was introduced in Python 3.10
+
+### Bug Fixes
+- Fix 7 critical TUI bugs (stats accumulation, live timer, navigation, retry prompt, XML file size, timeout messages)
+- Fix formatter consistency between local pre-commit and CI (unified on ruff v0.14.7)
+- Replace black with ruff-format for code formatting
+
+### CI/CD
+- Update CI matrix to test Python 3.10, 3.11, 3.12
+- Make mypy step non-fatal (known type issues to be fixed)
+- Add mock OPENAI_API_KEY for CI tests
+
+### Features
+- Add `--force-retry-count` flag for reproducible retry testing
+- Add PageUp/PageDown/Home/End keyboard navigation in batch TUI
+- Add "Data Scraped" and "XML Generated" to final stats
+
 ## [Unreleased]
 
 ### Bug Fixes

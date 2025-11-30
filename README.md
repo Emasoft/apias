@@ -1,5 +1,9 @@
 # APIAS - AI Powered API Documentation Scraper
 
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyPI version](https://badge.fury.io/py/apias.svg)](https://badge.fury.io/py/apias)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 APIAS (AI Powered API Documentation Scraper) is a powerful tool that helps you extract and convert API documentation from various sources into structured formats.
 
 ## Features
@@ -9,11 +13,23 @@ APIAS (AI Powered API Documentation Scraper) is a powerful tool that helps you e
 - AI-powered content extraction and structuring
 - Command-line interface for easy use
 - Multiple output formats (Markdown, JSON, YAML)
+- Batch processing mode with interactive TUI
+
+## Requirements
+
+- **Python 3.10 or higher** (Python 3.9 is not supported)
+- OpenAI API key (for AI-powered extraction)
 
 ## Installation
 
 ```bash
 pip install apias
+```
+
+### Verify Python Version
+
+```bash
+python --version  # Should be 3.10 or higher
 ```
 
 ## Quick Start

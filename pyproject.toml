@@ -75,7 +75,7 @@ tag_regex = "^v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+)$"
 # Black and isort replaced by ruff - see [tool.ruff] and [tool.ruff.format]
 
 [tool.mypy]
-python_version = "3.9"
+python_version = "3.10"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -166,7 +166,7 @@ known_first_party = ["apias"]
 
 [tool.ruff]
 line-length = 88
-target-version = "py39"
+target-version = "py310"
 fix = true  # Enable autofix behavior
 
 [tool.ruff.lint]
