@@ -5,6 +5,15 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2025-11-30
+
+### Type Safety
+- Resolve all 17 mypy type errors for strict type checking by @Emasoft
+- Add TypeVar for generic EventBus.subscribe() method by @Emasoft
+- Unify URLState enum (import from batch_tui instead of duplicate) by @Emasoft
+- Fix Callable type annotations in logger_interceptor.py by @Emasoft
+- Add proper type annotations to context manager methods by @Emasoft
+
 ## [0.1.18] - 2025-11-30
 
 ### Testing

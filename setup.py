@@ -5,7 +5,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="apias",
-    version="0.1.18",
+    version="0.1.19",
     author="Emanuele Sabetta",
     author_email="713559+Emasoft@users.noreply.github.com",
     description="AI powered API documentation scraper and converter",
