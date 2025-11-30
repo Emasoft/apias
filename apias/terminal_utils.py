@@ -15,6 +15,7 @@ import logging
 import os
 import sys
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from datetime import datetime as DatetimeType
@@ -177,11 +178,22 @@ class Symbols:
 
     @classmethod
     def make_progress_bar(cls, percent: float, width: int = 30) -> str:
-        """Create a progress bar string"""
+        """Create a progress bar string with percent capped at 0-100 range.
+
+        Args:
+            percent: Progress percentage (clamped to 0-100 to prevent overflow)
+            width: Bar width in characters
+
+        Returns:
+            Progress bar string using filled/empty characters
+        """
         filled_char = cls.get(cls.BAR_FILLED)
         empty_char = cls.get(cls.BAR_EMPTY)
 
-        filled = int((percent / 100) * width)
+        # WHY clamp: Prevents progress bar overflow when percent > 100
+        # Can happen if progress_pct is calculated incorrectly upstream
+        clamped_percent = max(0.0, min(100.0, percent))
+        filled = int((clamped_percent / 100) * width)
         return filled_char * filled + empty_char * (width - filled)
 
 
@@ -280,7 +292,9 @@ class BaseTUIManager:
                 self._pause_start_time = time.time()
             elif self._process_state == ProcessState.PAUSED:
                 if self._pause_start_time is not None:
-                    self._total_pause_duration += time.time() - self._pause_start_time
+                    # WHY max(0): Clock skew could theoretically make this negative
+                    pause_elapsed = max(0.0, time.time() - self._pause_start_time)
+                    self._total_pause_duration += pause_elapsed
                     self._pause_start_time = None
                 self._process_state = ProcessState.RUNNING
 
@@ -291,7 +305,9 @@ class BaseTUIManager:
         """
         with self._state_lock:
             if self._pause_start_time is not None:
-                self._total_pause_duration += time.time() - self._pause_start_time
+                # WHY max(0): Clock skew could theoretically make this negative
+                pause_elapsed = max(0.0, time.time() - self._pause_start_time)
+                self._total_pause_duration += pause_elapsed
                 self._pause_start_time = None
             self._process_state = ProcessState.STOPPED
 
@@ -624,7 +640,7 @@ class KeyboardListener:
         elif char == "q":
             self._trigger_callback("q")
         elif char == "\x1b":  # Escape sequence
-            # Read additional chars for arrow keys
+            # Read additional chars for arrow keys and navigation keys
             try:
                 next_chars = sys.stdin.read(2)
                 if next_chars == "[A":
@@ -635,6 +651,32 @@ class KeyboardListener:
                     self._trigger_callback("right")
                 elif next_chars == "[D":
                     self._trigger_callback("left")
+                elif next_chars == "[H":
+                    # WHY: Home key - scroll to beginning of list
+                    self._trigger_callback("home")
+                elif next_chars == "[F":
+                    # WHY: End key - scroll to end of list
+                    self._trigger_callback("end")
+                elif next_chars == "[5":
+                    # PageUp sequence: ESC[5~
+                    extra = sys.stdin.read(1)  # Read the trailing '~'
+                    if extra == "~":
+                        self._trigger_callback("pageup")
+                elif next_chars == "[6":
+                    # PageDown sequence: ESC[6~
+                    extra = sys.stdin.read(1)  # Read the trailing '~'
+                    if extra == "~":
+                        self._trigger_callback("pagedown")
+                elif next_chars == "[1":
+                    # Alternative Home/End: ESC[1~ (Home) or ESC[4~ (End on some terminals)
+                    extra = sys.stdin.read(1)
+                    if extra == "~":
+                        self._trigger_callback("home")
+                elif next_chars == "[4":
+                    # Alternative End sequence: ESC[4~
+                    extra = sys.stdin.read(1)
+                    if extra == "~":
+                        self._trigger_callback("end")
             except Exception as e:
                 # WHY debug not warning: Keyboard input failures are common and recoverable
                 # DO NOT: Use pass without logging - makes debugging input issues impossible
@@ -670,6 +712,14 @@ class KeyboardListener:
                     self._trigger_callback("left")
                 elif special == b"M":  # Right arrow
                     self._trigger_callback("right")
+                elif special == b"I":  # PageUp (0x49)
+                    self._trigger_callback("pageup")
+                elif special == b"Q":  # PageDown (0x51)
+                    self._trigger_callback("pagedown")
+                elif special == b"G":  # Home (0x47)
+                    self._trigger_callback("home")
+                elif special == b"O":  # End (0x4F)
+                    self._trigger_callback("end")
             except Exception as e:
                 # WHY debug not warning: Keyboard input failures are common and recoverable
                 # DO NOT: Use pass without logging - makes debugging input issues impossible
@@ -685,13 +735,19 @@ class KeyboardListener:
                 logger.warning(f"Keyboard callback error for '{key}': {e}")
 
     def _restore_terminal(self) -> None:
-        """Restore terminal settings (Unix only)"""
+        """Restore terminal settings (Unix only).
+
+        CRITICAL: Must always attempt restoration to avoid leaving terminal broken.
+        WHY log errors: Silent failures hide terminal corruption issues.
+        """
         if not IS_WINDOWS and HAS_TERMIOS and self._old_settings is not None:
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
                 self._old_settings = None
-            except (termios.error, OSError):
-                pass
+            except (termios.error, OSError) as e:
+                # WHY log: Terminal restoration failures can leave terminal in broken state
+                # DO NOT: Silently ignore - this helps debug terminal corruption
+                logger.debug(f"Failed to restore terminal settings: {e}")
 
 
 def format_duration(seconds: float) -> str:
@@ -703,7 +759,17 @@ def format_duration(seconds: float) -> str:
 
     Returns:
         Formatted string like "1m 30s" or "45s" or "2h 15m"
+
+    Raises:
+        ValueError: If seconds is negative (indicates serious bug)
     """
+    # FAIL-FAST: Negative durations indicate a serious bug in caller
+    # WHY: Clock skew, race condition, or logic error in time calculation
+    # DO NOT: Silently clamp - bugs must be caught immediately
+    if seconds < 0:
+        raise ValueError(
+            f"format_duration received negative seconds={seconds} - indicates serious bug"
+        )
     if seconds < 60:
         return f"{seconds:.1f}s"
     elif seconds < 3600:
@@ -725,7 +791,17 @@ def format_size(bytes_size: int) -> str:
 
     Returns:
         Formatted string like "1.5KB" or "2.3MB"
+
+    Raises:
+        ValueError: If bytes_size is negative (indicates serious bug)
     """
+    # FAIL-FAST: Negative sizes indicate a serious bug in caller
+    # WHY: Data corruption, integer overflow, or logic error
+    # DO NOT: Silently clamp - bugs must be caught immediately
+    if bytes_size < 0:
+        raise ValueError(
+            f"format_size received negative bytes_size={bytes_size} - indicates serious bug"
+        )
     if bytes_size < 1024:
         return f"{bytes_size}B"
     elif bytes_size < 1024 * 1024:
@@ -746,7 +822,18 @@ def calculate_eta(progress_pct: float, elapsed_seconds: float) -> Optional[float
 
     Returns:
         Estimated seconds remaining, or None if cannot calculate
+
+    Raises:
+        ValueError: If elapsed_seconds is negative (indicates serious bug)
     """
+    # FAIL-FAST: Negative elapsed time indicates serious bug in caller
+    # WHY: Clock skew, race condition in pause tracking, or logic error
+    # DO NOT: Silently produce wrong ETA - bugs must be caught immediately
+    if elapsed_seconds < 0:
+        raise ValueError(
+            f"calculate_eta received negative elapsed_seconds={elapsed_seconds} - indicates serious bug"
+        )
+
     if progress_pct <= 0 or progress_pct >= 100:
         return None
 
@@ -771,8 +858,7 @@ def truncate_url(url: str, max_length: int = URL_TRUNCATE_MAX_LENGTH) -> str:
 
     # Try to keep the domain and end of path visible
     # e.g., "https://example.com/very/long/.../page.html"
-    from urllib.parse import urlparse
-
+    # NOTE: urlparse is imported at module level for performance
     try:
         parsed = urlparse(url)
         domain = parsed.netloc

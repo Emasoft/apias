@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 # TYPE_CHECKING imports to avoid circular imports at runtime
 # WHY: status_pipeline imports batch_tui, so we need conditional import
@@ -35,10 +35,15 @@ from rich.text import Text
 # Import centralized constants - single source of truth for configuration values
 # DO NOT hardcode values here - add new constants to config.py instead
 from apias.config import (
+    DEFAULT_TERMINAL_HEIGHT,
+    DEFAULT_TERMINAL_WIDTH,
     FALLBACK_VERSION,
     KEYBOARD_POLL_INTERVAL,
     MAX_FAILED_URLS_TO_SHOW,
+    SCROLL_DEBOUNCE_SECONDS,
+    STATS_PROGRESS_BAR_WIDTH,
     TUI_REFRESH_FPS,
+    URL_TRUNCATE_MAX_LENGTH,
 )
 
 # Import shared terminal utilities for cross-platform support
@@ -105,7 +110,11 @@ class URLTask:
     current_chunk: int = 0  # 0 means not chunked or not started
     total_chunks: int = 0  # 0 means not chunked
     # Status message for errors, retries, warnings (displayed above progress bar)
-    status_message: str = ""  # e.g., "⚠️ LLM timeout. Retrying in 3s..."
+    # WHY clear terminology: "AI service" distinguishes from "website scraping" timeouts
+    status_message: str = ""  # e.g., "⚠️ AI service timeout. Retrying in 3s..."
+    # Status history: last 5 (timestamp, message) tuples for debugging
+    # WHY: Allows TUI to show recent status changes and status_pipeline to track history
+    status_history: List[Tuple[datetime, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -154,7 +163,13 @@ class BatchTUIManager(BaseTUIManager):
         self._task_lock = threading.Lock()
 
         # Scrolling state for URL list navigation
+        # THREAD SAFETY: scroll_offset is modified from keyboard thread
+        # WHY separate lock: Avoids blocking task updates during scroll
+        self._scroll_lock = threading.Lock()
         self.scroll_offset = 0
+        # WHY debounce: Prevents accidental rapid scrolling from key repeat
+        # DO NOT: Hardcode this value - use SCROLL_DEBOUNCE_SECONDS from config.py
+        self._last_scroll_time: float = 0.0
 
         # Initialize all URLs as pending tasks
         for idx, url in enumerate(urls, start=1):
@@ -165,16 +180,135 @@ class BatchTUIManager(BaseTUIManager):
         """Get elapsed time excluding pause duration."""
         return super().get_effective_elapsed(self.stats.start_time)
 
+    def _should_debounce_scroll(self) -> bool:
+        """Check if scroll event should be debounced (thread-safe).
+
+        Returns:
+            True if scroll should be ignored (too soon after last scroll)
+
+        WHY separate method: Avoids DRY violation - debounce logic in one place
+        THREAD SAFETY: Uses _scroll_lock to protect _last_scroll_time
+        DO NOT: Duplicate this logic in _on_scroll_up/_on_scroll_down
+        """
+        current_time = time.time()
+        with self._scroll_lock:
+            # Check if we're within debounce window
+            if current_time - self._last_scroll_time < SCROLL_DEBOUNCE_SECONDS:
+                return True  # Debounce - ignore this scroll event
+            # Update last scroll time for next check
+            self._last_scroll_time = current_time
+            return False
+
     def _on_scroll_up(self) -> None:
-        """Handle scroll up (registered with keyboard listener)."""
-        if self.scroll_offset > 0:
-            self.scroll_offset -= 1
+        """Handle scroll up (registered with keyboard listener).
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            if self.scroll_offset > 0:
+                self.scroll_offset -= 1
+                logger.debug(f"Scroll up: offset now {self.scroll_offset}")
+
+    def _get_visible_tasks_count(self) -> int:
+        """Calculate how many tasks are visible based on terminal height.
+
+        WHY separate method: Avoids hardcoding visible task count (was '5')
+        Uses same calculation as _create_urls_panel for consistency
+        """
+        try:
+            term_height = self.console.size.height
+        except Exception:
+            # Fallback if terminal size unavailable
+            # WHY constant: Use centralized fallback, not hardcoded value
+            term_height = DEFAULT_TERMINAL_HEIGHT
+        # Same calculation as _create_urls_panel
+        # Each task uses ~4 lines, minus space for header/footer/stats
+        header_size = 3
+        footer_size = 2
+        stats_size = min(8, max(6, term_height // 6))
+        urls_size = max(15, term_height - header_size - stats_size - footer_size - 2)
+        lines_per_task = 4
+        return int(max(1, (urls_size - 4) // lines_per_task))
 
     def _on_scroll_down(self) -> None:
-        """Handle scroll down (registered with keyboard listener)."""
-        max_offset = max(0, len(self.tasks) - 5)
-        if self.scroll_offset < max_offset:
-            self.scroll_offset += 1
+        """Handle scroll down (registered with keyboard listener).
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            # WHY dynamic: Use actual visible count, not hardcoded value
+            # This ensures scrolling stops at exactly the right position
+            visible_tasks = self._get_visible_tasks_count()
+            max_offset = max(0, len(self.tasks) - visible_tasks)
+            if self.scroll_offset < max_offset:
+                self.scroll_offset += 1
+                logger.debug(f"Scroll down: offset now {self.scroll_offset}")
+
+    def _on_page_up(self) -> None:
+        """Handle PageUp key - scroll up by one page.
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            # WHY page_size from visible: Jump by visible tasks count for natural paging
+            page_size = self._get_visible_tasks_count()
+            self.scroll_offset = max(0, self.scroll_offset - page_size)
+            logger.debug(f"Page up: offset now {self.scroll_offset}")
+
+    def _on_page_down(self) -> None:
+        """Handle PageDown key - scroll down by one page.
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            page_size = self._get_visible_tasks_count()
+            max_offset = max(0, len(self.tasks) - page_size)
+            self.scroll_offset = min(max_offset, self.scroll_offset + page_size)
+            logger.debug(f"Page down: offset now {self.scroll_offset}")
+
+    def _on_home(self) -> None:
+        """Handle Home key - scroll to beginning.
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            self.scroll_offset = 0
+            logger.debug("Home: scrolled to beginning")
+
+    def _on_end(self) -> None:
+        """Handle End key - scroll to end.
+
+        THREAD SAFETY: Called from keyboard listener thread
+        Uses _scroll_lock to protect scroll_offset modification
+        """
+        if self._should_debounce_scroll():
+            return
+
+        with self._scroll_lock:
+            visible_tasks = self._get_visible_tasks_count()
+            max_offset = max(0, len(self.tasks) - visible_tasks)
+            self.scroll_offset = max_offset
+            logger.debug(f"End: scrolled to end (offset {self.scroll_offset})")
 
     def start_keyboard_listener(self) -> None:
         """Start keyboard listener with scroll support."""
@@ -183,6 +317,12 @@ class BatchTUIManager(BaseTUIManager):
         if self._keyboard_listener:
             self._keyboard_listener.register_callback("up", self._on_scroll_up)
             self._keyboard_listener.register_callback("down", self._on_scroll_down)
+            # WHY: PageUp/PageDown for faster navigation through long task lists
+            self._keyboard_listener.register_callback("pageup", self._on_page_up)
+            self._keyboard_listener.register_callback("pagedown", self._on_page_down)
+            # WHY: Home/End for jumping to start/end of list
+            self._keyboard_listener.register_callback("home", self._on_home)
+            self._keyboard_listener.register_callback("end", self._on_end)
 
     # Note: waiting_to_start, should_stop, is_paused, is_running,
     # _on_space_pressed, request_stop, wait_while_paused are inherited
@@ -303,10 +443,11 @@ class BatchTUIManager(BaseTUIManager):
             # Running state - show pause and stop instructions
             pause_sym = Symbols.get(Symbols.PAUSE)
             stop_sym = Symbols.get(Symbols.STOP)
+            # WHY: Show navigation keys including PageUp/PageDown for user discoverability
             footer_text = (
                 f"{clock}  Elapsed: {int(effective_elapsed) // 60:02d}:{int(effective_elapsed) % 60:02d}  |  "
-                f"Scroll: {arrow_up}{arrow_down}  |  SPACE: {pause_sym} Pause  |  Ctrl+C: {stop_sym} Stop & Exit  |  "
-                f"Last Update: {datetime.now().strftime('%H:%M:%S')}"
+                f"Nav: {arrow_up}{arrow_down} PgUp/Dn Home/End  |  SPACE: {pause_sym} Pause  |  Ctrl+C: {stop_sym} Stop  |  "
+                f"{datetime.now().strftime('%H:%M:%S')}"
             )
             footer_style = "dim"
 
@@ -323,17 +464,24 @@ class BatchTUIManager(BaseTUIManager):
 
         table = Table(show_header=False, box=None, expand=True)
         table.add_column("Metric", style="cyan", width=20)
-        table.add_column("Value", style="bold green", justify="center")
+        # WHY justify="left": Progress bar should align to left edge, not center
+        table.add_column("Value", style="bold green", justify="left")
 
-        # Calculate progress (center-aligned with fixed width)
-        progress_pct = (
+        # Calculate progress percentage
+        # WHY clamp: Defensive programming - prevents display bugs if stats are inconsistent
+        # Edge case: Race condition could cause completed+failed > total_urls
+        raw_pct = (
             (self.stats.completed + self.stats.failed) / self.stats.total_urls * 100
             if self.stats.total_urls > 0
             else 0
         )
+        # Clamp to valid range for both bar and text display
+        progress_pct = max(0.0, min(100.0, raw_pct))
 
         # Use Symbols for progress bar (ASCII fallback)
-        bar_length = 40
+        # NOTE: make_progress_bar also clamps internally - belt and suspenders
+        # WHY constant: Use centralized bar width from config
+        bar_length = STATS_PROGRESS_BAR_WIDTH
         progress_bar = Symbols.make_progress_bar(progress_pct, bar_length)
 
         # Calculate ETA using effective elapsed (excludes pause time)
@@ -375,7 +523,11 @@ class BatchTUIManager(BaseTUIManager):
         )
 
     def _create_urls_panel(self, available_height: int) -> Panel:
-        """Create scrollable URLs panel with 4 lines per URL (when status_message present)"""
+        """Create scrollable URLs panel with 4 lines per URL (when status_message present).
+
+        THREAD SAFETY: Reads scroll_offset under _scroll_lock since it's
+        modified by keyboard listener thread. This prevents torn reads.
+        """
         # Calculate how many complete tasks fit in available height
         # Each task uses 4 lines: header, stats, progress bar, status message (optional)
         # But we use 4 to account for worst case with status messages
@@ -384,26 +536,79 @@ class BatchTUIManager(BaseTUIManager):
             1, (available_height - 4) // lines_per_task
         )  # -4 for panel borders/title
 
+        # THREAD SAFETY: Read scroll_offset under lock
+        # WHY: scroll_offset is modified by keyboard thread (_on_scroll_up/down)
+        # Without lock, we could read a partially-updated value (torn read)
+        with self._scroll_lock:
+            current_offset = self.scroll_offset
+
         # Get tasks to display (scrolled window)
         task_ids = sorted(self.tasks.keys())
-        start_idx = self.scroll_offset
+        start_idx = current_offset
         end_idx = min(len(task_ids), start_idx + visible_tasks)
         visible_task_ids = task_ids[start_idx:end_idx]
+
+        # THREAD SAFETY: Create snapshot of visible tasks under lock
+        # WHY: update_task() modifies tasks from worker threads under _task_lock
+        # Without this, we could read partially-updated task attributes (torn read)
+        # DO NOT: Read task attributes outside this lock without copying first
+        with self._task_lock:
+            # Create shallow copies of task objects for this render cycle
+            task_snapshots = {
+                tid: URLTask(
+                    task_id=self.tasks[tid].task_id,
+                    url=self.tasks[tid].url,
+                    state=self.tasks[tid].state,
+                    progress_pct=self.tasks[tid].progress_pct,
+                    size_in=self.tasks[tid].size_in,
+                    size_out=self.tasks[tid].size_out,
+                    cost=self.tasks[tid].cost,
+                    duration=self.tasks[tid].duration,
+                    start_time=self.tasks[tid].start_time,
+                    error=self.tasks[tid].error,
+                    current_chunk=self.tasks[tid].current_chunk,
+                    total_chunks=self.tasks[tid].total_chunks,
+                    status_message=self.tasks[tid].status_message,
+                )
+                for tid in visible_task_ids
+            }
 
         # Build display
         lines = []
         for task_id in visible_task_ids:
-            task = self.tasks[task_id]
+            task = task_snapshots[task_id]
 
             # Line 1: Task header (task # + URL)
-            url_display = task.url if len(task.url) <= 80 else task.url[:77] + "..."
+            # WHY constant: Use centralized URL length limit from config
+            # DO NOT: Hardcode display length - use URL_TRUNCATE_MAX_LENGTH
+            url_display = (
+                task.url
+                if len(task.url) <= URL_TRUNCATE_MAX_LENGTH
+                else task.url[: URL_TRUNCATE_MAX_LENGTH - 3] + "..."
+            )
             lines.append(f"[bold cyan]Task #{task_id:02d}:[/bold cyan] {url_display}")
 
             # Line 2: Stats row
             state_emoji = task.state.get_symbol()
             size_in_kb = task.size_in / 1024 if task.size_in > 0 else 0
             size_out_kb = task.size_out / 1024 if task.size_out > 0 else 0
-            duration_str = f"{task.duration:.1f}s" if task.duration > 0 else "0.0s"
+
+            # WHY live duration: For active tasks, calculate elapsed time LIVE
+            # Previously used task.duration which is only set on COMPLETE/FAILED,
+            # causing "0.0s" to display until state change.
+            # FIX: Show running timer for active tasks, freeze for finished tasks.
+            is_finished = task.state in [URLState.COMPLETE, URLState.FAILED]
+            if is_finished:
+                # Task finished - use stored duration (frozen value)
+                duration_str = f"{task.duration:.1f}s" if task.duration > 0 else "0.0s"
+            elif task.start_time:
+                # Task active - calculate live elapsed time
+                # WHY max(0): Clock skew protection
+                live_elapsed = max(0.0, time.time() - task.start_time)
+                duration_str = f"{live_elapsed:.1f}s"
+            else:
+                # Task not started yet
+                duration_str = "0.0s"
 
             # Show chunk information if page is chunked
             chunk_info = ""
@@ -428,17 +633,30 @@ class BatchTUIManager(BaseTUIManager):
             prefix = "  ["  # Progress bar prefix
             suffix = "]"  # Progress bar suffix
 
-            # Estimated time remaining using shared utility
-            if task.progress_pct > 0 and task.progress_pct < 100 and task.start_time:
-                elapsed = time.time() - task.start_time
-                eta_seconds = calculate_eta(task.progress_pct, elapsed)
+            # WHY clamp: Prevents percentage display exceeding 100%
+            display_pct = max(0.0, min(100.0, task.progress_pct))
+
+            # WHY check state: Freeze elapsed time when task is finished
+            # Using task.duration for finished tasks prevents timer from running
+            is_finished = task.state in [URLState.COMPLETE, URLState.FAILED]
+
+            if is_finished:
+                # Task finished - show final percentage (100% for complete, actual for failed)
+                if task.state == URLState.COMPLETE:
+                    display_pct = 100.0
+                eta_str = f" {display_pct:.0f}%"
+            elif task.progress_pct > 0 and task.progress_pct < 100 and task.start_time:
+                # Task in progress - calculate ETA from current elapsed time
+                # WHY max(0): Clock skew could theoretically make this negative
+                elapsed = max(0.0, time.time() - task.start_time)
+                eta_seconds = calculate_eta(display_pct, elapsed)
                 eta_str = (
-                    f" {task.progress_pct:.0f}% Est: {format_duration(eta_seconds)}"
+                    f" {display_pct:.0f}% Est: {format_duration(eta_seconds)}"
                     if eta_seconds
-                    else f" {task.progress_pct:.0f}%"
+                    else f" {display_pct:.0f}%"
                 )
             else:
-                eta_str = f" {task.progress_pct:.0f}%"
+                eta_str = f" {display_pct:.0f}%"
 
             # Add checkmark when complete using Symbols
             complete_symbol = Symbols.get(Symbols.COMPLETE)
@@ -453,11 +671,17 @@ class BatchTUIManager(BaseTUIManager):
             bar_length = max(20, term_width - panel_padding - reserved_space)
 
             # Use Symbols for progress bar (ASCII fallback)
-            progress_bar = Symbols.make_progress_bar(task.progress_pct, bar_length)
+            progress_bar = Symbols.make_progress_bar(display_pct, bar_length)
 
-            progress_line = (
-                f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
-            )
+            # WHY color: Green for completed tasks, default for others
+            if task.state == URLState.COMPLETE:
+                progress_line = f"{prefix}[green]{progress_bar}[/green]{suffix}{eta_str}{completion_marker}"
+            elif task.state == URLState.FAILED:
+                progress_line = f"{prefix}[red]{progress_bar}[/red]{suffix}{eta_str}"
+            else:
+                progress_line = (
+                    f"{prefix}{progress_bar}{suffix}{eta_str}{completion_marker}"
+                )
             lines.append(progress_line)
 
             # Line 4: Status message (if present)
@@ -485,7 +709,8 @@ class BatchTUIManager(BaseTUIManager):
                 lines.append(f"  [{msg_style}]{task.status_message}[/{msg_style}]")
 
             # Add spacing between tasks (except last one)
-            if task_id != visible_task_ids[-1]:
+            # EDGE CASE: visible_task_ids could be empty if scroll_offset is out of bounds
+            if visible_task_ids and task_id != visible_task_ids[-1]:
                 lines.append("")
 
         # Scroll indicator
@@ -520,9 +745,9 @@ class BatchTUIManager(BaseTUIManager):
         task_id: int,
         state: URLState,
         progress_pct: float = 0.0,
-        size_in: int = 0,
-        size_out: int = 0,
-        cost: float = 0.0,
+        size_in: Optional[int] = None,
+        size_out: Optional[int] = None,
+        cost: Optional[float] = None,
         error: str = "",
         current_chunk: int = 0,
         total_chunks: int = 0,
@@ -541,10 +766,11 @@ class BatchTUIManager(BaseTUIManager):
             current_chunk: Current chunk being processed (0 if not chunked)
             total_chunks: Total number of chunks (0 if not chunked)
             status_message: Status/error/retry message to display above progress bar
-                          Examples:
-                          - "Warning: LLM server timeout. Retrying in 3s..."
-                          - "Error: Source page not found. Aborting task."
-                          - "Retry: LLM returned invalid XML. Retrying..."
+                          Examples (use clear terminology to distinguish timeout sources):
+                          - "Warning: AI service (OpenAI) timeout. Retrying in 3s..."
+                          - "Warning: Website scraping timeout. Target site slow."
+                          - "Error: Source page not found (404). Aborting task."
+                          - "Retry: AI returned invalid XML. Retrying..."
         """
         # Use _task_lock for thread-safe task/stats updates
         with self._task_lock:
@@ -565,10 +791,14 @@ class BatchTUIManager(BaseTUIManager):
 
             # Update task
             task.state = state
-            task.progress_pct = progress_pct
-            task.size_in = size_in or task.size_in
-            task.size_out = size_out or task.size_out
-            task.cost = cost or task.cost
+            # WHY clamp: Prevents progress overflow that could corrupt display
+            task.progress_pct = max(0.0, min(100.0, progress_pct))
+            # WHY explicit None check: 'or' operator treats 0 as falsy
+            # size_in=0 is valid (empty response), should not keep old value
+            # DO NOT: Use 'size_in or task.size_in' - breaks on 0
+            task.size_in = size_in if size_in is not None else task.size_in
+            task.size_out = size_out if size_out is not None else task.size_out
+            task.cost = cost if cost is not None else task.cost
             task.error = error
             task.status_message = status_message  # Update status message
 
@@ -580,31 +810,52 @@ class BatchTUIManager(BaseTUIManager):
 
             # Update duration
             if task.start_time and state in [URLState.COMPLETE, URLState.FAILED]:
-                task.duration = time.time() - task.start_time
+                # WHY max(0): Clock skew could theoretically make this negative
+                # Negative duration would break display and indicate system issue
+                task.duration = max(0.0, time.time() - task.start_time)
 
             # Update global stats
             self._update_stats(old_state, state, cost)
 
     def _update_stats(
-        self, old_state: URLState, new_state: URLState, cost: float
+        self, old_state: URLState, new_state: URLState, cost: Optional[float]
     ) -> None:
-        """Update global statistics when task state changes"""
+        """Update global statistics when task state changes.
+
+        WHY MERGING_CHUNKS treated as PROCESSING: No separate 'merging' counter in stats.
+        MERGING is a sub-phase of processing, so we count it under 'processing'.
+        DO NOT: Add separate merging counter - complicates UI for little benefit.
+
+        CRITICAL: This must only update stats when state ACTUALLY changes.
+        render_snapshot() calls update_task() at 20 FPS for all tasks.
+        Without this guard, stats balloon to astronomical values (556504% success rate bug).
+        """
+        # WHY guard: render_snapshot calls update_task on every render (20 FPS).
+        # Without this check, completed/failed/cost get incremented every frame!
+        # This caused the "556504% success rate" and "$451058 cost" bugs.
+        if old_state == new_state:
+            return  # No state change - do NOT update stats
+
         # Decrement old state count
         if old_state == URLState.PENDING:
             self.stats.pending = max(0, self.stats.pending - 1)
         elif old_state == URLState.SCRAPING:
             self.stats.scraping = max(0, self.stats.scraping - 1)
-        elif old_state == URLState.PROCESSING:
+        elif old_state in [URLState.PROCESSING, URLState.MERGING_CHUNKS]:
+            # WHY group: MERGING_CHUNKS is a sub-phase of processing
             self.stats.processing = max(0, self.stats.processing - 1)
 
         # Increment new state count
         if new_state == URLState.SCRAPING:
             self.stats.scraping += 1
-        elif new_state == URLState.PROCESSING:
+        elif new_state in [URLState.PROCESSING, URLState.MERGING_CHUNKS]:
+            # WHY group: MERGING_CHUNKS is a sub-phase of processing
             self.stats.processing += 1
         elif new_state == URLState.COMPLETE:
             self.stats.completed += 1
-            self.stats.total_cost += cost
+            # WHY check None: cost parameter changed from default 0.0 to Optional[None]
+            if cost is not None:
+                self.stats.total_cost += cost
         elif new_state == URLState.FAILED:
             self.stats.failed += 1
 
@@ -706,7 +957,13 @@ class BatchTUIManager(BaseTUIManager):
         self.console.print()
 
         # Main statistics table
-        stats_table = Table(show_header=True, box=box.ROUNDED, expand=False, width=80)
+        # WHY DEFAULT_TERMINAL_WIDTH: Use constant instead of hardcoded 80
+        stats_table = Table(
+            show_header=True,
+            box=box.ROUNDED,
+            expand=False,
+            width=DEFAULT_TERMINAL_WIDTH,
+        )
         stats_table.add_column("Metric", style="cyan", width=25)
         stats_table.add_column("Value", style="bold green", width=15)
         stats_table.add_column("Details", style="yellow", width=35)
@@ -735,6 +992,21 @@ class BatchTUIManager(BaseTUIManager):
             total_duration / self.stats.completed if self.stats.completed > 0 else 0
         )
 
+        # WHY: Total XML output size from all completed tasks
+        # Users requested visibility into how much data was generated
+        total_size_out = sum(t.size_out for t in self.tasks.values() if t.size_out > 0)
+        total_size_in = sum(t.size_in for t in self.tasks.values() if t.size_in > 0)
+
+        # Format size for display
+        def format_size(size_bytes: int) -> str:
+            """Format bytes into human-readable string."""
+            if size_bytes < 1024:
+                return f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                return f"{size_bytes / 1024:.1f} KB"
+            else:
+                return f"{size_bytes / (1024 * 1024):.2f} MB"
+
         stats_table.add_row(
             "Success Rate",
             f"{success_rate:.1f}%",
@@ -747,14 +1019,29 @@ class BatchTUIManager(BaseTUIManager):
         )
         stats_table.add_row("Avg Cost/URL", f"${avg_cost:.5f}", "<1 cent per URL")
         stats_table.add_row("Processing Time", time_str, f"~{avg_time:.1f}s per URL")
+        # WHY: Show data sizes to help users understand compression/expansion
+        stats_table.add_row(
+            "Data Scraped",
+            format_size(total_size_in),
+            f"HTML from {self.stats.completed} pages",
+        )
+        stats_table.add_row(
+            "XML Generated",
+            format_size(total_size_out),
+            "Structured content output",
+        )
 
         self.console.print(stats_table)
         self.console.print()
 
         # Output files panel
         if output_dir:
+            # WHY DEFAULT_TERMINAL_WIDTH: Use constant instead of hardcoded 80
             files_table = Table(
-                show_header=True, box=box.SIMPLE, expand=False, width=80
+                show_header=True,
+                box=box.SIMPLE,
+                expand=False,
+                width=DEFAULT_TERMINAL_WIDTH,
             )
             files_table.add_column("Type", style="cyan", width=20)
             files_table.add_column("Location", style="blue", width=55)
@@ -811,6 +1098,95 @@ class BatchTUIManager(BaseTUIManager):
                 self.console.print(f"  [dim]... and {remaining} more[/dim]")
 
         self.console.print()
+
+    def prompt_retry_failed(self) -> List[str]:
+        """
+        Ask user if they want to retry failed tasks.
+
+        Returns:
+            List of URLs to retry (empty if user declines or non-interactive)
+
+        FAIL-FAST: In non-interactive mode (no_tui, not a TTY), returns empty list.
+        This prevents automatic retries in CI/CD or scripted pipelines.
+        Use --retry-failed CLI flag for programmatic retry instead.
+
+        THREAD SAFETY: Must be called from main thread after processing completes
+        DO NOT: Call this while processing is still running
+        """
+        failed_tasks = [t for t in self.tasks.values() if t.state == URLState.FAILED]
+
+        # EDGE CASE: No failed tasks - nothing to retry
+        if not failed_tasks:
+            logger.debug("prompt_retry_failed: No failed tasks to retry")
+            return []
+
+        # FAIL-FAST: Non-interactive mode - do NOT auto-retry
+        # WHY: Prevents infinite retry loops in automated pipelines
+        # Users should use --retry-failed flag for programmatic retry
+        if self.no_tui or not sys.stdin.isatty():
+            logger.info(
+                f"prompt_retry_failed: {len(failed_tasks)} tasks failed, "
+                "skipping retry prompt (non-interactive mode)"
+            )
+            return []
+
+        retry_sym = Symbols.get(Symbols.RETRY)
+        self.console.print()
+        self.console.print(
+            Panel(
+                f"[bold yellow]{retry_sym} {len(failed_tasks)} task(s) failed. "
+                f"Do you want to retry them?[/bold yellow]",
+                border_style="yellow",
+                expand=False,
+            )
+        )
+        self.console.print()
+        self.console.print(
+            "[dim]Press [bold]Y[/bold] to retry, [bold]N[/bold] to skip: [/dim]", end=""
+        )
+
+        try:
+            # WHY input(): Simple blocking read is acceptable here because
+            # processing has completed and we're just waiting for user decision
+            # DO NOT: Use this pattern during active processing
+            response = input().strip().lower()
+            if response in ["y", "yes"]:
+                urls_to_retry = [t.url for t in failed_tasks]
+                logger.info(f"User chose to retry {len(urls_to_retry)} failed tasks")
+
+                # WHY explicit guidance: The caller (apias.py) will save failed URLs
+                # to progress.json, and user can resume with --resume flag.
+                # DO NOT: Mislead user by saying "Retrying..." when it just logs URLs
+                self.console.print()
+                self.console.print(
+                    f"[green]{Symbols.get(Symbols.CHECK)}[/green] "
+                    f"Marked {len(failed_tasks)} failed task(s) for retry."
+                )
+                self.console.print()
+                self.console.print("[bold cyan]To retry failed URLs, run:[/bold cyan]")
+                self.console.print("[dim]  apias --resume <progress.json path>[/dim]")
+                self.console.print()
+                return urls_to_retry
+            else:
+                logger.info("User declined to retry failed tasks")
+                self.console.print(
+                    f"[dim]{Symbols.get(Symbols.DOT)}[/dim] Skipping retry."
+                )
+                return []
+        except EOFError:
+            # Input stream closed (e.g., piped input exhausted)
+            logger.warning("prompt_retry_failed: EOF received, skipping retry")
+            self.console.print()
+            return []
+        except KeyboardInterrupt:
+            # User pressed Ctrl+C - respect their intention to abort
+            logger.info("prompt_retry_failed: User pressed Ctrl+C, aborting retry")
+            self.console.print()
+            return []
+        except OSError as e:
+            # I/O error (e.g., terminal closed)
+            logger.error(f"prompt_retry_failed: I/O error: {e}")
+            return []
 
     def show_circuit_breaker_dialog(
         self, trigger_reason: str, output_dir: str = ""

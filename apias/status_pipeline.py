@@ -171,7 +171,7 @@ class StatusPipeline:
         Args:
             task_id: Task ID (1-based)
             state: New task state
-            message: Status message (e.g., "⚠️ LLM timeout. Retrying...")
+            message: Status message (e.g., "⚠️ AI service timeout. Retrying...")
             progress_pct: Progress percentage (0.0-100.0)
             **kwargs: Additional fields (size_in, size_out, cost, error, chunks)
 
@@ -221,7 +221,9 @@ class StatusPipeline:
             # Update basic fields
             task.state = event.state
             task.status_message = event.message
-            task.progress_pct = event.progress_pct
+            # WHY clamp: Prevents progress overflow from buggy callers
+            # Defense in depth - batch_tui also clamps, but catch issues at source
+            task.progress_pct = max(0.0, min(100.0, event.progress_pct))
 
             # Update optional fields from extras
             if "size_in" in event.extras:
@@ -242,10 +244,7 @@ class StatusPipeline:
             # Keep status history (last 5 messages)
             # WHY: Allows TUI to show recent status changes for debugging
             if event.message:
-                # Create history list if it doesn't exist (for backward compatibility)
-                if not hasattr(task, "status_history"):
-                    task.status_history = []
-
+                # WHY: URLTask.status_history is now a proper dataclass field (no hasattr needed)
                 task.status_history.append((event.timestamp, event.message))
                 if len(task.status_history) > 5:
                     task.status_history.pop(0)  # Remove oldest
@@ -282,9 +281,7 @@ class StatusPipeline:
                 task.error = event.message
 
             # Add to status history
-            if not hasattr(task, "status_history"):
-                task.status_history = []
-
+            # WHY: URLTask.status_history is now a proper dataclass field (no hasattr needed)
             task.status_history.append((event.timestamp, f"❌ {event.message}"))
             if len(task.status_history) > 5:
                 task.status_history.pop(0)
@@ -349,7 +346,8 @@ class StatusPipeline:
                     total_chunks=task.total_chunks,
                     status_message=task.status_message,
                     # Deep copy history to ensure immutability
-                    status_history=copy.deepcopy(getattr(task, "status_history", [])),
+                    # WHY: URLTask.status_history is now a proper dataclass field (no getattr needed)
+                    status_history=copy.deepcopy(task.status_history),
                 )
 
         logger.debug(f"Created snapshot of {len(snapshot)} tasks")

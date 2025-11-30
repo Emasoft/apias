@@ -109,6 +109,8 @@ DEFAULT_TERMINAL_WIDTH: Final[int] = 80  # Standard terminal width
 DEFAULT_TERMINAL_HEIGHT: Final[int] = 24  # Standard terminal height
 # Default max length for URL truncation in TUI displays
 URL_TRUNCATE_MAX_LENGTH: Final[int] = 60  # Max chars before truncating URL
+# Default width for progress bar in stats panel
+STATS_PROGRESS_BAR_WIDTH: Final[int] = 40  # Character width of stats panel bar
 
 # --- Keyboard/Thread Timing ---
 # Keyboard listener polling interval and thread cleanup timeout
@@ -116,6 +118,10 @@ KEYBOARD_POLL_INTERVAL: Final[float] = 0.1  # seconds for keyboard input polling
 KEYBOARD_THREAD_TIMEOUT: Final[float] = (
     1.0  # seconds to wait for keyboard thread cleanup
 )
+# Scroll debounce to prevent jittery scrolling from rapid key repeats
+# WHY 50ms: Fast enough for responsive feel, slow enough to filter key repeat
+# DO NOT: Set too low (<20ms) - causes jitter; too high (>100ms) - feels sluggish
+SCROLL_DEBOUNCE_SECONDS: Final[float] = 0.05  # 50ms debounce between scroll events
 
 # ThreadPoolExecutor shutdown timeout
 # WHY: Gives running tasks time to complete gracefully before forcing exit

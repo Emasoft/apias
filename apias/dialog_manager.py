@@ -30,6 +30,7 @@ Usage:
 
 import logging
 import queue
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -121,6 +122,10 @@ class DialogManager:
         # WHY: If two dialogs have same priority, show in FIFO order
         self._dialog_counter = 0
 
+        # Lock for thread-safe counter increment
+        # WHY: _dialog_counter += 1 is not atomic - concurrent threads could get same counter
+        self._counter_lock = threading.Lock()
+
         # Subscribe to events that trigger dialogs
         event_bus.subscribe(CircuitBreakerEvent, self._queue_circuit_breaker_dialog)
         event_bus.subscribe(DialogEvent, self._queue_dialog_event)
@@ -155,8 +160,11 @@ class DialogManager:
 
         # Queue with (priority, counter, dialog) for stable ordering
         # WHY counter: Ensures FIFO ordering for dialogs with same priority
-        self._dialog_queue.put((dialog.priority.value, self._dialog_counter, dialog))
-        self._dialog_counter += 1
+        # WHY lock: _dialog_counter += 1 is not atomic - concurrent threads need synchronization
+        with self._counter_lock:
+            counter = self._dialog_counter
+            self._dialog_counter += 1
+        self._dialog_queue.put((dialog.priority.value, counter, dialog))
 
         logger.info(f"Queued CRITICAL dialog: Circuit breaker tripped - {event.reason}")
 
@@ -180,8 +188,11 @@ class DialogManager:
             context=event.context,
         )
 
-        self._dialog_queue.put((dialog.priority.value, self._dialog_counter, dialog))
-        self._dialog_counter += 1
+        # WHY lock: _dialog_counter += 1 is not atomic - concurrent threads need synchronization
+        with self._counter_lock:
+            counter = self._dialog_counter
+            self._dialog_counter += 1
+        self._dialog_queue.put((dialog.priority.value, counter, dialog))
 
         logger.debug(f"Queued {event.priority.name} dialog: {event.dialog_type.name}")
 
@@ -222,8 +233,11 @@ class DialogManager:
             },
         )
 
-        self._dialog_queue.put((dialog.priority.value, self._dialog_counter, dialog))
-        self._dialog_counter += 1
+        # WHY lock: _dialog_counter += 1 is not atomic - concurrent threads need synchronization
+        with self._counter_lock:
+            counter = self._dialog_counter
+            self._dialog_counter += 1
+        self._dialog_queue.put((dialog.priority.value, counter, dialog))
 
         logger.info(f"Queued error summary dialog: {total_errors} total errors")
 

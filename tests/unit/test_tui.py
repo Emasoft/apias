@@ -13,6 +13,7 @@ from apias.terminal_utils import (
     BaseTUIManager,
     ProcessState,
     Symbols,
+    calculate_eta,
     format_duration,
     format_size,
     truncate_url,
@@ -50,6 +51,17 @@ class TestFormatDuration:
         assert format_duration(45.7) == "45.7s"
         assert format_duration(65.9) == "1m 5s"  # Minutes mode uses int()
 
+    def test_negative_seconds_raises_value_error(self) -> None:
+        """Negative seconds raise ValueError (fail-fast on bug detection)."""
+        # WHY: Negative durations indicate clock skew, race condition, or logic error
+        # The fail-fast approach ensures bugs are caught immediately
+        with pytest.raises(ValueError, match="negative seconds"):
+            format_duration(-1)
+        with pytest.raises(ValueError, match="negative seconds"):
+            format_duration(-0.1)
+        with pytest.raises(ValueError, match="negative seconds"):
+            format_duration(-3600)
+
 
 class TestFormatSize:
     """Tests for format_size utility function."""
@@ -75,6 +87,85 @@ class TestFormatSize:
     def test_format_gigabytes(self) -> None:
         """Sizes in GB range format correctly."""
         assert format_size(1073741824) == "1.0GB"
+
+    def test_negative_bytes_raises_value_error(self) -> None:
+        """Negative bytes raise ValueError (fail-fast on bug detection)."""
+        # WHY: Negative sizes indicate data corruption, integer overflow, or logic error
+        # The fail-fast approach ensures bugs are caught immediately
+        with pytest.raises(ValueError, match="negative bytes_size"):
+            format_size(-1)
+        with pytest.raises(ValueError, match="negative bytes_size"):
+            format_size(-1024)
+        with pytest.raises(ValueError, match="negative bytes_size"):
+            format_size(-1048576)
+
+
+class TestCalculateEta:
+    """Tests for calculate_eta - verifies it NEVER returns negative values."""
+
+    def test_eta_returns_none_for_zero_progress(self) -> None:
+        """ETA is None when progress is 0% (can't estimate)."""
+        result = calculate_eta(0, 10.0)
+        assert result is None
+
+    def test_eta_returns_none_for_100_percent(self) -> None:
+        """ETA is None when progress is 100% (already done)."""
+        result = calculate_eta(100, 10.0)
+        assert result is None
+
+    def test_eta_returns_none_for_negative_progress(self) -> None:
+        """ETA is None for invalid negative progress."""
+        result = calculate_eta(-5, 10.0)
+        assert result is None
+
+    def test_eta_normal_calculation(self) -> None:
+        """ETA calculates correctly for normal progress."""
+        # 50% done in 10 seconds = 10 more seconds expected
+        result = calculate_eta(50, 10.0)
+        assert result is not None
+        assert abs(result - 10.0) < 0.01  # Allow small float error
+
+    def test_eta_never_returns_negative(self) -> None:
+        """ETA output is ALWAYS >= 0 (critical invariant for format_duration)."""
+        # This test verifies the source never generates negatives
+        test_cases = [
+            (1, 0.1),  # Very early progress
+            (50, 10),  # Normal progress
+            (99, 100),  # Almost done
+            (99.9, 1000),  # Nearly complete
+            (0.1, 0.001),  # Tiny progress, tiny elapsed
+        ]
+        for progress, elapsed in test_cases:
+            result = calculate_eta(progress, elapsed)
+            if result is not None:
+                assert (
+                    result >= 0
+                ), f"calculate_eta({progress}, {elapsed}) returned negative: {result}"
+
+    def test_eta_with_edge_case_values(self) -> None:
+        """ETA handles edge cases without producing negatives."""
+        # Very small progress - should return large but non-negative ETA
+        result = calculate_eta(0.001, 1.0)
+        if result is not None:
+            assert result >= 0
+            assert result > 99000  # Should be a very large estimate
+
+        # Progress very close to 100
+        result = calculate_eta(99.999, 100.0)
+        if result is not None:
+            assert result >= 0
+            assert result < 0.01  # Should be nearly zero
+
+    def test_negative_elapsed_raises_value_error(self) -> None:
+        """Negative elapsed time raises ValueError (fail-fast on bug detection)."""
+        # WHY: Negative elapsed indicates clock skew, pause tracking bug, or logic error
+        # The fail-fast approach ensures bugs are caught immediately
+        with pytest.raises(ValueError, match="negative elapsed_seconds"):
+            calculate_eta(50, -1.0)
+        with pytest.raises(ValueError, match="negative elapsed_seconds"):
+            calculate_eta(25, -0.001)
+        with pytest.raises(ValueError, match="negative elapsed_seconds"):
+            calculate_eta(99, -100.0)
 
 
 class TestTruncateUrl:

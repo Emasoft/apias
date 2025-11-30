@@ -146,6 +146,7 @@ from .config import KEYBOARD_THREAD_TIMEOUT  # For thread.join() timeouts
 from .config import (  # Network timeouts - DO NOT hardcode these values elsewhere; API configuration; Batch processing - DO NOT hardcode polling intervals; Thread cleanup - DO NOT hardcode thread timeouts; File system; Progress percentages - DO NOT hardcode progress values elsewhere; Use ProgressPercent.SCRAPING, ProgressPercent.SENDING, etc.
     BATCH_FINAL_STATE_PAUSE,
     BROWSER_NETWORK_IDLE_TIMEOUT,
+    DEFAULT_TERMINAL_WIDTH,
     ERROR_LOG_FILE_NAME,
     EXECUTOR_SHUTDOWN_TIMEOUT,
     FINAL_STATE_PAUSE,
@@ -329,12 +330,13 @@ XML_OUTPUT_SCHEMA = {
 }
 
 # Unicode block characters for separators and box drawing
-SEPARATOR = "━" * 80
-DOUBLE_SEPARATOR = "═" * 80
-SUCCESS_SEPARATOR = "✨" + ("━" * 78) + "✨"
-INFO_SEPARATOR = "ℹ️ " + ("─" * 76) + " ℹ️"
-ERROR_SEPARATOR = "❌" + ("━" * 78) + "❌"
-WARNING_SEPARATOR = "⚠️ " + ("─" * 76) + " ⚠️"
+# WHY DEFAULT_TERMINAL_WIDTH: Use constant instead of hardcoded 80
+SEPARATOR = "━" * DEFAULT_TERMINAL_WIDTH
+DOUBLE_SEPARATOR = "═" * DEFAULT_TERMINAL_WIDTH
+SUCCESS_SEPARATOR = "✨" + ("━" * (DEFAULT_TERMINAL_WIDTH - 2)) + "✨"
+INFO_SEPARATOR = "ℹ️ " + ("─" * (DEFAULT_TERMINAL_WIDTH - 4)) + " ℹ️"
+ERROR_SEPARATOR = "❌" + ("━" * (DEFAULT_TERMINAL_WIDTH - 2)) + "❌"
+WARNING_SEPARATOR = "⚠️ " + ("─" * (DEFAULT_TERMINAL_WIDTH - 4)) + " ⚠️"
 BOX_HORIZONTAL = "─"
 BOX_VERTICAL = "│"
 BOX_TOP_LEFT = "┌"
@@ -1392,7 +1394,12 @@ class Scraper:
                                 timeout=BROWSER_NETWORK_IDLE_TIMEOUT,
                             )
                         except PlaywrightTimeoutError:
-                            self.print_error(f"Timeout while loading {url}")
+                            # WHY explicit message: Distinguish website timeout from AI timeout
+                            # Users reported confusion about which service was slow
+                            self.print_error(
+                                f"Website scraping timeout: {url} took too long to load. "
+                                f"The target website may be slow or unresponsive."
+                            )
                         except PlaywrightError as e:
                             self.print_error(f"Error navigating to {url}: {str(e)}")
                             return None, None
@@ -1824,8 +1831,11 @@ async def make_openai_request(
         return response_dict
 
     except APITimeoutError as e:
+        # WHY explicit message: Distinguish AI service timeout from website scraping timeout
+        # Users reported confusion about which service was slow
         logger.error(
-            f"OpenAI API request timed out after {timeout_seconds:.1f}s: {str(e)}"
+            f"AI service (OpenAI) timeout: Request took longer than {timeout_seconds:.1f}s. "
+            f"The OpenAI API may be experiencing high load. Error: {str(e)}"
         )
         raise
 
@@ -3989,6 +3999,33 @@ def process_multiple_pages(
             # Use centralized pause duration - DO NOT hardcode timing values
             time.sleep(BATCH_FINAL_STATE_PAUSE)
             batch_tui.stop_live_display()
+
+            # Show final processing summary with statistics
+            # WHY: Displays success rate, cost, failed URLs before session details
+            # DO NOT: Skip this - users need to see batch completion stats
+            batch_tui.show_final_summary(output_dir=str(temp_folder))
+
+            # Prompt user to retry failed tasks (interactive mode only)
+            # WHY: Gives user chance to retry failed URLs without restarting
+            # FAIL-FAST: Returns empty list in non-interactive mode
+            urls_to_retry = batch_tui.prompt_retry_failed()
+            if urls_to_retry:
+                # Mark failed URLs as "pending" so --resume will retry them
+                # WHY: progress_tracker status determines which URLs to process on resume
+                # Setting to "pending" means they will be processed again
+                logger.info(f"Marking {len(urls_to_retry)} URLs for retry")
+                with progress_lock:
+                    for url in urls_to_retry:
+                        progress_tracker[url] = {
+                            "status": "pending",
+                            "cost": progress_tracker.get(url, {}).get("cost", 0.0),
+                        }
+                # Save to progress.json so --resume can find them
+                update_progress_file()
+                # Log the actual path for user convenience
+                logger.info(
+                    f'Progress saved. Resume with: apias --resume "{progress_file}"'
+                )
 
             # Show pending dialogs (circuit breaker, error summary)
             # WHY: DialogManager queues dialogs during processing and shows them

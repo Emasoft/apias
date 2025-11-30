@@ -71,13 +71,21 @@ class Event(ABC):
 
 
 class URLState(Enum):
-    """Task/URL processing states (mirrors existing enum in batch_tui.py)"""
+    """Task/URL processing states (mirrors existing enum in batch_tui.py).
 
-    PENDING = auto()
-    SCRAPING = auto()
-    PROCESSING = auto()
-    COMPLETE = auto()
-    FAILED = auto()
+    WHY string values: Must match batch_tui.URLState values exactly for compatibility.
+    The status_pipeline.py assigns event.state to task.state, so values must be identical.
+    DO NOT use auto() - that creates integer values which break compatibility.
+    """
+
+    PENDING = "pending"
+    SCRAPING = "scraping"
+    PROCESSING = "processing"
+    MERGING_CHUNKS = (
+        "merging"  # WHY: batch_tui has this state, must include for completeness
+    )
+    COMPLETE = "complete"
+    FAILED = "failed"
 
 
 @dataclass
@@ -91,7 +99,7 @@ class StatusEvent(Event):
     Fields:
         task_id: Numeric task identifier (1-based)
         state: Current processing state
-        message: Status message to display (e.g., "⚠️ LLM timeout. Retrying...")
+        message: Status message to display (e.g., "⚠️ AI service timeout. Retrying...")
         progress_pct: Progress percentage (0.0-100.0)
         extras: Additional fields (size_in, size_out, cost, error, chunk info)
     """
@@ -305,6 +313,10 @@ class EventBus:
         # Lock for subscriber registration (NOT needed for queue operations)
         self._lock = threading.Lock()
 
+        # Lock for metrics counters (needed for thread-safe increment)
+        # WHY separate lock: Avoids contention with subscriber registration
+        self._stats_lock = threading.Lock()
+
         # Metrics for monitoring
         self._published_count = 0
         self._dispatched_count = 0
@@ -330,7 +342,10 @@ class EventBus:
         """
         try:
             self._event_queue.put_nowait(event)
-            self._published_count += 1
+            # THREAD SAFETY: Increment counter under lock
+            # WHY: publish() is called from multiple worker threads
+            with self._stats_lock:
+                self._published_count += 1
 
             # Log at TRACE level (only if DEBUG enabled)
             logger.debug(
@@ -340,7 +355,9 @@ class EventBus:
         except queue.Full:
             # Queue full - this should NEVER happen with 10k limit
             # If it does, we're publishing faster than we can process
-            self._dropped_count += 1
+            # THREAD SAFETY: Increment counter under lock
+            with self._stats_lock:
+                self._dropped_count += 1
             logger.error(
                 f"Event queue FULL! Dropped {type(event).__name__}. Published={self._published_count}, Dropped={self._dropped_count}"
             )
@@ -404,7 +421,10 @@ class EventBus:
                 self._dispatch_to_subscribers(event)
 
                 count += 1
-                self._dispatched_count += 1
+                # THREAD SAFETY: Increment counter under lock
+                # WHY: get_stats() might be called from other threads
+                with self._stats_lock:
+                    self._dispatched_count += 1
 
             except queue.Empty:
                 # No more events to process
@@ -462,13 +482,18 @@ class EventBus:
             - dispatched: Total events dispatched
             - dropped: Events dropped due to queue full
             - pending: Events currently in queue
+
+        Thread Safety: Safe to call from any thread.
         """
-        return {
-            "published": self._published_count,
-            "dispatched": self._dispatched_count,
-            "dropped": self._dropped_count,
-            "pending": self._event_queue.qsize(),
-        }
+        # THREAD SAFETY: Read counters under lock for consistent snapshot
+        # WHY: Without lock, could read partially-updated values
+        with self._stats_lock:
+            return {
+                "published": self._published_count,
+                "dispatched": self._dispatched_count,
+                "dropped": self._dropped_count,
+                "pending": self._event_queue.qsize(),
+            }
 
     def clear(self) -> int:
         """

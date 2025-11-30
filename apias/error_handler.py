@@ -86,7 +86,9 @@ ERROR_DESCRIPTIONS: Final[Dict[ErrorCategory, str]] = {
     ErrorCategory.NONE: "No error",
     ErrorCategory.RATE_LIMIT: "API rate limit exceeded (429)",
     ErrorCategory.QUOTA_EXCEEDED: "API quota exhausted - add credits",
-    ErrorCategory.API_TIMEOUT: "API request timed out",
+    # WHY explicit "AI service": Distinguish from website/scraping timeouts
+    # Users reported confusion about which service was slow
+    ErrorCategory.API_TIMEOUT: "AI service (OpenAI) request timed out",
     ErrorCategory.CONNECTION_ERROR: "Network connection failed",
     ErrorCategory.INVALID_RESPONSE: "Invalid response from API",
     ErrorCategory.SOURCE_NOT_FOUND: "Source page not found (404)",
