@@ -577,7 +577,15 @@ def signal_handler(signum: int, frame: FrameType | None) -> None:
     # On second signal, exit immediately (user really wants to quit)
     if _shutdown_handled:
         logger.warning("Second interrupt received. Forcing immediate exit...")
-        # Use os._exit to bypass cleanup - user wants out NOW
+        # INTENTIONAL: Use os._exit to bypass ALL cleanup - user wants out NOW
+        # WHY: First Ctrl+C triggers graceful shutdown. If user presses Ctrl+C again,
+        # they're impatient and want immediate exit, even at cost of:
+        # - atexit handlers NOT running (temp folder may remain)
+        # - Context managers NOT exiting (file handles may leak)
+        # - ThreadPoolExecutor NOT shutdown (threads may continue briefly)
+        # This is a DELIBERATE design choice - do NOT change to sys.exit(1)
+        # unless you also add a mechanism for truly immediate exit.
+        # DO NOT remove os._exit - it's the "escape hatch" for unresponsive shutdown.
         os._exit(1)
 
     _shutdown_handled = True

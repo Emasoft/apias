@@ -661,7 +661,15 @@ class ErrorCollector:
                 )
 
             except Exception as e:
-                # Error in error recording - this is bad
+                # FAIL-FAST CONSIDERATION: Error recording failure
+                # WHY we DON'T re-raise: Error recording is a SECONDARY system.
+                # The PRIMARY goal is API scraping. If error recording fails:
+                # - Main processing should continue (user paid for API credits)
+                # - We log the failure for debugging
+                # - We return recorded=False so caller knows recording failed
+                # - We DON'T trip circuit breaker (that would be dangerous)
+                # DO NOT change this to re-raise unless you want a single
+                # error collector bug to crash all processing.
                 logger.error(f"CRITICAL: Failed to record error: {e}", exc_info=True)
                 return ErrorRecordResult(
                     recorded=False, circuit_tripped=False, trigger_reason=None

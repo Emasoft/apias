@@ -348,7 +348,11 @@ class BatchTUIManager(BaseTUIManager):
         self.live.start()
 
         # Wait until user presses SPACE (changes state from WAITING)
-        while self.process_state == ProcessState.WAITING:
+        # CRITICAL FIX: Also check should_stop to allow Ctrl+C exit during wait
+        # WHY: Without this check, if signal handler fails to update process_state,
+        # this becomes an infinite loop that user cannot escape.
+        # DO NOT remove the should_stop check - it's the safety valve.
+        while self.process_state == ProcessState.WAITING and not self.should_stop:
             # Use centralized polling interval - DO NOT hardcode timing values
             time.sleep(KEYBOARD_POLL_INTERVAL)
             if self.live:
@@ -730,15 +734,24 @@ class BatchTUIManager(BaseTUIManager):
     def start_live_display(self) -> None:
         """Start the live dashboard (after wait_for_start)"""
         if not self.no_tui and not self.live:
-            self.live = Live(
-                self._create_dashboard(),
-                console=self.console,
-                # Use centralized constant for refresh rate - DO NOT hardcode FPS values
-                refresh_per_second=TUI_REFRESH_FPS,
-                screen=True,
-            )
-            self.live.start()
-            logger.debug(f"Live display started at {TUI_REFRESH_FPS} FPS")
+            try:
+                self.live = Live(
+                    self._create_dashboard(),
+                    console=self.console,
+                    # Use centralized constant for refresh rate - DO NOT hardcode FPS values
+                    refresh_per_second=TUI_REFRESH_FPS,
+                    screen=True,
+                )
+                self.live.start()
+                logger.debug(f"Live display started at {TUI_REFRESH_FPS} FPS")
+            except Exception as e:
+                # CRITICAL FIX: Handle live display start failure gracefully
+                # WHY: If Rich/Live fails to initialize (terminal issues, permissions),
+                # we should fall back to no-TUI mode rather than crash the entire app.
+                # DO NOT let TUI initialization failures stop processing.
+                logger.error(f"Failed to start live display: {e}")
+                self.live = None
+                self.no_tui = True  # Fall back to no-TUI mode
 
     def update_task(
         self,
@@ -956,8 +969,17 @@ class BatchTUIManager(BaseTUIManager):
         self.stop_keyboard_listener()
 
         if self.live:
-            self.live.stop()
-            self.live = None
+            try:
+                self.live.stop()
+            except Exception as e:
+                # CRITICAL FIX: Handle stop failure gracefully
+                # WHY: If Rich/Live fails to stop cleanly (terminal corruption,
+                # already stopped), we should log but continue, not crash.
+                # DO NOT let stop failures prevent program exit.
+                logger.error(f"Failed to stop live display cleanly: {e}")
+            finally:
+                # Always clear reference regardless of stop success
+                self.live = None
 
     def show_final_summary(self, output_dir: str = "") -> None:
         """

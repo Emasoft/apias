@@ -441,9 +441,14 @@ class EventBus:
         """
         event_type = type(event)
 
-        # Get handlers for this event type (no lock needed for read)
-        # Note: dict access is atomic in CPython due to GIL
-        handlers = self._subscribers.get(event_type, [])
+        # THREAD SAFETY FIX: Make a defensive copy of handlers list
+        # WHY: While dict.get() is atomic in CPython, iterating over the returned
+        # list is NOT protected. If subscribe() is called during iteration,
+        # the list could be modified mid-iteration causing race conditions.
+        # DO NOT rely on GIL for thread safety - it only guarantees atomic operations,
+        # not iteration safety over mutable collections.
+        with self._lock:
+            handlers = list(self._subscribers.get(event_type, []))
 
         if not handlers:
             logger.debug(

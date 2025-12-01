@@ -258,9 +258,23 @@ class LoggerInterceptor:
         try:
             self._session_log_handler.emit(record)
         except Exception as e:
-            # If session log fails, we can't do much (can't log the failure!)
-            # Just increment the error count
-            pass
+            # CRITICAL FIX: Track emit failures instead of silently ignoring
+            # WHY: Silent failures make debugging impossible. The comment said
+            # "increment error count" but the code did nothing (pass).
+            # DO NOT use bare 'pass' in except blocks - always track failures.
+            if not hasattr(self, "_emit_error_count"):
+                self._emit_error_count = 0
+            self._emit_error_count += 1
+            # Write to stderr as last resort (only first 5 failures to avoid spam)
+            # NOTE: sys is already imported at module level (line 41)
+            if self._emit_error_count <= 5:
+                try:
+                    sys.stderr.write(
+                        f"[LOGGER_INTERCEPTOR] Session log emit failed: {e}\n"
+                    )
+                    sys.stderr.flush()
+                except Exception:
+                    pass  # Truly nothing we can do if stderr fails
 
     def get_stats(self) -> dict:
         """

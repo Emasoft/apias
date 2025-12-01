@@ -5,6 +5,18 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.22] - 2025-12-02
+
+### Critical Fixes (Comprehensive Codebase Audit)
+- Fix race condition in event dispatch - subscriber list modification during iteration by @Emasoft
+- Fix terminal not restored on all exceptions in keyboard listener by @Emasoft
+- Fix silent emit() failure in logger interceptor - now tracks and reports errors by @Emasoft
+- Fix TUI exception handling gaps - start/stop_live_display now have try-except by @Emasoft
+- Fix wait_for_start() infinite loop - now checks should_stop flag by @Emasoft
+- Fix TOCTOU race condition in dialog_manager queue drain by @Emasoft
+- Document intentional os._exit() usage for emergency shutdown by @Emasoft
+- Add comprehensive WHY/DO NOT comments explaining design decisions by @Emasoft
+
 ## [0.1.21] - 2025-12-01
 
 ### Critical Fixes (Retry Loop Audit)

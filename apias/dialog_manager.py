@@ -270,7 +270,12 @@ class DialogManager:
         logger.info(f"Showing {dialog_count} pending dialogs")
 
         shown_count = 0
-        while not self._dialog_queue.empty():
+        # CRITICAL FIX: Use while True instead of checking empty()
+        # WHY: Classic TOCTOU (Time-of-check to time-of-use) race condition:
+        # Thread A checks empty() → False, Thread B drains queue,
+        # Thread A calls get_nowait() → raises queue.Empty
+        # DO NOT use "while not queue.empty()" pattern - always rely on exception.
+        while True:
             try:
                 # Get highest priority dialog
                 # Format: (priority_value, counter, DialogRequest)
@@ -281,7 +286,7 @@ class DialogManager:
                 shown_count += 1
 
             except queue.Empty:
-                # Queue is empty (shouldn't happen due to while condition, but safe)
+                # Queue is empty - normal exit condition
                 break
 
         logger.info(f"Showed {shown_count} dialogs")

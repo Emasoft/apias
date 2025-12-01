@@ -628,9 +628,16 @@ class KeyboardListener:
                 ):
                     char = sys.stdin.read(1)
                     self._handle_key_unix(char)
-        except (termios.error, OSError, ValueError) as e:
+        except Exception as e:
+            # CRITICAL FIX: Catch ALL exceptions, not just specific ones
+            # WHY: KeyboardInterrupt or other unexpected exceptions would bypass
+            # the except clause and skip to finally, but we should log them.
+            # DO NOT catch only specific exceptions - terminal settings MUST be
+            # restored regardless of what exception type occurs.
             logger.debug(f"Keyboard listener error: {e}")
         finally:
+            # CRITICAL: Terminal restoration ALWAYS runs due to finally block
+            # WHY: If terminal is left in raw/cbreak mode, user's shell is corrupted
             self._restore_terminal()
 
     def _handle_key_unix(self, char: str) -> None:
