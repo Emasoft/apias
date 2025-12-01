@@ -47,6 +47,10 @@ from apias.config import (
 )
 
 # Import shared terminal utilities for cross-platform support
+# DRY: format_size is a utility function - don't duplicate it locally
+from apias.terminal_utils import (
+    format_size,  # DRY: Single source of truth for size formatting
+)
 from apias.terminal_utils import (
     BaseTUIManager,
     ProcessState,
@@ -1051,15 +1055,8 @@ class BatchTUIManager(BaseTUIManager):
         total_size_out = sum(t.size_out for t in self.tasks.values() if t.size_out > 0)
         total_size_in = sum(t.size_in for t in self.tasks.values() if t.size_in > 0)
 
-        # Format size for display
-        def format_size(size_bytes: int) -> str:
-            """Format bytes into human-readable string."""
-            if size_bytes < 1024:
-                return f"{size_bytes} B"
-            elif size_bytes < 1024 * 1024:
-                return f"{size_bytes / 1024:.1f} KB"
-            else:
-                return f"{size_bytes / (1024 * 1024):.2f} MB"
+        # DRY: format_size is imported from terminal_utils.py - single source of truth
+        # DO NOT define a local format_size function here (was previous DRY violation)
 
         stats_table.add_row(
             "Success Rate",

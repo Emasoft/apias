@@ -46,10 +46,23 @@ from typing import Any, Dict, List, Optional, Set
 
 import yaml  # type: ignore[import-untyped]
 
-from apias.event_system import CircuitBreakerEvent, ErrorCategory, ErrorEvent, EventBus
+# DRY PRINCIPLE: Import ErrorCategory and RECOVERABLE_CATEGORIES from single source
+# DO NOT define duplicate enums or sets - use the canonical event_system versions
+from apias.event_system import (
+    RECOVERABLE_CATEGORIES,
+    CircuitBreakerEvent,
+    ErrorCategory,
+    ErrorEvent,
+    EventBus,
+)
 
-# Explicitly re-export ErrorCategory for type-safe imports
-__all__ = ["ErrorCategory", "ErrorCollector", "load_error_config"]
+# Explicitly re-export for backwards compatibility
+__all__ = [
+    "ErrorCategory",
+    "ErrorCollector",
+    "load_error_config",
+    "RECOVERABLE_CATEGORIES",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -57,15 +70,8 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 # Constants and Configuration
 # ============================================================================
-
-# Recoverable error categories (can be retried)
-RECOVERABLE_CATEGORIES: Set[ErrorCategory] = {
-    ErrorCategory.API_TIMEOUT,
-    ErrorCategory.CONNECTION_ERROR,
-    ErrorCategory.SERVER_ERROR,
-    ErrorCategory.PARSE_ERROR,
-    ErrorCategory.XML_VALIDATION,
-}
+# Note: RECOVERABLE_CATEGORIES is imported from event_system.py - single source of truth
+# DO NOT redefine it here - this was the previous DRY violation
 
 # Default thresholds if config file missing
 DEFAULT_THRESHOLDS: Dict[ErrorCategory, int] = {

@@ -5,6 +5,23 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.23] - 2025-12-02
+
+### DRY Principle Compliance (Code Deduplication)
+- Consolidate duplicate ErrorCategory enum into single source in event_system.py by @Emasoft
+- Consolidate duplicate RECOVERABLE_CATEGORIES into event_system.py by @Emasoft
+- Remove duplicate format_size() function from batch_tui.py - now imports from terminal_utils.py by @Emasoft
+- Add missing hardcoded values to config.py: EVENT_DISPATCH_TIMEOUT, EVENT_DISPATCH_FAST_TIMEOUT, HTML_CHUNK_SIZE, HTML_MAX_CHUNK_SIZE by @Emasoft
+- Update apias.py, event_system.py, status_pipeline.py to use centralized config constants by @Emasoft
+
+### Platform Compatibility
+- Fix terminal size detection in apias.py - add try/except with fallback for headless/CI environments by @Emasoft
+- Add DEFAULT_TERMINAL_WIDTH fallback from config.py in _clear_line() and create_summary_box() by @Emasoft
+
+### Documentation
+- Add comprehensive WHY/DO NOT comments explaining DRY consolidation decisions by @Emasoft
+- Update docstrings to reference centralized config constants by @Emasoft
+
 ## [0.1.22] - 2025-12-02
 
 ### Critical Fixes (Comprehensive Codebase Audit)

@@ -24,8 +24,9 @@ Usage:
     # Publish (from worker thread)
     event_bus.publish(ErrorEvent(...))
 
-    # Process (from main thread)
-    event_bus.dispatch(timeout=0.05)
+    # Process (from main thread) - use centralized timeout from config.py
+    from apias.config import EVENT_DISPATCH_TIMEOUT
+    event_bus.dispatch(timeout=EVENT_DISPATCH_TIMEOUT)
 """
 
 import logging
@@ -112,16 +113,21 @@ class StatusEvent(Event):
 
 class ErrorCategory(Enum):
     """
-    Error classification for tracking and circuit breaker logic.
+    SINGLE SOURCE OF TRUTH for error classification across APIAS.
 
     These categories determine:
     - Circuit breaker thresholds (per-category in YAML config)
-    - Error recoverability (some errors are fatal, others transient)
+    - Error recoverability (via RECOVERABLE_CATEGORIES set below)
     - User messaging (different guidance per category)
+    - Summary reporting icons and descriptions
 
-    NOTE: This mirrors ErrorCategory in error_handler.py.
-    Eventually we'll consolidate to use this enum in both places.
+    DRY PRINCIPLE: This enum is THE definitive error classification.
+    DO NOT create duplicate ErrorCategory enums elsewhere.
+    Import this: `from apias.event_system import ErrorCategory, RECOVERABLE_CATEGORIES`
     """
+
+    # Success state
+    NONE = auto()  # No error - successful operation
 
     # API Errors
     QUOTA_EXCEEDED = auto()  # Insufficient API quota - FATAL
@@ -142,6 +148,26 @@ class ErrorCategory(Enum):
 
     # Unknown
     UNKNOWN = auto()  # Unclassified error
+
+
+# =============================================================================
+# RECOVERABLE CATEGORIES - Single source of truth for retry logic
+# =============================================================================
+# IMPORTANT: RATE_LIMIT is NOT recoverable - hitting API limits means we should
+# stop immediately to avoid wasting time and potentially being banned.
+# Only transient errors (timeout, connection, server error) are recoverable.
+# DRY: Import this set - DO NOT recreate elsewhere.
+RECOVERABLE_CATEGORIES: frozenset[ErrorCategory] = frozenset(
+    {
+        ErrorCategory.API_TIMEOUT,
+        ErrorCategory.CONNECTION_ERROR,
+        ErrorCategory.SERVER_ERROR,
+        # Parse/validation errors can be retried with different input
+        ErrorCategory.PARSE_ERROR,
+        ErrorCategory.XML_VALIDATION,
+        ErrorCategory.INVALID_RESPONSE,
+    }
+)
 
 
 @dataclass

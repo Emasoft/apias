@@ -70,6 +70,27 @@ RETRY_BASE_DELAY_SECONDS: Final[float] = 1.0
 # Maximum delay cap to prevent excessively long waits
 RETRY_MAX_DELAY_SECONDS: Final[float] = 30.0
 
+# --- Event System Timeouts ---
+# Event dispatch timeout for processing queued events in main loop
+# WHY 50ms: Long enough to process multiple events, short enough for responsive TUI
+EVENT_DISPATCH_TIMEOUT: Final[float] = (
+    0.05  # seconds (50ms) for standard event processing
+)
+# Fast timeout for tight processing loops where responsiveness is critical
+# WHY 10ms: Minimizes latency in rapid-fire processing loops
+EVENT_DISPATCH_FAST_TIMEOUT: Final[float] = (
+    0.01  # seconds (10ms) for fast loop processing
+)
+
+# --- HTML Content Chunking ---
+# Maximum characters per HTML chunk for AI processing
+# WHY 200000: Large chunks reduce API calls but must fit within model context window
+# GPT-4 has 128K context, so 200K chars (~50K tokens) leaves room for response
+HTML_MAX_CHUNK_SIZE: Final[int] = 200000  # Max chars for very large pages
+# Default chunk size for normal processing - smaller for better accuracy
+# WHY 80000: Balance between API cost efficiency and processing reliability
+HTML_CHUNK_SIZE: Final[int] = 80000  # Default chunk size for chunking
+
 # --- Batch Processing ---
 DEFAULT_NUM_THREADS: Final[int] = 5  # Default concurrent threads for batch mode
 MAX_SAFE_THREADS: Final[int] = 20  # Warn if more threads requested

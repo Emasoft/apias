@@ -24,8 +24,11 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum, auto
 from typing import Dict, Final, List, Optional
+
+# DRY PRINCIPLE: Import ErrorCategory and RECOVERABLE_CATEGORIES from single source
+# DO NOT define a duplicate ErrorCategory enum here - use the canonical one
+from apias.event_system import RECOVERABLE_CATEGORIES, ErrorCategory
 
 # Module-level logger for tracing error classification and circuit breaker events
 # This enables debugging of error handling behavior without code changes
@@ -40,33 +43,10 @@ DEFAULT_CONSECUTIVE_THRESHOLD: Final[int] = 3  # Errors before circuit trips
 DEFAULT_MAX_ERRORS: Final[int] = 1000  # Max errors to track (prevents memory bloat)
 DEFAULT_QUOTA_IMMEDIATE_STOP: Final[bool] = True  # Stop immediately on quota exceeded
 
-
-class ErrorCategory(Enum):
-    """
-    Classification of error types for summary reporting.
-
-    Each category maps to a specific class of failure that helps users
-    understand WHY their job failed and what action to take.
-
-    Categories are ordered by severity - fatal errors that cannot be
-    retried should be checked first in classification logic.
-    """
-
-    NONE = auto()  # No error - successful operation
-    RATE_LIMIT = auto()  # 429 Too Many Requests - can retry after delay
-    QUOTA_EXCEEDED = auto()  # Insufficient quota - FATAL, must add credits
-    API_TIMEOUT = auto()  # Request timeout - can retry
-    CONNECTION_ERROR = auto()  # Network/connection failure - can retry
-    INVALID_RESPONSE = auto()  # XML validation failed - may need different prompt
-    SOURCE_NOT_FOUND = auto()  # Page not found (404) - skip this URL
-    AUTHENTICATION = auto()  # API key invalid - FATAL, fix credentials
-    SERVER_ERROR = auto()  # 5xx errors - can retry later
-    UNKNOWN = auto()  # Unclassified errors - investigate logs
-
-
 # =============================================================================
 # ERROR METADATA TABLES - Centralized display info for each category
 # =============================================================================
+# Note: ErrorCategory and RECOVERABLE_CATEGORIES are imported from event_system.py
 # DO NOT duplicate these strings elsewhere - always use get_error_icon/description
 
 ERROR_ICONS: Final[Dict[ErrorCategory, str]] = {
@@ -78,7 +58,10 @@ ERROR_ICONS: Final[Dict[ErrorCategory, str]] = {
     ErrorCategory.INVALID_RESPONSE: "XML",
     ErrorCategory.SOURCE_NOT_FOUND: "404",
     ErrorCategory.AUTHENTICATION: "KEY",
+    ErrorCategory.INVALID_API_KEY: "KEY",  # Same icon as AUTHENTICATION
     ErrorCategory.SERVER_ERROR: "5xx",
+    ErrorCategory.PARSE_ERROR: "HTM",  # HTML parsing errors
+    ErrorCategory.XML_VALIDATION: "XSD",  # XML schema validation errors
     ErrorCategory.UNKNOWN: "???",
 }
 
@@ -93,21 +76,15 @@ ERROR_DESCRIPTIONS: Final[Dict[ErrorCategory, str]] = {
     ErrorCategory.INVALID_RESPONSE: "Invalid response from API",
     ErrorCategory.SOURCE_NOT_FOUND: "Source page not found (404)",
     ErrorCategory.AUTHENTICATION: "API key invalid or expired",
+    ErrorCategory.INVALID_API_KEY: "API key invalid or missing",
     ErrorCategory.SERVER_ERROR: "API server error (5xx)",
+    ErrorCategory.PARSE_ERROR: "HTML parsing failed",
+    ErrorCategory.XML_VALIDATION: "XML validation failed",
     ErrorCategory.UNKNOWN: "Unknown error occurred",
 }
 
-# Categories that are recoverable (can be retried)
-# IMPORTANT: RATE_LIMIT is NOT recoverable - it means we're hitting API limits
-# and should stop immediately to avoid wasting time and potentially being banned.
-# Only transient errors (timeout, connection, server error) are recoverable.
-RECOVERABLE_CATEGORIES: Final[frozenset[ErrorCategory]] = frozenset(
-    {
-        ErrorCategory.API_TIMEOUT,
-        ErrorCategory.CONNECTION_ERROR,
-        ErrorCategory.SERVER_ERROR,
-    }
-)
+# Note: RECOVERABLE_CATEGORIES is imported from event_system.py - single source of truth
+# DO NOT redefine it here
 
 
 @dataclass

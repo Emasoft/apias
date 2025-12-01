@@ -29,8 +29,9 @@ Usage:
         progress_pct=40.0
     )
 
-    # Main thread waits and renders
-    critical = status_pipeline.wait_for_update(timeout=0.05)
+    # Main thread waits and renders - use centralized timeout from config.py
+    from apias.config import EVENT_DISPATCH_TIMEOUT
+    critical = status_pipeline.wait_for_update(timeout=EVENT_DISPATCH_TIMEOUT)
     snapshot = status_pipeline.get_snapshot()
     render_tui(snapshot)
 """
@@ -371,8 +372,9 @@ class StatusPipeline:
         responsive TUI updates while remaining efficient.
 
         Example:
+            from apias.config import EVENT_DISPATCH_TIMEOUT
             while not done:
-                critical = status_pipeline.wait_for_update(timeout=0.05)
+                critical = status_pipeline.wait_for_update(timeout=EVENT_DISPATCH_TIMEOUT)
                 if critical:
                     # Circuit breaker tripped - handle immediately
                     show_circuit_breaker_dialog()

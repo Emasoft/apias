@@ -142,6 +142,10 @@ from requests.exceptions import RequestException
 
 from .batch_tui import BatchTUIManager, URLState
 from .config import BATCH_TUI_POLL_INTERVAL  # For hybrid polling in batch mode
+from .config import EVENT_DISPATCH_FAST_TIMEOUT  # For tight loop event processing
+from .config import EVENT_DISPATCH_TIMEOUT  # For standard event processing
+from .config import HTML_CHUNK_SIZE  # Default chunk size for HTML chunking
+from .config import HTML_MAX_CHUNK_SIZE  # Maximum chunk size for very large pages
 from .config import KEYBOARD_THREAD_TIMEOUT  # For thread.join() timeouts
 from .config import (  # Network timeouts - DO NOT hardcode these values elsewhere; API configuration; Batch processing - DO NOT hardcode polling intervals; Thread cleanup - DO NOT hardcode thread timeouts; File system; Progress percentages - DO NOT hardcode progress values elsewhere; Use ProgressPercent.SCRAPING, ProgressPercent.SENDING, etc.
     BATCH_FINAL_STATE_PAUSE,
@@ -1183,8 +1187,17 @@ class Spinner:
 
     def _clear_line(self) -> None:
         if not self.quiet:
+            # PLATFORM SAFETY: get_terminal_size() can fail in headless/CI environments
+            # WHY: In Docker, CI pipelines, or non-TTY contexts, there's no terminal
+            # DO NOT remove try/except - causes crashes in headless mode
+            try:
+                term_width = shutil.get_terminal_size().columns
+            except OSError:
+                term_width = (
+                    DEFAULT_TERMINAL_WIDTH  # Use centralized fallback from config
+                )
             print(
-                "\r" + " " * (shutil.get_terminal_size().columns - 1),
+                "\r" + " " * (term_width - 1),
                 end="",
                 flush=True,
             )
@@ -1915,11 +1928,20 @@ async def call_openai_api(
     return content, request_cost
 
 
-def chunk_html_by_size(html_content: str, max_chars: int = 200000) -> List[str]:
+def chunk_html_by_size(
+    html_content: str, max_chars: int = HTML_MAX_CHUNK_SIZE
+) -> List[str]:
     """
     Split HTML content into chunks that won't exceed token limits.
     Tries to split on logical boundaries (doc objects, sections).
-    Max chars ~200K = ~85K tokens with safety margin for GPT-5 Nano.
+
+    Args:
+        html_content: The HTML content to split
+        max_chars: Maximum characters per chunk. Default from config.HTML_MAX_CHUNK_SIZE
+                   (~200K chars = ~85K tokens with safety margin for GPT-5 Nano)
+
+    Returns:
+        List of HTML chunk strings
     """
     if len(html_content) <= max_chars:
         return [html_content]
@@ -2131,9 +2153,10 @@ async def call_llm_to_convert_html_to_xml(
         error_collector: Optional ErrorCollector for comprehensive error tracking
         url: Optional URL being processed (for error reporting)
     """
-    # Reduced chunk size to ~80K chars (~27K tokens worst-case with 1:1 ratio)
+    # Use centralized chunk size from config.py - DO NOT hardcode
+    # HTML_CHUNK_SIZE (~80K chars = ~27K tokens worst-case with 1:1 ratio)
     # This ensures each chunk stays well within GPT-5 Nano's safe input limits
-    chunks = chunk_html_by_size(html_content, max_chars=80000)
+    chunks = chunk_html_by_size(html_content, max_chars=HTML_CHUNK_SIZE)
     num_chunks = len(chunks)
     logger.info(f"Processing content in {num_chunks} chunk(s)")
 
@@ -3861,7 +3884,8 @@ def process_multiple_pages(
                 # PROCESS EVENTS: Dispatch all pending events from worker threads
                 # WHY: EventBus.dispatch() processes StatusEvent, ErrorEvent, etc.
                 # that were published by process_url() in worker threads
-                event_bus.dispatch(timeout=0.01)
+                # Use centralized fast timeout from config - DO NOT hardcode
+                event_bus.dispatch(timeout=EVENT_DISPATCH_FAST_TIMEOUT)
 
                 # CHECK COMPLETED FUTURES: Non-blocking check
                 # WHY: timeout=0 means don't wait for completion, just check status
@@ -4085,7 +4109,8 @@ def process_multiple_pages(
                         critical = status_pipeline.wait_for_update(
                             timeout=BATCH_TUI_POLL_INTERVAL
                         )
-                        event_bus.dispatch(timeout=0.01)
+                        # Use centralized fast timeout from config - DO NOT hardcode
+                        event_bus.dispatch(timeout=EVENT_DISPATCH_FAST_TIMEOUT)
 
                         # Check completed futures (non-blocking)
                         done, _ = concurrent.futures.wait(
@@ -5082,7 +5107,14 @@ def start_single_scrape(
 
 
 def create_summary_box(summary_data: Dict[str, str]) -> str:
-    terminal_width = shutil.get_terminal_size().columns
+    # PLATFORM SAFETY: get_terminal_size() can fail in headless/CI environments
+    # WHY: In Docker, CI pipelines, or non-TTY contexts, there's no terminal
+    # DO NOT remove try/except - causes crashes in headless mode
+    try:
+        terminal_width = shutil.get_terminal_size().columns
+    except OSError:
+        terminal_width = DEFAULT_TERMINAL_WIDTH  # Use centralized fallback from config
+
     max_label_length = max(len(label) for label in summary_data.keys())
     max_value_length = max(len(str(value)) for value in summary_data.values())
 
