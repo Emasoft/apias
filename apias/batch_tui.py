@@ -863,7 +863,10 @@ class BatchTUIManager(BaseTUIManager):
             # WHY group: MERGING_CHUNKS is a sub-phase of processing
             self.stats.processing = max(0, self.stats.processing - 1)
         elif old_state == URLState.COMPLETE:
-            # WHY: Retry resets completed tasks - shouldn't happen but handle gracefully
+            # WHY: Retry resets completed tasks - decrement completed count
+            # NOTE: Cost is NOT subtracted here because we want to track TOTAL spending
+            # even for retried tasks. The cost was real API usage that happened.
+            # DO NOT subtract cost - it would misrepresent actual resource consumption
             self.stats.completed = max(0, self.stats.completed - 1)
         elif old_state == URLState.FAILED:
             # WHY: Retry resets failed tasks - decrement failed count

@@ -5,6 +5,16 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2025-12-01
+
+### Critical Fixes (Retry Loop Audit)
+- Add missing circuit breaker check in retry loop (was ignoring rate limits) by @Emasoft
+- Capture critical flag from wait_for_update() to detect circuit breaker events by @Emasoft
+- Remove double state update (status_pipeline + batch_tui) that caused stats double-counting by @Emasoft
+- Update progress_tracker after each retry completes (was missing) by @Emasoft
+- Save progress file after retry round completes for proper --resume support by @Emasoft
+- Add clarifying comment about cost tracking during retries by @Emasoft
+
 ## [0.1.20] - 2025-11-30
 
 ### Bug Fixes

@@ -4012,30 +4012,26 @@ def process_multiple_pages(
                 # WHY: User expects immediate retry when they press "Y", not a manual restart
                 logger.info(f"Retrying {len(urls_to_retry)} failed URLs...")
 
-                # Reset task states for retry URLs so they show as pending in TUI
+                # Reset task states for retry URLs
+                # WHY: Only update status_pipeline - render_snapshot() syncs to batch_tui
+                # DO NOT update both - causes double-counting in stats
                 for url in urls_to_retry:
-                    # WHY direct access: URL exists in mapping since it came from batch_tui.prompt_retry_failed()
                     if url not in url_to_task_id:
                         logger.warning(f"Unknown URL in retry list: {url}")
                         continue
                     task_id = url_to_task_id[url]
                     if task_id:
-                        # Reset task state in status_pipeline for fresh processing
+                        # Reset task state in status_pipeline only
+                        # WHY: render_snapshot() calls batch_tui.update_task() to sync state
+                        # Calling both would trigger _update_stats() twice
                         status_pipeline.update_status(
                             task_id=task_id,
                             state=URLState.PENDING,
                             message="Queued for retry",
                             progress_pct=0.0,
                         )
-                        # Reset in batch_tui directly as well
-                        batch_tui.update_task(
-                            task_id=task_id,
-                            state=URLState.PENDING,
-                            progress_pct=0.0,
-                            status_message="Queued for retry",
-                        )
 
-                # Mark in progress tracker
+                # Mark in progress tracker as pending for retry
                 with progress_lock:
                     for url in urls_to_retry:
                         progress_tracker[url] = {
@@ -4043,6 +4039,11 @@ def process_multiple_pages(
                             "cost": progress_tracker.get(url, {}).get("cost", 0.0),
                         }
                 update_progress_file()
+
+                # Sync state to TUI before starting display
+                # WHY: Ensures TUI shows "Queued for retry" state before processing starts
+                snapshot = status_pipeline.get_snapshot()
+                batch_tui.render_snapshot(snapshot)
 
                 # Restart TUI display for retry round
                 batch_tui.start_live_display()
@@ -4069,31 +4070,52 @@ def process_multiple_pages(
                     }
 
                     # Run retry processing loop
+                    # WHY: Same structure as main loop but with circuit breaker check
                     while retry_future_to_url:
-                        # Poll for updates
-                        status_pipeline.wait_for_update(timeout=BATCH_TUI_POLL_INTERVAL)
+                        # Poll for updates - CAPTURE critical flag for circuit breaker
+                        # BUG FIX: Previously didn't capture return value
+                        critical = status_pipeline.wait_for_update(
+                            timeout=BATCH_TUI_POLL_INTERVAL
+                        )
                         event_bus.dispatch(timeout=0.01)
 
-                        # Check completed futures
-                        done, pending = concurrent.futures.wait(
+                        # Check completed futures (non-blocking)
+                        done, _ = concurrent.futures.wait(
                             retry_future_to_url.keys(),
                             timeout=0,
                             return_when=concurrent.futures.FIRST_COMPLETED,
                         )
 
-                        # Update TUI
+                        # Update TUI with atomic snapshot
                         snapshot = status_pipeline.get_snapshot()
                         batch_tui.render_snapshot(snapshot)
 
-                        # Check for shutdown
+                        # Check for shutdown or user cancellation
                         if shutdown_flag or batch_tui.should_stop:
+                            logger.info("Shutdown requested during retry. Cancelling.")
+                            retry_executor.shutdown(wait=True, cancel_futures=True)
+                            break
+
+                        # CHECK CIRCUIT BREAKER during retry
+                        # BUG FIX: Previously missing - retry wouldn't stop on rate limits
+                        # WHY: Same protection as main loop - stop on repeated errors
+                        if critical and error_collector.is_tripped:
+                            trigger_reason = (
+                                error_collector.trigger_reason or "Unknown error"
+                            )
+                            logger.warning(
+                                f"Circuit breaker triggered during retry: {trigger_reason}"
+                            )
                             retry_executor.shutdown(wait=True, cancel_futures=True)
                             break
 
                         # Process completed futures
-                        for future in done:
+                        # WHY: Collect URLs to delete after iteration to avoid dict modification during iteration
+                        completed_futures = list(done)
+                        for future in completed_futures:
                             url = retry_future_to_url[future]
                             task_id = url_to_task_id[url]
+                            retry_status = "failed"  # Track for progress_tracker
                             try:
                                 xml_content = future.result()
                                 if xml_content:
@@ -4104,6 +4126,7 @@ def process_multiple_pages(
                                         message="Retry completed successfully",
                                         progress_pct=100.0,
                                     )
+                                    retry_status = "successful"
                                 else:
                                     status_pipeline.update_status(
                                         task_id=task_id,
@@ -4121,7 +4144,20 @@ def process_multiple_pages(
                                     progress_pct=0.0,
                                     error=str(e),
                                 )
+                            # Update progress tracker with retry result
+                            # BUG FIX: Previously didn't update progress after retry
+                            with progress_lock:
+                                progress_tracker[url] = {
+                                    "status": retry_status,
+                                    "cost": progress_tracker.get(url, {}).get(
+                                        "cost", 0.0
+                                    ),
+                                }
                             del retry_future_to_url[future]
+
+                    # Save progress after retry round completes
+                    # WHY: Persist retry results so --resume works correctly
+                    update_progress_file()
 
                 # Final update after retry
                 snapshot = status_pipeline.get_snapshot()
