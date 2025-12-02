@@ -224,6 +224,98 @@ SUPPORTED_MODELS: Dict[str, Dict[str, Any]] = {
     },
 }
 
+# Cost Estimation Constants
+# Output/Input token ratios from real APIAS usage (November 2025, 899 requests)
+# These ratios are task-dependent, not model-dependent
+COST_RATIO_CONSERVATIVE: Final[float] = 0.58  # P50 median - most common case
+COST_RATIO_AVERAGE: Final[float] = 1.84  # Mean - mixed workloads
+COST_RATIO_WORST_CASE: Final[float] = 11.82  # P95 - complex extraction
+
+# Token estimation: approximately 4 characters per token for English text
+CHARS_PER_TOKEN: Final[int] = 4
+
+# Model pricing per million tokens (USD) - from LiteLLM (December 2025)
+MODEL_PRICING: Dict[str, Dict[str, float]] = {
+    "gpt-5-nano": {"input": 0.05, "output": 0.40},
+    "gpt-5-mini": {"input": 0.25, "output": 2.00},
+    "gpt-5": {"input": 1.25, "output": 10.00},
+    "gpt-5.1": {"input": 1.25, "output": 10.00},
+    "gpt-5-pro": {"input": 15.00, "output": 120.00},
+}
+
+
+def estimate_tokens(text: str) -> int:
+    """Estimate token count from text using character approximation.
+
+    Uses the standard approximation of ~4 characters per token for English text.
+    This is accurate enough for cost estimation purposes.
+
+    Args:
+        text: The text to estimate tokens for
+
+    Returns:
+        Estimated token count
+    """
+    return max(1, len(text) // CHARS_PER_TOKEN)
+
+
+def estimate_cost(
+    input_tokens: int,
+    model: str = DEFAULT_MODEL,
+    ratio: float = COST_RATIO_CONSERVATIVE,
+) -> tuple[float, float, float]:
+    """Estimate processing cost based on input tokens and output ratio.
+
+    Args:
+        input_tokens: Number of input tokens
+        model: Model name (must be in MODEL_PRICING)
+        ratio: Output/input token ratio (default: conservative P50)
+
+    Returns:
+        Tuple of (input_cost, output_cost, total_cost) in USD
+    """
+    pricing = MODEL_PRICING.get(model, MODEL_PRICING[DEFAULT_MODEL])
+    output_tokens = int(input_tokens * ratio)
+
+    # Convert to millions for pricing calculation
+    input_cost = (input_tokens / 1_000_000) * pricing["input"]
+    output_cost = (output_tokens / 1_000_000) * pricing["output"]
+
+    return (input_cost, output_cost, input_cost + output_cost)
+
+
+def get_cost_estimates(
+    input_tokens: int, model: str = DEFAULT_MODEL
+) -> Dict[str, Dict[str, float]]:
+    """Get cost estimates for all three scenarios.
+
+    Args:
+        input_tokens: Number of input tokens
+        model: Model name
+
+    Returns:
+        Dict with 'conservative', 'average', 'worst_case' scenarios,
+        each containing 'input_cost', 'output_cost', 'total_cost', 'output_tokens'
+    """
+    scenarios = {
+        "conservative": COST_RATIO_CONSERVATIVE,
+        "average": COST_RATIO_AVERAGE,
+        "worst_case": COST_RATIO_WORST_CASE,
+    }
+
+    results: Dict[str, Dict[str, float]] = {}
+    for name, ratio in scenarios.items():
+        input_cost, output_cost, total_cost = estimate_cost(input_tokens, model, ratio)
+        results[name] = {
+            "input_cost": input_cost,
+            "output_cost": output_cost,
+            "total_cost": total_cost,
+            "output_tokens": int(input_tokens * ratio),
+            "ratio": ratio,
+        }
+
+    return results
+
 
 @dataclass
 class APIASConfig:

@@ -5075,6 +5075,199 @@ def check_for_resumable_sessions() -> str | None:
             return None
 
 
+def display_cost_estimation(
+    html_content: str,
+    model: str,
+    num_pages: int = 1,
+) -> bool:
+    """Display cost estimation with 3 scenarios and model comparison.
+
+    Args:
+        html_content: The scraped HTML content
+        model: The selected model name
+        num_pages: Number of pages (for batch mode)
+
+    Returns:
+        True if user wants to proceed, False otherwise
+    """
+    from apias.config import (
+        COST_RATIO_AVERAGE,
+        COST_RATIO_CONSERVATIVE,
+        COST_RATIO_WORST_CASE,
+        MODEL_PRICING,
+        SUPPORTED_MODELS,
+        estimate_tokens,
+        get_cost_estimates,
+    )
+
+    # Calculate input tokens
+    input_tokens = estimate_tokens(html_content)
+    total_input_tokens = input_tokens * num_pages
+
+    # Get cost estimates for selected model
+    estimates = get_cost_estimates(total_input_tokens, model)
+
+    # Display header
+    print("\n" + "=" * 70)
+    print("  COST ESTIMATION")
+    print("=" * 70)
+    print(
+        f"\n  Scraped Content: {len(html_content):,} characters ({num_pages} page(s))"
+    )
+    print(f"  Estimated Input Tokens: {total_input_tokens:,}")
+    print(f"  Selected Model: {model}")
+    print()
+
+    # Display 3 scenarios
+    print("  Cost Scenarios (based on real APIAS usage data):")
+    print("  " + "-" * 66)
+    print(f"  {'Scenario':<20} {'Output Tokens':>15} {'Cost':>12} {'Notes':<20}")
+    print("  " + "-" * 66)
+
+    scenarios = [
+        ("Conservative (P50)", estimates["conservative"], "Most common case"),
+        ("Average", estimates["average"], "Mixed workloads"),
+        ("Worst Case (P95)", estimates["worst_case"], "Complex extraction"),
+    ]
+
+    for name, data, notes in scenarios:
+        output_tokens = int(data["output_tokens"])
+        total_cost = data["total_cost"]
+        print(f"  {name:<20} {output_tokens:>15,} ${total_cost:>11.4f} {notes:<20}")
+
+    print()
+
+    # Display model comparison
+    print("  Model Comparison (Conservative scenario):")
+    print("  " + "-" * 66)
+    print(f"  {'Model':<20} {'Input $/M':>12} {'Output $/M':>12} {'Est. Cost':>12}")
+    print("  " + "-" * 66)
+
+    for m in SUPPORTED_MODELS:
+        pricing = MODEL_PRICING.get(m, MODEL_PRICING[model])
+        est = get_cost_estimates(total_input_tokens, m)
+        cost = est["conservative"]["total_cost"]
+        marker = " <--" if m == model else ""
+        print(
+            f"  {m:<20} ${pricing['input']:>11.2f} ${pricing['output']:>11.2f} ${cost:>11.4f}{marker}"
+        )
+
+    print()
+    print("=" * 70)
+
+    # Ask user to proceed
+    print("\n  Options:")
+    print("    [Enter] Proceed with extraction using selected model")
+    print("    [c]     Change model")
+    print("    [q]     Quit without processing")
+    print()
+
+    try:
+        choice = input("  Your choice: ").strip().lower()
+        if choice == "q":
+            print("  Exiting without processing.")
+            return False
+        elif choice == "c":
+            # Model selection menu
+            print("\n  Select a model:")
+            models = list(SUPPORTED_MODELS.keys())
+            for i, m in enumerate(models, 1):
+                pricing = MODEL_PRICING.get(m, {"input": 0, "output": 0})
+                est = get_cost_estimates(total_input_tokens, m)
+                cost = est["conservative"]["total_cost"]
+                print(f"    [{i}] {m:<15} (${cost:.4f} est.)")
+
+            try:
+                model_choice = input("  Enter number: ").strip()
+                idx = int(model_choice) - 1
+                if 0 <= idx < len(models):
+                    new_model = models[idx]
+                    print(f"  Selected: {new_model}")
+                    # Recursively display with new model
+                    return display_cost_estimation(html_content, new_model, num_pages)
+            except (ValueError, IndexError):
+                print("  Invalid choice. Proceeding with original model.")
+
+        return True
+    except KeyboardInterrupt:
+        print("\n  Cancelled.")
+        return False
+
+
+def start_cost_estimation(
+    url: str,
+    model: str,
+    mode: str = "single",
+    limit: int | None = None,
+) -> None:
+    """Run cost estimation mode - scrape and show cost estimates.
+
+    Args:
+        url: URL to scrape
+        model: Model to use for estimation
+        mode: 'single' or 'batch'
+        limit: Max pages for batch mode
+    """
+    from apias.config import validate_url
+
+    if not validate_url(url):
+        print(f"Error: Invalid URL format: {url}")
+        print("URL must start with http:// or https:// and have a valid domain")
+        sys.exit(1)
+
+    print(f"\nScraping {url} for cost estimation...")
+
+    # Use scrape_only mode to get HTML content
+    result = main_workflow(
+        urls=[url],
+        mode=mode,
+        num_threads=1,
+        scrape_only=True,  # Only scrape, no AI processing
+        no_tui=True,
+        mock=False,
+        force_retry_count=0,
+    )
+
+    # Get scraped HTML content from temp folder
+    html_files = list(Path(temp_folder).glob("*_clean.html"))
+    if not html_files:
+        print("Error: No HTML content was scraped. Cannot estimate costs.")
+        sys.exit(1)
+
+    # Combine all HTML content for estimation
+    total_html = ""
+    for html_file in html_files:
+        total_html += html_file.read_text(encoding="utf-8", errors="ignore")
+
+    num_pages = len(html_files)
+    print(f"Scraped {num_pages} page(s), {len(total_html):,} characters total")
+
+    # Display cost estimation and get user decision
+    proceed = display_cost_estimation(total_html, model, num_pages)
+
+    if proceed:
+        print("\nProceeding with full extraction...")
+        # Run actual processing
+        result = main_workflow(
+            urls=[url],
+            mode=mode,
+            num_threads=1,
+            scrape_only=False,
+            no_tui=False,
+            mock=False,
+            force_retry_count=0,
+        )
+        display_scraping_summary(
+            result,
+            [url],
+            temp_folder,
+            error_log_file,
+            cast(ErrorCollector | None, result.get("error_collector")),
+        )
+    else:
+        print("\nCost estimation complete. No processing performed.")
+
+
 def start_single_scrape(
     url: str,
     scrape_only: bool = False,
@@ -5403,6 +5596,10 @@ EXAMPLES:
   Using configuration file:
     apias --url "https://example.com" --config apias_config.yaml
 
+  Estimate costs before processing:
+    apias --url "https://example.com" --estimate-cost
+    apias --url "https://example.com" --mode batch --estimate-cost
+
 For more information, visit: https://github.com/Emasoft/apias
 """,
     )
@@ -5512,6 +5709,13 @@ For more information, visit: https://github.com/Emasoft/apias
         help="Scrape and clean HTML only (no AI processing)",
     )
     parser.add_argument(
+        "--estimate-cost",
+        action="store_true",
+        default=False,
+        help="Scrape pages and estimate API costs without processing. "
+        "Shows Conservative/Average/Worst Case scenarios and model comparison.",
+    )
+    parser.add_argument(
         "--mock",
         action="store_true",
         default=False,
@@ -5588,6 +5792,14 @@ For more information, visit: https://github.com/Emasoft/apias
         if any([args.url, args.blacklist, args.whitelist]):
             print("Warning: When using --resume, other parameters are ignored.")
         start_resume_mode(args.resume)
+    elif args.estimate_cost and args.url:
+        # Cost estimation mode - scrape and show cost estimates before processing
+        start_cost_estimation(
+            args.url,
+            args.model,
+            args.mode,
+            args.limit,
+        )
     elif args.url and args.mode == "single":
         start_single_scrape(
             args.url, args.scrape_only, args.no_tui, args.mock, args.force_retry_count

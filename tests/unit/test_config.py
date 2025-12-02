@@ -248,3 +248,141 @@ class TestSupportedModels:
         for model, info in SUPPORTED_MODELS.items():
             assert "description" in info, f"{model} missing description"
             assert isinstance(info["description"], str)
+
+
+class TestCostEstimation:
+    """Tests for cost estimation functions."""
+
+    def test_cost_ratio_constants_exist(self) -> None:
+        """Cost ratio constants are defined and reasonable."""
+        from apias.config import (
+            COST_RATIO_AVERAGE,
+            COST_RATIO_CONSERVATIVE,
+            COST_RATIO_WORST_CASE,
+        )
+
+        # Ratios should be positive
+        assert COST_RATIO_CONSERVATIVE > 0
+        assert COST_RATIO_AVERAGE > 0
+        assert COST_RATIO_WORST_CASE > 0
+
+        # Conservative (P50) should be less than average
+        assert COST_RATIO_CONSERVATIVE < COST_RATIO_AVERAGE
+
+        # Average should be less than worst case (P95)
+        assert COST_RATIO_AVERAGE < COST_RATIO_WORST_CASE
+
+    def test_model_pricing_exists(self) -> None:
+        """Model pricing is defined for all supported models."""
+        from apias.config import MODEL_PRICING, SUPPORTED_MODELS
+
+        for model in SUPPORTED_MODELS:
+            assert model in MODEL_PRICING, f"{model} missing from MODEL_PRICING"
+            assert "input" in MODEL_PRICING[model]
+            assert "output" in MODEL_PRICING[model]
+            assert MODEL_PRICING[model]["input"] > 0
+            assert MODEL_PRICING[model]["output"] > 0
+
+    def test_estimate_tokens_basic(self) -> None:
+        """Token estimation returns reasonable values."""
+        from apias.config import CHARS_PER_TOKEN, estimate_tokens
+
+        # Empty string should return at least 1 token
+        assert estimate_tokens("") == 1
+
+        # 100 characters should be ~25 tokens (4 chars/token)
+        text = "a" * 100
+        expected = 100 // CHARS_PER_TOKEN
+        assert estimate_tokens(text) == expected
+
+        # 1000 characters should be ~250 tokens
+        text = "b" * 1000
+        expected = 1000 // CHARS_PER_TOKEN
+        assert estimate_tokens(text) == expected
+
+    def test_estimate_cost_basic(self) -> None:
+        """Cost estimation returns correct values."""
+        from apias.config import MODEL_PRICING, estimate_cost
+
+        # Test with known values
+        input_tokens = 1_000_000  # 1M tokens
+        model = "gpt-5-nano"
+        ratio = 0.5  # 50% output ratio
+
+        input_cost, output_cost, total_cost = estimate_cost(input_tokens, model, ratio)
+
+        # Input cost should be pricing * 1 (1M tokens)
+        expected_input = MODEL_PRICING[model]["input"] * 1
+        assert abs(input_cost - expected_input) < 0.0001
+
+        # Output cost should be pricing * 0.5 (500K tokens)
+        expected_output = MODEL_PRICING[model]["output"] * 0.5
+        assert abs(output_cost - expected_output) < 0.0001
+
+        # Total should be sum
+        assert abs(total_cost - (input_cost + output_cost)) < 0.0001
+
+    def test_estimate_cost_fallback_model(self) -> None:
+        """Cost estimation falls back to default model for unknown models."""
+        from apias.config import DEFAULT_MODEL, MODEL_PRICING, estimate_cost
+
+        # Use unknown model
+        input_tokens = 100_000
+        _, _, total_unknown = estimate_cost(input_tokens, "unknown-model", 1.0)
+        _, _, total_default = estimate_cost(input_tokens, DEFAULT_MODEL, 1.0)
+
+        # Should fall back to default model pricing
+        assert total_unknown == total_default
+
+    def test_get_cost_estimates_returns_all_scenarios(self) -> None:
+        """get_cost_estimates returns all three scenarios."""
+        from apias.config import get_cost_estimates
+
+        input_tokens = 100_000
+        estimates = get_cost_estimates(input_tokens, "gpt-5-nano")
+
+        # Should have all three scenarios
+        assert "conservative" in estimates
+        assert "average" in estimates
+        assert "worst_case" in estimates
+
+        # Each scenario should have required fields
+        for scenario in ["conservative", "average", "worst_case"]:
+            assert "input_cost" in estimates[scenario]
+            assert "output_cost" in estimates[scenario]
+            assert "total_cost" in estimates[scenario]
+            assert "output_tokens" in estimates[scenario]
+            assert "ratio" in estimates[scenario]
+
+    def test_get_cost_estimates_ordering(self) -> None:
+        """Cost estimates are ordered correctly (conservative < average < worst)."""
+        from apias.config import get_cost_estimates
+
+        input_tokens = 100_000
+        estimates = get_cost_estimates(input_tokens, "gpt-5-nano")
+
+        # Conservative should be cheapest
+        assert (
+            estimates["conservative"]["total_cost"] < estimates["average"]["total_cost"]
+        )
+
+        # Average should be cheaper than worst case
+        assert (
+            estimates["average"]["total_cost"] < estimates["worst_case"]["total_cost"]
+        )
+
+    def test_cost_estimation_different_models(self) -> None:
+        """Different models produce different cost estimates."""
+        from apias.config import get_cost_estimates
+
+        input_tokens = 100_000
+
+        nano_cost = get_cost_estimates(input_tokens, "gpt-5-nano")["conservative"][
+            "total_cost"
+        ]
+        pro_cost = get_cost_estimates(input_tokens, "gpt-5-pro")["conservative"][
+            "total_cost"
+        ]
+
+        # Pro should be much more expensive than nano
+        assert pro_cost > nano_cost * 10  # At least 10x more expensive
