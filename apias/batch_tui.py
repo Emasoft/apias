@@ -120,6 +120,25 @@ class URLTask:
     # WHY: Allows TUI to show recent status changes and status_pipeline to track history
     status_history: List[Tuple[datetime, str]] = field(default_factory=list)
 
+    def add_status_history(
+        self, timestamp: datetime, message: str, max_entries: int = 5
+    ) -> None:
+        """
+        Add a status message to history with automatic size limiting.
+
+        DRY PRINCIPLE: This is THE single source of truth for adding status history.
+        DO NOT: Manually append to status_history and check length elsewhere.
+        WHY: Prevents duplicate code in status_pipeline.py and ensures consistent behavior.
+
+        Args:
+            timestamp: When the status change occurred
+            message: The status message to record
+            max_entries: Maximum history entries to keep (default: 5)
+        """
+        self.status_history.append((timestamp, message))
+        if len(self.status_history) > max_entries:
+            self.status_history.pop(0)  # Remove oldest entry (FIFO queue)
+
 
 @dataclass
 class BatchStats:

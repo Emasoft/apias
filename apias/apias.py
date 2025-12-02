@@ -3718,6 +3718,11 @@ def update_progress_file(atomic: bool = True) -> None:
                 with os.fdopen(temp_fd, "w") as f:
                     json.dump(data, f, indent=2)
                 # Atomic rename (on POSIX systems)
+                # PLATFORM LIMITATIONS:
+                # - POSIX: Truly atomic - guaranteed no partial writes visible
+                # - Windows: os.replace() can fail if target file is open by another process
+                # - Cross-device: Will fail if temp_path and progress_file are on different filesystems
+                # WHY temp file: Crash during write leaves original progress file intact
                 os.replace(temp_path, progress_file)
             except Exception:
                 # Clean up temp file if rename fails

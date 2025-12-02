@@ -244,11 +244,9 @@ class StatusPipeline:
 
             # Keep status history (last 5 messages)
             # WHY: Allows TUI to show recent status changes for debugging
+            # DRY: Use URLTask.add_status_history() instead of manual append/pop logic
             if event.message:
-                # WHY: URLTask.status_history is now a proper dataclass field (no hasattr needed)
-                task.status_history.append((event.timestamp, event.message))
-                if len(task.status_history) > 5:
-                    task.status_history.pop(0)  # Remove oldest
+                task.add_status_history(event.timestamp, event.message)
 
             logger.debug(
                 f"Updated task {event.task_id}: {event.state.name} "
@@ -282,10 +280,8 @@ class StatusPipeline:
                 task.error = event.message
 
             # Add to status history
-            # WHY: URLTask.status_history is now a proper dataclass field (no hasattr needed)
-            task.status_history.append((event.timestamp, f"❌ {event.message}"))
-            if len(task.status_history) > 5:
-                task.status_history.pop(0)
+            # DRY: Use URLTask.add_status_history() instead of manual append/pop logic
+            task.add_status_history(event.timestamp, f"❌ {event.message}")
 
             logger.debug(f"Recorded error for task {event.task_id}: {event.message}")
 

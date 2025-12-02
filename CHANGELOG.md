@@ -5,6 +5,15 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.24] - 2025-12-02
+
+### DRY Principle Compliance (Continued)
+- Add URLTask.add_status_history() helper method for consistent status tracking by @Emasoft
+- Update status_pipeline.py to use add_status_history() instead of duplicated append/pop logic by @Emasoft
+
+### Documentation
+- Add platform limitation comments for os.replace() (Windows file locking, cross-device moves) by @Emasoft
+
 ## [0.1.23] - 2025-12-02
 
 ### DRY Principle Compliance (Code Deduplication)
