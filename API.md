@@ -13,17 +13,48 @@ uv add apias
 ## Quick Start
 
 ```python
-from apias.config import APIASConfig, load_config
+from apias.config import APIASConfig
 from apias.apias import Scraper, clean_html, validate_xml
 
 # Create a scraper and fetch a page
 scraper = Scraper(quiet=True)
 content, mime_type = scraper.scrape("https://api.example.com/docs")
 
-# Clean the HTML
-cleaned = clean_html(content)
-print(f"Cleaned HTML: {len(cleaned)} characters")
+if content:
+    # Clean the HTML
+    cleaned = clean_html(content)
+    print(f"Cleaned HTML: {len(cleaned)} characters")
 ```
+
+---
+
+## Package-Level Imports
+
+APIAS exports key functions at the package level for convenience:
+
+```python
+import apias
+
+# Access version
+print(apias.__version__)  # e.g., "0.1.26"
+
+# Parse documentation content
+doc = apias.parse_documentation("GET /api/users - List users")
+
+# Validate configuration dictionary
+is_valid = apias.validate_config({
+    "base_url": "https://example.com",
+    "output_format": "xml"
+})
+```
+
+### Exported Names
+
+| Name | Type | Description |
+|------|------|-------------|
+| `__version__` | `str` | Package version string |
+| `parse_documentation` | `function` | Parse raw documentation into APIDocument |
+| `validate_config` | `function` | Validate configuration dictionary |
 
 ---
 
@@ -79,6 +110,8 @@ Main configuration class for APIAS. Supports loading from YAML/JSON files or dir
 | `no_tui` | `bool` | `False` | Disable Rich TUI |
 | `quiet` | `bool` | `False` | Minimal output (implies `no_tui`) |
 | `auto_resume` | `bool` | `False` | Auto-resume last session |
+| `progress_file` | `str` | `"progress.json"` | Progress tracking file name |
+| `atomic_saves` | `bool` | `True` | Use atomic file writes for progress |
 
 #### Methods
 
@@ -221,6 +254,36 @@ config = load_config(
 
 ---
 
+### `generate_example_config(path) -> None`
+
+Generate an example YAML configuration file with explanatory comments.
+
+```python
+from apias.config import generate_example_config
+
+# Generate with default name
+generate_example_config()  # Creates "apias_config.yaml"
+
+# Generate with custom path
+generate_example_config("my_config.yaml")
+```
+
+The generated file includes all available options with documentation:
+
+```yaml
+# APIAS Configuration File
+# ========================
+# model: The OpenAI model to use
+model: gpt-5-nano
+
+# num_threads: Number of parallel threads
+num_threads: 5
+
+# ... (all other options documented)
+```
+
+---
+
 ### `validate_url(url: str) -> bool`
 
 Validate that a URL is well-formed with HTTP/HTTPS scheme.
@@ -272,6 +335,13 @@ print(f"Estimated tokens: {tokens}")  # ~12-13 tokens
 ### `estimate_cost(input_tokens, model, ratio) -> Tuple[float, float, float]`
 
 Calculate estimated API costs for given input tokens and output ratio.
+
+**Parameters:**
+- `input_tokens` (int): Number of input tokens
+- `model` (str): Model name (default: `DEFAULT_MODEL`)
+- `ratio` (float): Output/input ratio (default: `COST_RATIO_CONSERVATIVE`)
+
+**Returns:** Tuple of (input_cost, output_cost, total_cost) in USD
 
 ```python
 from apias.config import estimate_cost, COST_RATIO_AVERAGE
@@ -368,6 +438,31 @@ print(scraper.looks_like_html("Just plain text"))  # False
 
 ---
 
+### `start_scraping(url, no_tui, quiet) -> str | None`
+
+High-level function to scrape a URL with automatic Playwright setup.
+
+**Parameters:**
+- `url` (str): The URL to scrape
+- `no_tui` (bool): If True, disable TUI output (default: False)
+- `quiet` (bool): If True, suppress all output (default: False)
+
+**Returns:** Scraped content prefixed with URL, or None on failure
+
+```python
+from apias.apias import start_scraping
+
+# Basic usage
+content = start_scraping("https://docs.python.org/3/", quiet=True)
+if content:
+    print(f"Scraped {len(content)} characters")
+
+# For batch processing (suppress output)
+content = start_scraping("https://example.com/api", no_tui=True, quiet=True)
+```
+
+---
+
 ### `class APIDocument`
 
 Represents a parsed API document with extracted endpoints, methods, and descriptions.
@@ -456,6 +551,38 @@ print(f"Found {len(doc.methods)} methods")
 
 ---
 
+### `validate_config(config: Dict[str, Any]) -> bool`
+
+Validate a configuration dictionary for required fields and correct formats.
+
+**Required fields:**
+- `base_url`: Must be a string starting with "http"
+- `output_format`: Must be one of "markdown", "html", or "xml"
+
+```python
+from apias.apias import validate_config
+
+# Valid configuration
+config = {
+    "base_url": "https://api.example.com",
+    "output_format": "xml"
+}
+print(validate_config(config))  # True
+
+# Invalid - missing required field
+config = {"output_format": "xml"}
+print(validate_config(config))  # False
+
+# Invalid - wrong output format
+config = {
+    "base_url": "https://api.example.com",
+    "output_format": "pdf"  # Not supported
+}
+print(validate_config(config))  # False
+```
+
+---
+
 ### `clean_html(html_content: str) -> str`
 
 Clean HTML by removing navigation, scripts, styles, and comments.
@@ -490,8 +617,8 @@ Process HTML and extract structured data (code examples, methods, classes, image
 
 Returns a tuple of:
 1. Cleaned HTML string
-2. Page title
-3. List of code examples
+2. Page title (or "scraped_page" if none)
+3. List of code examples (from `<pre>` tags)
 4. List of method signatures
 5. List of class definitions
 6. List of image URLs
@@ -514,9 +641,52 @@ html = """
 result = slimdown_html(html)
 cleaned_html, title, code_examples, methods, classes, images, links = result
 
-print(f"Title: {title}")
-print(f"Code examples: {len(code_examples)}")
-print(f"Links: {len(links)}")
+print(f"Title: {title}")                    # "My API"
+print(f"Code examples: {len(code_examples)}")  # 1
+print(f"Links: {len(links)}")               # 1
+print(f"Images: {len(images)}")             # 1
+```
+
+---
+
+### `chunk_html_by_size(html_content, max_chars) -> List[str]`
+
+Split large HTML content into smaller chunks for processing within token limits.
+
+**Parameters:**
+- `html_content` (str): The HTML content to split
+- `max_chars` (int): Maximum characters per chunk (default: ~200K)
+
+**Returns:** List of HTML chunk strings
+
+```python
+from apias.apias import chunk_html_by_size
+
+# Large HTML content
+large_html = "<html><body>" + "<p>content</p>" * 10000 + "</body></html>"
+
+# Split into manageable chunks
+chunks = chunk_html_by_size(large_html, max_chars=50000)
+print(f"Split into {len(chunks)} chunks")
+
+for i, chunk in enumerate(chunks):
+    print(f"  Chunk {i+1}: {len(chunk)} characters")
+```
+
+---
+
+### `escape_xml(xml_doc: str) -> str`
+
+Escape XML special characters in a string.
+
+**Escapes:** `"`, `'`, `<`, `>`, `&`
+
+```python
+from apias.apias import escape_xml
+
+text = 'Hello <world> & "friends"'
+escaped = escape_xml(text)
+print(escaped)  # Hello &lt;world&gt; &amp; &quot;friends&quot;
 ```
 
 ---
@@ -542,6 +712,12 @@ print(validate_xml("not xml at all"))  # False
 
 Merge multiple XML files from a folder into a single XML document.
 
+**Parameters:**
+- `temp_folder` (Path): Path to folder containing XML files
+- `progress_callback` (Callable): Optional callback(current, total, message)
+
+**Returns:** Merged XML string
+
 ```python
 from pathlib import Path
 from apias.apias import merge_xmls
@@ -559,6 +735,12 @@ print(f"Merged XML: {len(merged_xml)} characters")
 ### `extract_urls_from_sitemap(...) -> List[str]`
 
 Extract and filter URLs from a sitemap XML file or content.
+
+**Parameters:**
+- `sitemap_file` (str | None): Path to sitemap file
+- `sitemap_content` (str | None): Sitemap XML content string
+- `whitelist_str` (str | None): Comma-separated patterns to include
+- `blacklist_str` (str | None): Comma-separated patterns to exclude
 
 ```python
 from apias.apias import extract_urls_from_sitemap
@@ -590,14 +772,20 @@ print(urls)  # ['https://example.com/page1', 'https://example.com/page2']
 ## Complete Example: Programmatic API Documentation Extraction
 
 ```python
-import asyncio
 from pathlib import Path
 from apias.config import APIASConfig, estimate_tokens, get_cost_estimates
 from apias.apias import Scraper, clean_html, slimdown_html, validate_xml
 
-async def extract_api_docs(url: str, output_path: str):
-    """Extract API documentation from a URL."""
+def extract_api_docs(url: str, output_path: str) -> str | None:
+    """Extract API documentation from a URL.
 
+    Args:
+        url: The URL to scrape
+        output_path: Where to save the processed HTML
+
+    Returns:
+        Processed HTML content, or None on failure
+    """
     # 1. Configure
     config = APIASConfig(
         model="gpt-5-nano",
@@ -633,19 +821,86 @@ async def extract_api_docs(url: str, output_path: str):
     print(f"  Average:      ${estimates['average']['total_cost']:.4f}")
     print(f"  Worst case:   ${estimates['worst_case']['total_cost']:.4f}")
 
-    # 5. Save processed HTML
+    # 5. Validate any XML output
+    test_xml = f"<doc><title>{title}</title></doc>"
+    if validate_xml(test_xml):
+        print("\nXML validation: passed")
+
+    # 6. Save processed HTML
     output = Path(output_path)
     output.write_text(final_html)
     print(f"\nSaved to {output_path}")
 
     return final_html
 
+
 # Run the extraction
 if __name__ == "__main__":
-    asyncio.run(extract_api_docs(
+    extract_api_docs(
         "https://docs.python.org/3/library/asyncio.html",
         "asyncio_docs.html"
-    ))
+    )
+```
+
+---
+
+## Batch Processing Example
+
+```python
+from pathlib import Path
+from apias.config import APIASConfig, validate_urls
+from apias.apias import start_scraping, clean_html, chunk_html_by_size
+
+def batch_scrape(urls: list[str], output_dir: str) -> dict[str, str]:
+    """Scrape multiple URLs and save results.
+
+    Args:
+        urls: List of URLs to scrape
+        output_dir: Directory to save results
+
+    Returns:
+        Dict mapping URLs to output file paths
+    """
+    # Validate URLs first
+    valid_urls = validate_urls(urls)
+    print(f"Valid URLs: {len(valid_urls)}/{len(urls)}")
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    results = {}
+    for i, url in enumerate(valid_urls, 1):
+        print(f"\n[{i}/{len(valid_urls)}] Scraping: {url}")
+
+        # Use start_scraping for automatic setup
+        content = start_scraping(url, quiet=True)
+        if not content:
+            print(f"  Failed to scrape")
+            continue
+
+        # Clean and chunk if necessary
+        cleaned = clean_html(content)
+        chunks = chunk_html_by_size(cleaned, max_chars=100000)
+
+        # Save each chunk
+        for j, chunk in enumerate(chunks):
+            filename = f"page_{i}_chunk_{j}.html"
+            filepath = output_path / filename
+            filepath.write_text(chunk)
+            print(f"  Saved: {filename} ({len(chunk)} chars)")
+
+        results[url] = str(output_path / f"page_{i}_chunk_0.html")
+
+    return results
+
+
+if __name__ == "__main__":
+    urls = [
+        "https://docs.python.org/3/library/asyncio.html",
+        "https://docs.python.org/3/library/typing.html",
+        "https://docs.python.org/3/library/pathlib.html",
+    ]
+    batch_scrape(urls, "/tmp/batch_output")
 ```
 
 ---
@@ -663,12 +918,23 @@ try:
 except ValueError as e:
     print(f"Config error: {e}")  # "num_threads must be at least 1"
 
+try:
+    config = APIASConfig(temperature=3.0)  # Invalid
+except ValueError as e:
+    print(f"Config error: {e}")  # "temperature must be between 0 and 2"
+
 # API key validation
 try:
     config = APIASConfig()
     key = config.get_api_key()  # Raises if no key found
 except ValueError as e:
     print(f"API key error: {e}")
+
+# File loading errors
+try:
+    config = APIASConfig.from_yaml("nonexistent.yaml")
+except FileNotFoundError as e:
+    print(f"File error: {e}")
 
 # URL validation (returns bool, doesn't raise)
 if not validate_url("invalid-url"):
@@ -682,7 +948,7 @@ if not validate_url("invalid-url"):
 APIAS uses comprehensive type hints throughout. Example:
 
 ```python
-from typing import Dict, List, Tuple
+from typing import Dict, List
 from pathlib import Path
 
 from apias.config import APIASConfig, load_config
