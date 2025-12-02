@@ -40,13 +40,13 @@ class TestAPIASConfig:
     def test_custom_values(self) -> None:
         """Config accepts and stores custom values correctly."""
         config = APIASConfig(
-            model="gpt-4o",
+            model="gpt-5-nano",
             max_tokens=8192,
             temperature=0.5,
             num_threads=10,
             quiet=True,
         )
-        assert config.model == "gpt-4o"
+        assert config.model == "gpt-5-nano"
         assert config.max_tokens == 8192
         assert config.temperature == 0.5
         assert config.num_threads == 10
@@ -91,25 +91,25 @@ class TestAPIASConfig:
 
     def test_to_dict(self) -> None:
         """Config correctly serializes to dictionary."""
-        config = APIASConfig(model="gpt-4o", num_threads=3)
+        config = APIASConfig(model="gpt-5-nano", num_threads=3)
         data = config.to_dict()
-        assert data["model"] == "gpt-4o"
+        assert data["model"] == "gpt-5-nano"
         assert data["num_threads"] == 3
         assert "api_key" not in data  # api_key should not be in to_dict output
 
     def test_from_dict(self) -> None:
         """Config correctly deserializes from dictionary."""
-        data = {"model": "gpt-4-turbo", "num_threads": 8, "quiet": True}
+        data = {"model": "gpt-5-mini", "num_threads": 8, "quiet": True}
         config = APIASConfig.from_dict(data)
-        assert config.model == "gpt-4-turbo"
+        assert config.model == "gpt-5-mini"
         assert config.num_threads == 8
         assert config.quiet is True
 
     def test_from_dict_ignores_unknown_fields(self) -> None:
         """Config ignores unknown fields in dictionary."""
-        data = {"model": "gpt-4o", "unknown_field": "should_be_ignored"}
+        data = {"model": "gpt-5-nano", "unknown_field": "should_be_ignored"}
         config = APIASConfig.from_dict(data)
-        assert config.model == "gpt-4o"
+        assert config.model == "gpt-5-nano"
         assert not hasattr(config, "unknown_field")
 
 
@@ -118,13 +118,13 @@ class TestConfigFileIO:
 
     def test_save_and_load_json(self, tmp_path: Path) -> None:
         """Config can be saved and loaded from JSON file."""
-        config = APIASConfig(model="gpt-4o", num_threads=7)
+        config = APIASConfig(model="gpt-5-nano", num_threads=7)
         json_path = tmp_path / "config.json"
 
         config.save_json(json_path)
         loaded = APIASConfig.from_json(json_path)
 
-        assert loaded.model == "gpt-4o"
+        assert loaded.model == "gpt-5-nano"
         assert loaded.num_threads == 7
 
     def test_load_json_not_found(self, tmp_path: Path) -> None:
@@ -155,32 +155,34 @@ class TestLoadConfig:
 
     def test_load_with_cli_overrides(self) -> None:
         """CLI overrides take precedence over defaults."""
-        config = load_config(cli_overrides={"model": "gpt-4o", "quiet": True})
-        assert config.model == "gpt-4o"
+        config = load_config(cli_overrides={"model": "gpt-5-nano", "quiet": True})
+        assert config.model == "gpt-5-nano"
         assert config.quiet is True
 
     def test_load_from_json_file(self, tmp_path: Path) -> None:
         """Config loads values from JSON file."""
         json_path = tmp_path / "config.json"
-        json_path.write_text(json.dumps({"model": "gpt-4-turbo", "num_threads": 3}))
+        json_path.write_text(json.dumps({"model": "gpt-5-mini", "num_threads": 3}))
 
         config = load_config(config_path=json_path)
-        assert config.model == "gpt-4-turbo"
+        assert config.model == "gpt-5-mini"
         assert config.num_threads == 3
 
     def test_cli_overrides_file_values(self, tmp_path: Path) -> None:
         """CLI overrides take precedence over config file values."""
         json_path = tmp_path / "config.json"
-        json_path.write_text(json.dumps({"model": "gpt-4-turbo", "num_threads": 3}))
+        json_path.write_text(json.dumps({"model": "gpt-5-mini", "num_threads": 3}))
 
-        config = load_config(config_path=json_path, cli_overrides={"model": "gpt-4o"})
-        assert config.model == "gpt-4o"  # CLI override
+        config = load_config(
+            config_path=json_path, cli_overrides={"model": "gpt-5-nano"}
+        )
+        assert config.model == "gpt-5-nano"  # CLI override
         assert config.num_threads == 3  # From file
 
     def test_unsupported_file_format(self, tmp_path: Path) -> None:
         """Loading unsupported file format raises ValueError."""
         txt_path = tmp_path / "config.txt"
-        txt_path.write_text("model: gpt-4o")
+        txt_path.write_text("model: gpt-5-nano")
 
         with pytest.raises(ValueError, match="Unsupported config file format"):
             load_config(config_path=txt_path)

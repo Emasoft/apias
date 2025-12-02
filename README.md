@@ -190,17 +190,20 @@ Web pages can be HUGE. We can't send a giant page to the AI all at once (it woul
 #### `model` - Which AI Brain to Use?
 
 ```yaml
-model: gpt-4o-mini   # Default: the smart but affordable one
+model: gpt-5-nano   # Default: fast, affordable, and highly capable
 ```
 
-Different AI models have different abilities and costs:
+OpenAI GPT-5 models offer excellent quality at different price points. Prices shown below are approximate and may change - check [OpenAI Pricing](https://openai.com/api/pricing/) for current rates:
 
-| Model | Speed | Quality | Cost | Best For |
-|-------|-------|---------|------|----------|
-| `gpt-4o-mini` | Fast | Good | Low | Most scraping tasks (recommended) |
-| `gpt-4o` | Fast | Excellent | Medium | Complex documentation |
-| `gpt-4-turbo` | Medium | Excellent | High | When quality matters most |
-| `gpt-3.5-turbo` | Very Fast | Okay | Very Low | Simple pages, budget mode |
+| Model | Context | Input | Output | Best For |
+|-------|---------|-------|--------|----------|
+| `gpt-5-nano` | 272K | Very Low | Very Low | Most scraping tasks (recommended default) |
+| `gpt-5-mini` | 272K | Low | Low | Complex documentation |
+| `gpt-5` | 272K | Medium | Medium | Premium quality extraction |
+| `gpt-5.1` | 272K | Medium | Medium | Agentic tasks, coding (newest) |
+| `gpt-5-pro` | 400K | High | High | Extended context, highest quality |
+
+> **Note**: All GPT-5 models support up to 128K output tokens. The `gpt-5-nano` model offers the best cost-performance ratio for API documentation scraping.
 
 ---
 
@@ -230,7 +233,7 @@ limit: 100
 num_threads: 3
 max_retries: 3
 chunk_size: 50000
-model: gpt-4o-mini
+model: gpt-5-nano
 limit: null
 ```
 
@@ -240,7 +243,7 @@ limit: null
 num_threads: 8
 max_retries: 5
 chunk_size: 40000
-model: gpt-4o-mini
+model: gpt-5-nano
 limit: 500
 ```
 
@@ -251,7 +254,7 @@ num_threads: 2
 max_retries: 5
 retry_delay: 2.0
 chunk_size: 30000
-model: gpt-4o-mini
+model: gpt-5-nano
 ```
 
 #### For CI/CD (Headless, No User Interaction)

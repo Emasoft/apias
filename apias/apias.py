@@ -5500,7 +5500,7 @@ For more information, visit: https://github.com/Emasoft/apias
         "--model",
         type=str,
         default=None,
-        help="OpenAI model to use (default: gpt-4o-mini). Options: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-3.5-turbo",
+        help="OpenAI model to use (default: gpt-5-nano). Options: gpt-5-nano, gpt-5-mini, gpt-5, gpt-5.1, gpt-5-pro",
         metavar="MODEL",
     )
 

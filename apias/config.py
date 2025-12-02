@@ -53,7 +53,7 @@ BROWSER_NETWORK_IDLE_TIMEOUT: Final[int] = 5000  # ms - wait for network idle
 SUBPROCESS_TIMEOUT: Final[int] = 5  # Timeout for subprocess calls (ps, etc.)
 
 # --- API Configuration ---
-DEFAULT_MODEL: Final[str] = "gpt-4o-mini"  # Default OpenAI model
+DEFAULT_MODEL: Final[str] = "gpt-5-nano"  # Default OpenAI model (best cost/performance)
 # CRITICAL: Set to 0 to disable OpenAI library's internal retry mechanism
 # We handle retries ourselves with circuit breaker for proper user feedback
 # Internal retries cause "retry storms" that flood the terminal with errors
@@ -189,22 +189,38 @@ def get_system_temp_dir() -> Path:
     return Path(tempfile.gettempdir())
 
 
-# Supported OpenAI models with their context windows
+# Supported OpenAI GPT-5 models with context windows and max output tokens
+# Data sourced from LiteLLM model_prices_and_context_window.json (OpenAI provider only)
 SUPPORTED_MODELS: Dict[str, Dict[str, Any]] = {
-    "gpt-4o": {"context_window": 128000, "description": "Most capable GPT-4 model"},
-    "gpt-4o-mini": {
+    "gpt-5-nano": {
         "context_window": 128000,
-        "description": "Cost-effective GPT-4 model",
+        "max_input_tokens": 272000,
+        "max_output_tokens": 128000,
+        "description": "Most cost-effective GPT-5 (recommended default)",
     },
-    "gpt-4-turbo": {"context_window": 128000, "description": "GPT-4 Turbo model"},
-    "gpt-4": {"context_window": 8192, "description": "Original GPT-4 model"},
-    "gpt-3.5-turbo": {
-        "context_window": 16385,
-        "description": "Fast, cost-effective model",
+    "gpt-5-mini": {
+        "context_window": 128000,
+        "max_input_tokens": 272000,
+        "max_output_tokens": 128000,
+        "description": "Balanced GPT-5 for complex documentation",
     },
-    "gpt-3.5-turbo-16k": {
-        "context_window": 16385,
-        "description": "GPT-3.5 with extended context",
+    "gpt-5": {
+        "context_window": 128000,
+        "max_input_tokens": 272000,
+        "max_output_tokens": 128000,
+        "description": "Full GPT-5 model for premium quality",
+    },
+    "gpt-5.1": {
+        "context_window": 128000,
+        "max_input_tokens": 272000,
+        "max_output_tokens": 128000,
+        "description": "Latest GPT-5.1 for agentic/coding tasks",
+    },
+    "gpt-5-pro": {
+        "context_window": 272000,
+        "max_input_tokens": 400000,
+        "max_output_tokens": 272000,
+        "description": "Extended context, highest quality",
     },
 }
 
@@ -477,8 +493,8 @@ def generate_example_config(path: str | Path = "apias_config.yaml") -> None:
 # OpenAI Model Settings
 # ---------------------
 # model: The OpenAI model to use for HTML-to-XML conversion
-# Supported models: gpt-4o, gpt-4o-mini, gpt-4-turbo, gpt-4, gpt-3.5-turbo
-model: gpt-4o-mini
+# Supported models: gpt-5-nano, gpt-5-mini, gpt-5, gpt-5.1, gpt-5-pro
+model: gpt-5-nano
 
 # max_tokens: Maximum tokens in the response
 max_tokens: 4096

@@ -219,7 +219,7 @@ class TestMockOpenAIConfigForceRetry:
         configure_mock_openai(MockOpenAIConfig(deterministic=True, force_retry_count=1))
 
         pricing_info: Dict[str, Dict[str, float]] = {
-            "gpt-4o-mini": {"input_cost_per_token": 0.00001}
+            "gpt-5-nano": {"input_cost_per_token": 0.00001}
         }
 
         # First call should return invalid XML
@@ -236,7 +236,7 @@ class TestMockOpenAIConfigForceRetry:
         configure_mock_openai(MockOpenAIConfig(deterministic=True, force_retry_count=2))
 
         pricing_info: Dict[str, Dict[str, float]] = {
-            "gpt-4o-mini": {"input_cost_per_token": 0.00001}
+            "gpt-5-nano": {"input_cost_per_token": 0.00001}
         }
         prompt = "unique test prompt for retry test"
 
@@ -313,7 +313,7 @@ class TestProcessSingleChunkRetry:
     def pricing_info(self) -> Dict[str, Dict[str, float]]:
         """Standard pricing info for tests."""
         return {
-            "gpt-4o-mini": {
+            "gpt-5-nano": {
                 "input_cost_per_token": 0.00001,
                 "output_cost_per_token": 0.00003,
             }
@@ -438,7 +438,7 @@ class TestRetryErrorScenarios:
         )
 
         pricing_info: Dict[str, Dict[str, float]] = {
-            "gpt-4o-mini": {"input_cost_per_token": 0.00001}
+            "gpt-5-nano": {"input_cost_per_token": 0.00001}
         }
 
         result = await mock_make_openai_request(
@@ -456,7 +456,7 @@ class TestRetryErrorScenarios:
         )
 
         pricing_info: Dict[str, Dict[str, float]] = {
-            "gpt-4o-mini": {"input_cost_per_token": 0.00001}
+            "gpt-5-nano": {"input_cost_per_token": 0.00001}
         }
 
         result = await mock_make_openai_request(
@@ -490,7 +490,7 @@ class TestRetryThreadSafety:
         configure_mock_openai(MockOpenAIConfig(deterministic=True, force_retry_count=1))
 
         pricing_info: Dict[str, Dict[str, float]] = {
-            "gpt-4o-mini": {"input_cost_per_token": 0.00001}
+            "gpt-5-nano": {"input_cost_per_token": 0.00001}
         }
 
         # Two different prompts should each fail once independently
