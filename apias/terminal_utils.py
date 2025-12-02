@@ -432,6 +432,66 @@ def detect_terminal_capabilities() -> TerminalCapabilities:
     return caps
 
 
+def get_safe_terminal_width() -> int:
+    """
+    Get terminal width with platform-safe fallback.
+
+    DRY PRINCIPLE: This is THE single source of truth for getting terminal width.
+    DO NOT: Use shutil.get_terminal_size() or os.get_terminal_size() directly elsewhere.
+    WHY: Centralizes try/except handling for headless/CI environments.
+
+    Platform behavior:
+    - POSIX with TTY: Returns actual terminal width
+    - Windows with console: Returns actual console width
+    - Headless/CI/Docker: Returns DEFAULT_TERMINAL_WIDTH from config
+    - Pipes/redirects: Returns DEFAULT_TERMINAL_WIDTH from config
+
+    Returns:
+        Terminal width in columns (int)
+    """
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        # Not a terminal (headless, CI, Docker, piped output)
+        return DEFAULT_TERMINAL_WIDTH
+
+
+def get_safe_terminal_height() -> int:
+    """
+    Get terminal height with platform-safe fallback.
+
+    DRY PRINCIPLE: This is THE single source of truth for getting terminal height.
+    DO NOT: Use shutil.get_terminal_size() or os.get_terminal_size() directly elsewhere.
+
+    Returns:
+        Terminal height in lines (int)
+    """
+    try:
+        return os.get_terminal_size().lines
+    except OSError:
+        return DEFAULT_TERMINAL_HEIGHT
+
+
+def quiet_print(*args: Any, quiet: bool = False, **kwargs: Any) -> None:
+    """
+    Print to stdout only if quiet mode is disabled.
+
+    DRY PRINCIPLE: This is THE recommended way to print user-facing messages.
+    WHY: Centralizes quiet flag checking, eliminates duplicate `if not quiet: print()` patterns.
+
+    Usage:
+        quiet_print("Processing...", quiet=args.quiet)
+        quiet_print(f"Result: {result}", quiet=self.quiet)
+
+    Args:
+        *args: Arguments to pass to print()
+        quiet: If True, suppress output (default: False)
+        **kwargs: Keyword arguments to pass to print() (end, sep, flush, file)
+    """
+    if not quiet:
+        print(*args, **kwargs)
+
+
 def _check_unicode_support() -> bool:
     """Check if terminal supports Unicode"""
     # Check locale

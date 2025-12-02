@@ -188,6 +188,9 @@ from .logger_interceptor import LoggerInterceptor
 # RichTUIManager removed - now using unified BatchTUIManager for both single-page and batch modes
 from .mock_api import MockAPIClient, mock_call_openai_api
 from .status_pipeline import StatusPipeline
+from .terminal_utils import (
+    get_safe_terminal_width,  # DRY: Use centralized terminal width detection
+)
 
 
 def validate_xml(xml_string: str) -> bool:
@@ -1187,15 +1190,9 @@ class Spinner:
 
     def _clear_line(self) -> None:
         if not self.quiet:
-            # PLATFORM SAFETY: get_terminal_size() can fail in headless/CI environments
-            # WHY: In Docker, CI pipelines, or non-TTY contexts, there's no terminal
-            # DO NOT remove try/except - causes crashes in headless mode
-            try:
-                term_width = shutil.get_terminal_size().columns
-            except OSError:
-                term_width = (
-                    DEFAULT_TERMINAL_WIDTH  # Use centralized fallback from config
-                )
+            # DRY: Use centralized get_safe_terminal_width() from terminal_utils
+            # WHY: Handles headless/CI environments with proper fallback
+            term_width = get_safe_terminal_width()
             print(
                 "\r" + " " * (term_width - 1),
                 end="",
@@ -5112,13 +5109,9 @@ def start_single_scrape(
 
 
 def create_summary_box(summary_data: Dict[str, str]) -> str:
-    # PLATFORM SAFETY: get_terminal_size() can fail in headless/CI environments
-    # WHY: In Docker, CI pipelines, or non-TTY contexts, there's no terminal
-    # DO NOT remove try/except - causes crashes in headless mode
-    try:
-        terminal_width = shutil.get_terminal_size().columns
-    except OSError:
-        terminal_width = DEFAULT_TERMINAL_WIDTH  # Use centralized fallback from config
+    # DRY: Use centralized get_safe_terminal_width() from terminal_utils
+    # WHY: Handles headless/CI environments with proper fallback
+    terminal_width = get_safe_terminal_width()
 
     max_label_length = max(len(label) for label in summary_data.keys())
     max_value_length = max(len(str(value)) for value in summary_data.values())

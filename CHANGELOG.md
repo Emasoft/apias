@@ -5,6 +5,17 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.25] - 2025-12-02
+
+### DRY Principle Compliance (Terminal Utilities)
+- Add get_safe_terminal_width() and get_safe_terminal_height() utilities in terminal_utils.py by @Emasoft
+- Update apias.py to use centralized terminal width detection (2 call sites consolidated) by @Emasoft
+- Add quiet_print() wrapper function for quiet-mode-aware printing by @Emasoft
+
+### Code Quality
+- Eliminate duplicate try/except patterns for terminal size detection by @Emasoft
+- Centralize platform-safe fallbacks for headless/CI environments by @Emasoft
+
 ## [0.1.24] - 2025-12-02
 
 ### DRY Principle Compliance (Continued)
