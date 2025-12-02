@@ -367,5 +367,6 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes.
 
 ## Support
 
-- API Documentation: [API.md](API.md)
-- Issues: [https://github.com/Emasoft/apias/issues](https://github.com/Emasoft/apias/issues)
+- API Documentation: [API Reference](https://github.com/Emasoft/apias/blob/main/API.md)
+- Issues: [GitHub Issues](https://github.com/Emasoft/apias/issues)
+- PyPI: [https://pypi.org/project/apias/](https://pypi.org/project/apias/)
