@@ -5,6 +5,26 @@ All notable changes to APIAS (API Auto Scraper) will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.26] - 2025-12-02
+
+### New Features
+- Add `--estimate-cost` CLI flag for cost estimation before processing by @Emasoft
+- Add 3-tier cost estimation: Conservative (P50), Average (Mean), Worst Case (P95) by @Emasoft
+- Add model comparison display showing costs across all supported models by @Emasoft
+- Add interactive menu after cost estimation (proceed/change model/exit) by @Emasoft
+
+### Configuration
+- Add COST_RATIO_CONSERVATIVE, COST_RATIO_AVERAGE, COST_RATIO_WORST_CASE constants by @Emasoft
+- Add MODEL_PRICING dictionary with per-model input/output costs per 1M tokens by @Emasoft
+- Add estimate_tokens(), estimate_cost(), get_cost_estimates() functions in config.py by @Emasoft
+
+### Testing
+- Add TestCostEstimation class with 8 new tests for cost estimation functions by @Emasoft
+
+### Documentation
+- Add --estimate-cost usage example to README Command Line Usage section by @Emasoft
+- Add comprehensive Cost Estimation section in README explaining scenarios by @Emasoft
+
 ## [0.1.25] - 2025-12-02
 
 ### DRY Principle Compliance (Terminal Utilities)

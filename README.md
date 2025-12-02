@@ -77,6 +77,9 @@ apias --url https://example.com --mode batch
 # Limit how many pages to scrape
 apias --url https://example.com --mode batch --limit 50
 
+# Estimate costs before processing (no API calls made)
+apias --url https://example.com --mode batch --estimate-cost
+
 # Use a configuration file
 apias --url https://example.com --config apias_config.yaml
 ```
@@ -222,6 +225,45 @@ apias --url https://example.com --mode batch --limit 100
 # Or in config file:
 limit: 100
 ```
+
+---
+
+#### `--estimate-cost` - Preview API Costs Before Processing
+
+Before committing to a full extraction, you can estimate costs without making any OpenAI API calls:
+
+```bash
+apias --url https://example.com --mode batch --estimate-cost
+```
+
+This will:
+1. Scrape all pages (respecting `--limit` if set)
+2. Calculate total input tokens from page content
+3. Display three cost scenarios based on real-world usage data:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Cost Estimation                          │
+├─────────────────────────────────────────────────────────────┤
+│ Input Tokens: 1,234,567                                     │
+├─────────────────────────────────────────────────────────────┤
+│ Scenario        │ Output Tokens │ Input Cost │ Total Cost   │
+├─────────────────┼───────────────┼────────────┼──────────────┤
+│ Conservative    │     716,249   │    $0.06   │    $0.35     │
+│ Average         │   2,271,603   │    $0.06   │    $0.97     │
+│ Worst Case      │  14,592,582   │    $0.06   │    $5.90     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Cost Scenarios Explained:**
+
+| Scenario | Output Ratio | Description |
+|----------|-------------|-------------|
+| **Conservative** | 0.58x input | P50 median - half of jobs cost this or less |
+| **Average** | 1.84x input | Mean across all extractions |
+| **Worst Case** | 11.82x input | P95 - only 5% of jobs exceed this |
+
+> **Tip**: The Conservative estimate is typically accurate for well-structured API documentation. Use the Worst Case estimate for budget planning with complex or messy HTML.
 
 ---
 
