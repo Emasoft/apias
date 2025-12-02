@@ -15,6 +15,8 @@ APIAS (AI Powered API Documentation Scraper) is a powerful tool that helps you e
 - Multiple output formats (Markdown, JSON, YAML)
 - Batch processing mode with interactive TUI
 
+![APIAS Batch Processing TUI](assets/apias_tui_screenshot.gif)
+
 ## Requirements
 
 - **Python 3.10 or higher** (Python 3.9 is not supported)
