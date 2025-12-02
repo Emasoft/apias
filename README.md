@@ -51,19 +51,32 @@ python --version  # Should be 3.10 or higher
 ## Quick Start
 
 ```python
-from apias import apias
+import apias
+from apias.config import APIASConfig
+from apias.apias import Scraper, clean_html
 
-# Basic usage
-doc = apias.scrape_url("https://api.example.com/docs")
-print(doc.to_markdown())
+# Check version
+print(f"APIAS version: {apias.__version__}")
 
-# With custom configuration
-config = {
-    "format": "markdown",
-    "output": "api_docs.md"
-}
-apias.scrape_and_save("https://api.example.com/docs", config)
+# Basic scraping with Scraper class
+scraper = Scraper(quiet=True)
+html_content, mime_type = scraper.scrape("https://api.example.com/docs")
+
+# Clean and process the HTML
+if html_content:
+    cleaned = clean_html(html_content)
+    print(f"Scraped {len(cleaned)} characters")
+
+# Using configuration
+config = APIASConfig(
+    model="gpt-5-nano",
+    num_threads=5,
+    quiet=True
+)
+print(f"Using model: {config.model}")
 ```
+
+For full programmatic API documentation, see [API.md](API.md).
 
 ## Command Line Usage
 
@@ -82,6 +95,18 @@ apias --url https://example.com --mode batch --estimate-cost
 
 # Use a configuration file
 apias --url https://example.com --config apias_config.yaml
+
+# Resume a previous scraping session
+apias --url https://example.com --mode batch --resume
+
+# Scrape only (no AI processing)
+apias --url https://example.com --mode batch --scrape-only
+
+# Filter URLs with whitelist/blacklist patterns
+apias --url https://example.com --mode batch --whitelist "*/api/*" --blacklist "*/legacy/*"
+
+# Force specific retry count (for testing)
+apias --url https://example.com --force-retry-count 3
 ```
 
 ---
@@ -206,7 +231,7 @@ OpenAI GPT-5 models offer excellent quality at different price points. Prices sh
 | `gpt-5.1` | 272K | Medium | Medium | Agentic tasks, coding (newest) |
 | `gpt-5-pro` | 400K | High | High | Extended context, highest quality |
 
-> **Note**: All GPT-5 models support up to 128K output tokens. The `gpt-5-nano` model offers the best cost-performance ratio for API documentation scraping.
+> **Note**: Most GPT-5 models support 128K output tokens; `gpt-5-pro` supports 272K output tokens. The `gpt-5-nano` model offers the best cost-performance ratio for API documentation scraping.
 
 ---
 
@@ -342,5 +367,5 @@ See [CHANGELOG.md](CHANGELOG.md) for a list of changes.
 
 ## Support
 
-- Documentation: [https://github.com/Emasoft/apias/docs](https://github.com/Emasoft/apias/docs)
+- API Documentation: [API.md](API.md)
 - Issues: [https://github.com/Emasoft/apias/issues](https://github.com/Emasoft/apias/issues)

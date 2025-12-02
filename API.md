@@ -232,7 +232,7 @@ config.save_json("my_config.json")
 
 ---
 
-### `load_config(config_path, cli_overrides) -> APIASConfig`
+### `load_config(config_path=None, cli_overrides=None) -> APIASConfig`
 
 Load configuration with precedence: CLI args > config file > defaults.
 
@@ -714,7 +714,7 @@ Merge multiple XML files from a folder into a single XML document.
 
 **Parameters:**
 - `temp_folder` (Path): Path to folder containing XML files
-- `progress_callback` (Callable): Optional callback(current, total, message)
+- `progress_callback` (Callable[[int, int, str], None] | None): Optional callback(current, total, message)
 
 **Returns:** Merged XML string
 
